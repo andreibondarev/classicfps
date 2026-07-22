@@ -1,0 +1,15 @@
+{
+  "name": "cs16_demo_parser",
+  "type": "module",
+  "version": "0.2.0",
+  "files": [
+    "cs16_demo_parser_bg.wasm",
+    "cs16_demo_parser.js",
+    "cs16_demo_parser.d.ts"
+  ],
+  "main": "cs16_demo_parser.js",
+  "types": "cs16_demo_parser.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,0 +1,21 @@
+# Local/editor state
+.DS_Store
+.claude/
+.env
+.env.*
+
+# JavaScript and Python environments
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated build/test output
+dist/
+artifacts/
+crate/target/
+
+# The multi-gigabyte compatibility corpus stays local. Curated demos in the
+# top-level demos directory remain tracked and power the built-in library.
+demos/corpus/

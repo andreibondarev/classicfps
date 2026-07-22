@@ -1,0 +1,8 @@
+# Keep wasm-pack's publishable browser package in the application repository so
+# a fresh clone can run `npm install && npm run build` without a Rust toolchain.
+*
+!.gitignore
+!package.json
+!*.js
+!*.d.ts
+!*.wasm
