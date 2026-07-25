@@ -795,9 +795,12 @@ impl<'a> BspParser<'a> {
             colors: Vec<f32>,
             uvs: Vec<f32>,
         }
-        let mut buckets: std::collections::BTreeMap<usize, Bucket> = Default::default();
+        // Keep brush submodels separate from the world. A texture-only bucket
+        // baked doors, trains, and fans permanently into model 0, making it
+        // impossible for the renderer to replay their entity transforms.
+        let mut buckets: std::collections::BTreeMap<(usize, usize), Bucket> = Default::default();
 
-        for model in &models {
+        for (model_index, model) in models.iter().enumerate() {
             for i in 0..model.num_faces {
                 let face_idx = (model.first_face + i) as usize;
                 let Some(face) = faces.get(face_idx) else {
@@ -897,7 +900,7 @@ impl<'a> BspParser<'a> {
                     vec![(0.85, 0.85, 0.85); face_verts.len()]
                 };
 
-                let bucket = buckets.entry(mip_idx).or_insert_with(|| Bucket {
+                let bucket = buckets.entry((model_index, mip_idx)).or_insert_with(|| Bucket {
                     positions: Vec::new(),
                     normals: Vec::new(),
                     colors: Vec::new(),
@@ -958,7 +961,7 @@ impl<'a> BspParser<'a> {
             );
         }
         let mut pix_offset_of: std::collections::HashMap<usize, i64> = Default::default();
-        for (mip_idx, bucket) in buckets {
+        for ((model_index, mip_idx), bucket) in buckets {
             let (name, w, h, pixels) =
                 mips.get(mip_idx)
                     .cloned()
@@ -979,6 +982,7 @@ impl<'a> BspParser<'a> {
             out.colors.extend_from_slice(&bucket.colors);
             out.uvs.extend_from_slice(&bucket.uvs);
             out.groups.push(TexGroup {
+                model_index: model_index as u32,
                 name,
                 width: w,
                 height: h,
@@ -994,6 +998,7 @@ impl<'a> BspParser<'a> {
 // === Textured pipeline ===
 
 pub struct TexGroup {
+    pub model_index: u32,
     pub name: String,
     pub width: u32,
     pub height: u32,

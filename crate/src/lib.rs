@@ -681,6 +681,7 @@ pub fn parse_bsp_textured(data: &[u8], wads: js_sys::Array) -> Result<JsValue, J
 
     #[derive(serde::Serialize)]
     struct GroupMeta<'a> {
+        model_index: u32,
         name: &'a str,
         width: u32,
         height: u32,
@@ -700,6 +701,7 @@ pub fn parse_bsp_textured(data: &[u8], wads: js_sys::Array) -> Result<JsValue, J
             .groups
             .iter()
             .map(|g| GroupMeta {
+                model_index: g.model_index,
                 name: &g.name,
                 width: g.width,
                 height: g.height,

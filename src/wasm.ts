@@ -323,6 +323,7 @@ export async function parseDemo(data: ArrayBuffer): Promise<DemoResult> {
 }
 
 export interface TexturedBspGroup {
+  model_index: number;
   name: string;
   width: number;
   height: number;

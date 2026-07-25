@@ -13,6 +13,35 @@ The matching `public/maps/de_aztec.bsp` was downloaded from the MODS.vg
 - Source page: https://mods.vg/download/de-aztec
 - SHA-256: `6a9c1c472ad01283098760314cb8744552e5f3a6493108ab5e19075216a3f9ed`
 
+## `de_prodigy` map assets
+
+The original map and its textures were imported from Valve's Counter-Strike
+dedicated-server distribution using SteamCMD app 90.
+
+- `public/maps/de_prodigy.bsp`
+  - SHA-256: `b345bd3f97babab19e026ebb8ae46c9d1be2b7a7da0acc12dbf1816c8a4ced7e`
+- `public/wads/prodigy_map.wad`
+  - SHA-256: `0e68198578bfefda100c906f2273535a5dde442d50727f5de8fb278a265a9d85`
+
+`prodigy_map.wad` is a lossless subset containing the 214 textures referenced
+by `de_prodigy.bsp`, selected from Valve's `halflife.wad`, `cstrike.wad`, and
+`prodigy.wad`. Unreferenced texture lumps were omitted to keep the web payload
+small; the selected texture data was not modified.
+
+The same Valve distribution supplied seven stock Half-Life world models
+precached by the historical EXE HLTV recordings:
+
+- `w_9mmclip.mdl`
+- `w_antidote.mdl`
+- `w_battery.mdl`
+- `w_longjump.mdl`
+- `w_security.mdl`
+- `w_shotbox.mdl`
+- `w_weaponbox.mdl`
+
+They are served from `public/models/weapons/`, alongside the other `w_` studio
+models expected by the player.
+
 ## Historical professional `de_aztec` demos
 
 The following demos came from Nicolas Scheidler's CS 1.6 Demo Library. The

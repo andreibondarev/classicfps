@@ -10,20 +10,22 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS = ROOT / "public" / "models"
 EXPECTED_COUNTS = {
     "player": 9,
-    "weapons": 96,
+    "weapons": 103,
     "weapons/shield": 18,
     "classic": 56,
 }
 EXPECTED_WORLD_MODELS = {
-    "w_ak47.mdl", "w_assault.mdl", "w_aug.mdl", "w_awp.mdl",
-    "w_backpack.mdl", "w_c4.mdl", "w_deagle.mdl", "w_elite.mdl",
+    "w_9mmclip.mdl", "w_ak47.mdl", "w_antidote.mdl", "w_assault.mdl",
+    "w_aug.mdl", "w_awp.mdl", "w_backpack.mdl", "w_battery.mdl",
+    "w_c4.mdl", "w_deagle.mdl", "w_elite.mdl",
     "w_famas.mdl", "w_fiveseven.mdl", "w_flashbang.mdl", "w_g3sg1.mdl",
     "w_galil.mdl", "w_glock18.mdl", "w_hegrenade.mdl", "w_kevlar.mdl",
-    "w_knife.mdl", "w_m249.mdl", "w_m3.mdl", "w_m4a1.mdl",
+    "w_knife.mdl", "w_longjump.mdl", "w_m249.mdl", "w_m3.mdl", "w_m4a1.mdl",
     "w_mac10.mdl", "w_mp5.mdl", "w_p228.mdl", "w_p90.mdl",
-    "w_scout.mdl", "w_sg550.mdl", "w_sg552.mdl", "w_shield.mdl",
-    "w_smokegrenade.mdl", "w_thighpack.mdl", "w_tmp.mdl", "w_ump45.mdl",
-    "w_usp.mdl", "w_xm1014.mdl",
+    "w_scout.mdl", "w_security.mdl", "w_sg550.mdl", "w_sg552.mdl",
+    "w_shield.mdl", "w_shotbox.mdl", "w_smokegrenade.mdl", "w_thighpack.mdl",
+    "w_tmp.mdl", "w_ump45.mdl", "w_usp.mdl", "w_weaponbox.mdl",
+    "w_xm1014.mdl",
 }
 
 

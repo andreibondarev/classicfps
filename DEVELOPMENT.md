@@ -71,6 +71,7 @@ expected and asserted.
 npm run build
 npm run test:fidelity
 npm run test:corpus
+npm run test:exe-hltv
 ```
 
 The visual suite checks stable nuke HLTV, professional aztec, and recorded

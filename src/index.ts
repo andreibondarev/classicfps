@@ -14,6 +14,7 @@ import {
   type Vec3,
   type PlayerState,
   type InterpolationMode,
+  type BspEntity,
 } from './wasm.ts';
 import {
   sampleWindowAt,
@@ -45,7 +46,19 @@ class DemoPlayer {
   private controls: OrbitControls | null = null;
   private playerMesh: THREE.Group | null = null;
   private playerMeshes: Map<string, THREE.Group> = new Map();
-  private mapMesh: THREE.Mesh | null = null;
+  private mapMesh: THREE.Group | null = null;
+  private dynamicBrushes: Array<{
+    pivot: THREE.Group;
+    mesh: THREE.Mesh;
+    entity: BspEntity;
+    kind: string;
+    base: THREE.Vector3;
+    boundsCenter: THREE.Vector3;
+    extent: THREE.Vector3;
+    path: THREE.Vector3[];
+    destroyedTimes: number[];
+  }> = [];
+  private animatedMapMaterials: THREE.MeshBasicMaterial[] = [];
   private viewModel: THREE.Group | null = null;
   private viewModelWeapon: string | null = null;
   private viewModelRequest = 0;
@@ -73,9 +86,9 @@ class DemoPlayer {
   private renderScale = Math.min(window.devicePixelRatio, 2);
   private frameTimeEma = 16.7;
   private qualityFrameCounter = 0;
+  private timelineUiTick = -1;
   private currentTime: number = 0;
   private lastFrameTime: number = 0;
-  private animationId: number = 0;
   private lastDisplayedEventIndex: number = -1;
   private killFeedEl: HTMLElement | null = null;
   private killCounts: Map<string, { k: number; d: number }> = new Map();
@@ -133,7 +146,12 @@ class DemoPlayer {
 
   // Follow camera (first-person)
   private followTarget: string | null = null;
+  private preferredFollowTeam: 'CT' | 'T' | null = null;
+  private cameraHistory: Array<string | null> = [];
+  private restoringCameraHistory = false;
+  private slowMotionReturnSpeed = 1;
   private smoothedEye: THREE.Vector3 | null = null;
+  private smoothedForward: THREE.Vector3 | null = null;
   private cameraSmoothWallTime = 0;
 
   // Free-fly camera (noclip)
@@ -196,11 +214,21 @@ class DemoPlayer {
   private lastNetworkSoundT: number = -1;
   private lastTempEffectT: number = -1;
   private audioCtx: AudioContext | null = null;
+  private audioMaster: GainNode | null = null;
+  private audioCompressor: DynamicsCompressorNode | null = null;
   private audioBuffers: Map<string, Promise<AudioBuffer | null>> = new Map();
   private activeAudioSources: Set<AudioBufferSourceNode> = new Set();
   private activeAudioChannels: Map<string, AudioBufferSourceNode> = new Map();
   private soundOn: boolean = true;
+  private lastFallbackAudioT = -1;
+  private nextFootstepAt: Map<string, number> = new Map();
   private missingAssets: Set<string> = new Set();
+  private assetPreflight: { checked: number; missing: number; models: number; sounds: number } | null = null;
+  private preloadScheduled = false;
+  private lastPreloadTime = -Infinity;
+  private deathsCacheTimeline: SoaDemo | null = null;
+  private deathsCacheTime = Number.NaN;
+  private deathsCache: Map<string, number> = new Map();
 
   // Player skin templates by model name (null = failed, use cylinder)
   private mdlCache: Map<string, Promise<{
@@ -304,7 +332,14 @@ class DemoPlayer {
     this.viewModelScene.add(this.viewModel);
 
     // Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // MSAA is expensive on the large, texture-grouped BSP surface and cannot
+    // be disabled later when Auto/Performance quality reacts to a slow GPU.
+    // Native-resolution texture filtering keeps the retro geometry crisp
+    // without forcing every frame through a multisampled render target.
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: 'high-performance',
+    });
     this.renderer.setSize(this.canvasContainer.clientWidth, this.canvasContainer.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.canvasContainer.appendChild(this.renderer.domElement);
@@ -514,7 +549,7 @@ class DemoPlayer {
       // A seek can be paused while the asynchronous model request finishes.
       // Re-apply the current replay state immediately so the freshly attached
       // mesh never remains in its bind pose until playback resumes.
-      this.updatePlayback();
+      if (!this.isPlaying) this.updatePlayback();
     });
   }
 
@@ -531,7 +566,7 @@ class DemoPlayer {
       if (old) pivot.remove(old);
       if (!template) return;
       pivot.add(this.buildSkinInstance(template, 'weapon'));
-      this.updatePlayback();
+      if (!this.isPlaying) this.updatePlayback();
     });
   }
 
@@ -756,6 +791,9 @@ class DemoPlayer {
   // Players dead at `time`: victims of Kill/Suicide since the last round start.
   // Recomputed from the event list each frame so seeking stays consistent.
   private computeDeaths(time: number): Map<string, number> {
+    if (this.deathsCacheTimeline === this.timeline && this.deathsCacheTime === time) {
+      return this.deathsCache;
+    }
     const deaths = new Map<string, number>();
     const events = this.timeline?.events;
     if (!events) return deaths;
@@ -768,6 +806,9 @@ class DemoPlayer {
         if (event.data.victim) deaths.set(event.data.victim, event.time);
       }
     }
+    this.deathsCacheTimeline = this.timeline;
+    this.deathsCacheTime = time;
+    this.deathsCache = deaths;
     return deaths;
   }
 
@@ -889,7 +930,7 @@ class DemoPlayer {
     return THREE.MathUtils.radToDeg(vertical);
   }
 
-  private setFollowTarget(name: string | null): void {
+  private setFollowTarget(name: string | null, recordHistory = true): void {
     if (
       name
       && name !== 'Spectator Camera'
@@ -901,11 +942,19 @@ class DemoPlayer {
     }
     if (name !== null && this.flyMode) this.exitFlyMode();
     const changed = name !== this.followTarget;
+    if (changed && recordHistory && !this.restoringCameraHistory) {
+      this.cameraHistory.push(this.followTarget);
+      if (this.cameraHistory.length > 40) this.cameraHistory.shift();
+    }
+    if (name && name !== 'Spectator Camera') {
+      this.preferredFollowTeam = this.teamAt(name, this.currentTime) ?? this.preferredFollowTeam;
+    }
     if (changed && this.playbackMode === 'cinematic' && this.followTarget !== null && name !== null) {
       this.playPovTransition();
     }
     this.followTarget = name;
     this.smoothedEye = changed ? this.camera?.position.clone() ?? null : this.smoothedEye;
+    if (changed) this.smoothedForward = null;
     this.cameraSmoothWallTime = performance.now();
     if (changed) {
       this.viewMotionPosition = null;
@@ -926,6 +975,59 @@ class DemoPlayer {
     }
     // Hide the followed player's own mesh in first-person; restore otherwise
     this.updatePlayback();
+  }
+
+  private livingFollowTargets(teamOnly = false): string[] {
+    const deaths = this.computeDeaths(this.currentTime);
+    const available = this.players
+      .filter((player) => !deaths.has(player.name))
+      .sort((left, right) => left.index - right.index);
+    const preferred = this.preferredFollowTeam;
+    const sameTeam = preferred
+      ? available.filter((player) => this.teamAt(player.name, this.currentTime) === preferred)
+      : [];
+    const ordered = teamOnly ? sameTeam : [
+      ...sameTeam,
+      ...available.filter((player) => !sameTeam.includes(player)),
+    ];
+    return ordered.map((player) => player.name);
+  }
+
+  private cycleFollowTarget(direction: -1 | 1): void {
+    const targets = this.livingFollowTargets();
+    if (!targets.length) {
+      this.showAnnouncement('No living players available', '#ff9b77');
+      return;
+    }
+    const current = this.followTarget ? targets.indexOf(this.followTarget) : -1;
+    const next = current < 0
+      ? (direction > 0 ? 0 : targets.length - 1)
+      : (current + direction + targets.length) % targets.length;
+    this.setFollowTarget(targets[next]);
+  }
+
+  private restorePreviousCamera(): void {
+    while (this.cameraHistory.length) {
+      const target = this.cameraHistory.pop() ?? null;
+      if (target === this.followTarget) continue;
+      if (target && target !== 'Spectator Camera' && this.computeDeaths(this.currentTime).has(target)) continue;
+      this.restoringCameraHistory = true;
+      this.setFollowTarget(target, false);
+      this.restoringCameraHistory = false;
+      return;
+    }
+    this.showAnnouncement('No previous camera', '#9eb0bf');
+  }
+
+  private toggleSlowMotion(): void {
+    if (this.playbackSpeed === 0.25) {
+      this.playbackSpeed = this.slowMotionReturnSpeed || 1;
+    } else {
+      this.slowMotionReturnSpeed = this.playbackSpeed;
+      this.playbackSpeed = 0.25;
+    }
+    this.speedSelect.value = String(this.playbackSpeed);
+    this.showAnnouncement(`${this.playbackSpeed}× playback`, '#81d4fa');
   }
 
   private playPovTransition(): void {
@@ -1101,6 +1203,10 @@ class DemoPlayer {
       'hidden',
       !this.followTarget || this.hudMode === 'off',
     );
+    document.getElementById('broadcast-overlay')?.classList.toggle(
+      'hidden',
+      !this.followTarget || this.hudMode !== 'broadcast',
+    );
   }
 
   private setHudMode(mode: HudMode, persist = true): void {
@@ -1114,6 +1220,10 @@ class DemoPlayer {
       hud.dataset.mode = mode;
       hud.classList.toggle('hidden', !this.followTarget || mode === 'off');
     }
+    document.getElementById('broadcast-overlay')?.classList.toggle(
+      'hidden',
+      !this.followTarget || mode !== 'broadcast',
+    );
     this.hudLastSignature = '';
     this.updateCrosshair();
     if (this.timeline) this.updatePlayback();
@@ -1125,6 +1235,7 @@ class DemoPlayer {
     const select = document.getElementById('playback-mode-select') as HTMLSelectElement | null;
     if (select) select.value = mode;
     this.smoothedEye = null;
+    this.smoothedForward = null;
     this.cameraSmoothWallTime = performance.now();
     for (const mesh of this.playerMeshes.values()) {
       mesh.traverse((object) => {
@@ -1145,7 +1256,7 @@ class DemoPlayer {
     const select = document.getElementById('quality-select') as HTMLSelectElement | null;
     if (select) select.value = quality;
     const ratio = quality === 'performance'
-      ? 1
+      ? Math.min(window.devicePixelRatio, 0.67)
       : Math.min(window.devicePixelRatio, quality === 'high' ? 2 : this.renderScale);
     this.renderScale = ratio;
     this.renderer?.setPixelRatio(ratio);
@@ -1422,12 +1533,24 @@ class DemoPlayer {
     // produces the long, intersecting forearms seen on rifles such as FAMAS.
     // Pair the flattened model depth with a safe camera offset, giving
     // pistols, knives, and rifles one stable apparent hand scale.
+    const reconstructedShotAt = this.followTarget && this.followTarget !== 'Spectator Camera'
+      ? this.recentShotForPlayer(this.followTarget, this.currentTime)
+      : null;
+    const reconstructedShotAge = reconstructedShotAt === null
+      ? Infinity
+      : this.currentTime - reconstructedShotAt;
+    // GoldSrc weapon animations provide some kick, but reconstructed HLTV
+    // views do not carry the local punch-angle. A short deterministic impulse
+    // restores the missing recoil without changing the authoritative aim ray.
+    const recoil = reconstructedShotAge >= 0 && reconstructedShotAge < 0.18
+      ? Math.sin(Math.min(1, reconstructedShotAge / 0.18) * Math.PI) * 0.012
+      : 0;
     root.position.set(
       0.09 + sway * 0.0012,
-      -0.09 + Math.abs(bob) * 0.0012,
-      -0.27,
+      -0.09 + Math.abs(bob) * 0.0012 - recoil * 0.3,
+      -0.27 + recoil,
     );
-    root.rotation.set(bob * 0.0015, sway * 0.002, sway * 0.001);
+    root.rotation.set(bob * 0.0015 - recoil * 1.8, sway * 0.002, sway * 0.001 + recoil * 0.25);
     const model = root.getObjectByName('viewWeapon') as THREE.Group | undefined;
     if (!model) return;
     const recordedSample = this.followTarget === 'Spectator Camera'
@@ -1449,11 +1572,17 @@ class DemoPlayer {
         animationKey = `recorded:${recordedSample.sequence}`;
       }
     } else {
-      const shotAt = this.followTarget
-        ? this.recentShotForPlayer(this.followTarget, this.currentTime)
+      const shotAt = reconstructedShotAt;
+      const action = this.followTarget
+        ? this.recentViewModelAction(this.followTarget, this.currentTime)
         : null;
       const shotAnim = anims.find((candidate) =>
         candidate.frames > 0 && /shoot|fire|attack/i.test(candidate.name));
+      const actionAnim = action ? anims.find((candidate) => candidate.frames > 0 && (
+        action.kind === 'reload' ? /reload|clip|bolt|pump/i.test(candidate.name)
+          : action.kind === 'silencer' ? /silenc/i.test(candidate.name)
+            : /throw|gren|attack|shoot/i.test(candidate.name)
+      )) : undefined;
       const drawAnim = anims.find((candidate) =>
         candidate.frames > 0 && /draw|deploy|up/i.test(candidate.name));
       const idleAnim = anims.find((candidate) =>
@@ -1463,7 +1592,13 @@ class DemoPlayer {
       const shotDuration = shotAnim ? shotAnim.frames / Math.max(1, shotAnim.fps) : 0;
       const equipAge = this.currentTime - this.viewModelEquippedAt;
       const drawDuration = drawAnim ? drawAnim.frames / Math.max(1, drawAnim.fps) : 0;
-      if (shotAnim && shotAge >= 0 && shotAge <= shotDuration) {
+      const actionAge = action ? this.currentTime - action.time : Infinity;
+      const actionDuration = actionAnim ? actionAnim.frames / Math.max(1, actionAnim.fps) : 0;
+      if (actionAnim && actionAge >= 0 && actionAge <= actionDuration) {
+        anim = actionAnim;
+        framePosition = Math.min(actionAge * anim.fps, anim.frames - 1);
+        animationKey = `reconstructed-${action!.kind}:${action!.time}`;
+      } else if (shotAnim && shotAge >= 0 && shotAge <= shotDuration) {
         anim = shotAnim;
         framePosition = Math.min(shotAge * anim.fps, anim.frames - 1);
         animationKey = `reconstructed-shot:${shotAt}`;
@@ -1519,6 +1654,33 @@ class DemoPlayer {
     }
     for (let index = left; index >= 0 && time - demo.shotTimes[index] <= 1.5; index--) {
       if (demo.shotSlots[index] === player.index) return demo.shotTimes[index];
+    }
+    return null;
+  }
+
+  private recentViewModelAction(
+    name: string,
+    time: number,
+  ): { time: number; kind: 'reload' | 'throw' | 'silencer' } | null {
+    const demo = this.timeline;
+    const player = this.players.find((candidate) => candidate.name === name);
+    if (!demo?.network_sounds.length || !player) return null;
+    let left = 0;
+    let right = demo.network_sounds.length - 1;
+    if (demo.network_sounds[0].time > time) return null;
+    while (left < right) {
+      const middle = (left + right + 1) >> 1;
+      if (demo.network_sounds[middle].time <= time) left = middle;
+      else right = middle - 1;
+    }
+    for (let index = left; index >= 0; index--) {
+      const sound = demo.network_sounds[index];
+      if (time - sound.time > 2.4) break;
+      if (sound.entity !== 0 && sound.entity !== player.index + 1) continue;
+      const sample = sound.sample.toLowerCase();
+      if (/silencer_(on|off)|silence[dr]/.test(sample)) return { time: sound.time, kind: 'silencer' };
+      if (/pinpull|gren_cock|throw/.test(sample)) return { time: sound.time, kind: 'throw' };
+      if (/clip(out|in)|reload|bolt|pump/.test(sample)) return { time: sound.time, kind: 'reload' };
     }
     return null;
   }
@@ -1698,6 +1860,7 @@ class DemoPlayer {
       exactPov && this.hudMode === 'player' && fov < 80,
     );
     this.updateActionProgress(states, selected, exactPov);
+    this.updateBroadcastOverlay(states, this.computeDeaths(this.currentTime));
 
     const verticalFov = this.goldSrcFovToVertical(fov);
     if (this.camera && exactPov && Math.abs(this.camera.fov - verticalFov) > 0.01) {
@@ -1712,6 +1875,92 @@ class DemoPlayer {
     if (signature !== this.hudLastSignature) {
       this.hudLastSignature = signature;
       this.updateRadar(states, selected);
+    }
+  }
+
+  private updateBroadcastOverlay(states: PlayerState[], deaths: Map<string, number>): void {
+    const overlay = document.getElementById('broadcast-overlay');
+    if (!overlay) return;
+    const visible = !!this.followTarget && this.hudMode === 'broadcast';
+    overlay.classList.toggle('hidden', !visible);
+    if (!visible || !this.timeline) return;
+    const renderKey = `${Math.floor(this.currentTime * 4)}|${this.followTarget}|${[...deaths.keys()].sort().join(',')}`;
+    if (overlay.dataset.signature === renderKey) return;
+    overlay.dataset.signature = renderKey;
+
+    const byName = new Map(states.map((state) => [state.name, state]));
+    const losses = { CT: 0, T: 0 };
+    for (const event of this.timeline.events) {
+      if (event.time > this.currentTime || event.event_type !== 'RoundEnd') continue;
+      const winner = /CT|COUNTER/i.test(event.data.winner ?? '') ? 'CT'
+        : /TERROR|^T$/i.test(event.data.winner ?? '') ? 'T' : null;
+      if (!winner) continue;
+      losses[winner] = 0;
+      losses[winner === 'CT' ? 'T' : 'CT']++;
+    }
+    const lossMoney = (streak: number) => Math.min(3400, 1400 + Math.max(0, streak - 1) * 500);
+    const priceOf = (id: number) => {
+      const name = (DemoPlayer.HUD_WEAPON_ICONS[id] ?? '').toLowerCase();
+      return DemoPlayer.EQUIPMENT_PRICES[name] ?? 0;
+    };
+    const renderSide = (team: 'CT' | 'T') => {
+      const members = this.players
+        .filter((player) => this.teamAt(player.name, this.currentTime) === team)
+        .sort((left, right) => left.index - right.index)
+        .slice(0, 5);
+      let equipment = 0;
+      let utility = 0;
+      const cards = members.map((player) => {
+        const state = byName.get(player.name);
+        const activeId = state ? this.weaponIdForModel(this.weaponModelName(state.weapon ?? 0)) : null;
+        const inventory = this.reconstructedInventoryAt(player.name, this.currentTime, activeId);
+        const grenades = inventory.filter((id) => DemoPlayer.weaponSlot(id) === 4).length;
+        const value = inventory.reduce((total, id) => total + priceOf(id), 0);
+        equipment += value;
+        utility += grenades;
+        const dead = deaths.has(player.name);
+        const health = dead ? '—' : state?.health != null ? Math.max(0, state.health) : '?';
+        const weapon = activeId ? (DemoPlayer.HUD_WEAPON_NAMES[activeId] ?? '—') : '—';
+        return `<article class="broadcast-card${dead ? ' dead' : ''}${this.followTarget === player.name ? ' following' : ''}">`
+          + `<strong>${this.escapeHtml(player.name)}</strong><span class="broadcast-card-meta">`
+          + `<em>${health} HP</em><span>${this.escapeHtml(weapon)} · ${grenades}U</span></span></article>`;
+      }).join('');
+      const node = document.getElementById(`broadcast-${team.toLowerCase()}`);
+      if (node) node.innerHTML = `<div class="broadcast-side-head"><span>${team === 'CT' ? 'COUNTER-TERRORISTS' : 'TERRORISTS'}`
+        + ` · $${equipment.toLocaleString()}</span><span>${utility} UTIL · LOSS +$${lossMoney(losses[team]).toLocaleString()}</span></div>`
+        + `<div class="broadcast-lineup">${cards}</div>`;
+    };
+    renderSide('CT');
+    renderSide('T');
+
+    const roundStart = this.rounds[this.roundIndexAt(this.currentTime)] ?? 0;
+    const kills = this.timeline.events.filter((event) =>
+      event.event_type === 'Kill' && event.time >= roundStart && event.time <= this.currentTime,
+    );
+    const aliveCt = this.players.filter((player) =>
+      this.teamAt(player.name, this.currentTime) === 'CT' && !deaths.has(player.name)).length;
+    const aliveT = this.players.filter((player) =>
+      this.teamAt(player.name, this.currentTime) === 'T' && !deaths.has(player.name)).length;
+    let callout = aliveCt === 1 && aliveT >= 2 ? `CLUTCH · CT 1v${aliveT}`
+      : aliveT === 1 && aliveCt >= 2 ? `CLUTCH · T 1v${aliveCt}` : '';
+    const recent = kills[kills.length - 1];
+    if (!callout && recent?.data.killer && this.currentTime - recent.time <= 4) {
+      const count = kills.filter((event) => event.data.killer === recent.data.killer).length;
+      if (count >= 2) callout = `${count}K · ${recent.data.killer}`;
+    }
+    const roundEnd = [...this.timeline.events].reverse().find((event) =>
+      event.event_type === 'RoundEnd' && event.time <= this.currentTime && event.time >= roundStart,
+    );
+    if (roundEnd && this.currentTime - roundEnd.time <= 5 && kills.length) {
+      const totals = new Map<string, number>();
+      for (const kill of kills) if (kill.data.killer) totals.set(kill.data.killer, (totals.get(kill.data.killer) ?? 0) + 1);
+      const best = [...totals].sort((left, right) => right[1] - left[1])[0];
+      if (best) callout = `PLAYER OF THE ROUND · ${best[0]} · ${best[1]}K`;
+    }
+    const calloutNode = document.getElementById('broadcast-callout');
+    if (calloutNode) {
+      calloutNode.textContent = callout;
+      calloutNode.classList.toggle('hidden', !callout);
     }
   }
 
@@ -1740,10 +1989,21 @@ class DemoPlayer {
     const demo = this.timeline;
     const player = this.players.find((candidate) => candidate.name === name);
     let flags: number | null = null;
+    // ScoreAttrib flags describe transient round state (dead, bomb, VIP).
+    // Some historical HLTV streams do not send an explicit zero for every
+    // player at spawn, so never carry a previous round's last value forward.
+    const roundStart = this.rounds[this.roundIndexAt(time)] ?? 0;
+    const currentRoundCutoff = Math.max(0, roundStart - 0.5);
     if (demo && player) {
       for (const update of demo.player_stats) {
         if (update.time > time) break;
-        if (update.slot === player.index && update.flags != null) flags = update.flags;
+        if (
+          update.time >= currentRoundCutoff
+          && update.slot === player.index
+          && update.flags != null
+        ) {
+          flags = update.flags;
+        }
       }
     }
     return flags === null ? null : (flags & 2) !== 0;
@@ -2050,6 +2310,7 @@ class DemoPlayer {
     this.viewMotionPosition = eye.clone();
     this.viewMotionTime = this.currentTime;
     let cameraEye = eye;
+    let cameraForward = forward;
     if (this.playbackMode === 'cinematic') {
       const now = performance.now();
       const dt = Math.min(0.05, Math.max(0, (now - this.cameraSmoothWallTime) / 1000));
@@ -2064,12 +2325,27 @@ class DemoPlayer {
         this.smoothedEye.lerp(eye, alpha);
       }
       cameraEye = this.smoothedEye;
+      if (!povState) {
+        if (!this.smoothedForward || this.smoothedForward.dot(forward) < 0.25) {
+          this.smoothedForward = forward.clone();
+        } else {
+          // Entity view angles in old HLTV recordings arrive in small packet
+          // steps. Smooth only reconstructed aim, with a short time constant
+          // that removes the steps without making the camera feel detached.
+          const aimAlpha = 1 - Math.exp(-36 * dt);
+          this.smoothedForward.lerp(forward, aimAlpha).normalize();
+        }
+        cameraForward = this.smoothedForward;
+      } else {
+        this.smoothedForward = forward.clone();
+      }
     } else {
       this.smoothedEye = eye.clone();
+      this.smoothedForward = forward.clone();
       this.cameraSmoothWallTime = performance.now();
     }
     this.camera.position.copy(cameraEye);
-    this.camera.lookAt(cameraEye.clone().add(forward));
+    this.camera.lookAt(cameraEye.clone().add(cameraForward));
     this.updateAimLabel();
   }
 
@@ -2618,6 +2894,8 @@ class DemoPlayer {
     if (!panel || !demo) return;
     type Row = { kills: number; deaths: number; hs: number; team: string; flags: number };
     const stats = new Map<string, Row>();
+    const roundStart = this.rounds[this.roundIndexAt(this.currentTime)] ?? 0;
+    const currentRoundCutoff = Math.max(0, roundStart - 0.5);
     const row = (name: string): Row => {
       let value = stats.get(name);
       if (!value) {
@@ -2641,7 +2919,9 @@ class DemoPlayer {
       }
       if (update.deaths != null) value.deaths = update.deaths;
       if (update.team) value.team = /CT|COUNTER/i.test(update.team) ? 'CT' : /TERROR/i.test(update.team) ? 'T' : update.team;
-      if (update.flags != null) value.flags = update.flags;
+      if (update.flags != null && update.time >= currentRoundCutoff) {
+        value.flags = update.flags;
+      }
     }
     for (const event of demo.events) {
       if (event.time > this.currentTime) break;
@@ -2700,17 +2980,17 @@ class DemoPlayer {
   private switchAfterFollowedDeath(killer: string, victim: string): void {
     if (this.followTarget !== victim || !this.timeline) return;
     const deaths = this.computeDeaths(this.currentTime);
+    const victimTeam = this.teamAt(victim, this.currentTime) ?? this.preferredFollowTeam;
+    // Staying with the selected side is less disorienting than immediately
+    // jumping to the opponent who landed the final bullet.
+    let next = this.players.find((player) =>
+      player.name !== victim
+      && !deaths.has(player.name)
+      && this.teamAt(player.name, this.currentTime) === victimTeam,
+    )?.name ?? null;
     const killerAvailable = killer && killer !== victim && !deaths.has(killer)
       && this.timeline.slot_names.includes(killer);
-    let next = killerAvailable ? killer : null;
-    if (!next) {
-      const victimTeam = this.teamAt(victim, this.currentTime);
-      next = this.players.find((player) =>
-        player.name !== victim
-        && !deaths.has(player.name)
-        && this.teamAt(player.name, this.currentTime) === victimTeam,
-      )?.name ?? null;
-    }
+    if (!next && killerAvailable) next = killer;
     if (!next) {
       next = this.players.find((player) => !deaths.has(player.name))?.name ?? null;
     }
@@ -2939,7 +3219,7 @@ class DemoPlayer {
         0.05,
         Math.max(0.05, distance - 0.08),
       );
-      const occluded = !!this.mapMesh && ray.intersectObject(this.mapMesh, false).length > 0;
+      const occluded = !!this.mapMesh && ray.intersectObject(this.mapMesh, true).length > 0;
       const exposure = occluded ? 0 : distanceFactor * (0.22 + facing * 0.78);
       if (exposure < 0.04) return;
       let overlay = document.getElementById('flash-overlay');
@@ -3172,12 +3452,25 @@ class DemoPlayer {
     if (!this.audioCtx) {
       try {
         this.audioCtx = new AudioContext();
+        this.audioCompressor = this.audioCtx.createDynamicsCompressor();
+        this.audioCompressor.threshold.value = -15;
+        this.audioCompressor.knee.value = 18;
+        this.audioCompressor.ratio.value = 5;
+        this.audioCompressor.attack.value = 0.004;
+        this.audioCompressor.release.value = 0.16;
+        this.audioMaster = this.audioCtx.createGain();
+        this.audioMaster.gain.value = 0.86;
+        this.audioCompressor.connect(this.audioMaster).connect(this.audioCtx.destination);
       } catch {
         return null;
       }
     }
     if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
     return this.audioCtx;
+  }
+
+  private audioOutput(context: AudioContext): AudioNode {
+    return this.audioCompressor ?? context.destination;
   }
 
   private toggleSound(): void {
@@ -3321,7 +3614,7 @@ class DemoPlayer {
         );
         const gain = context.createGain();
         gain.gain.value = THREE.MathUtils.clamp(sound.volume, 0, 1) * 0.55;
-        source.connect(gain).connect(context.destination);
+        source.connect(gain).connect(this.audioOutput(context));
         this.startAudioSource(source);
       });
     }
@@ -3374,7 +3667,7 @@ class DemoPlayer {
         panner.positionY.value = position.y;
         panner.positionZ.value = position.z;
 
-        source.connect(gain).connect(panner).connect(context.destination);
+        source.connect(gain).connect(panner).connect(this.audioOutput(context));
         this.startAudioSource(source, `${sound.entity}:${sound.channel}`);
       });
     }
@@ -3405,9 +3698,137 @@ class DemoPlayer {
       const pan = Math.max(-1, Math.min(1, rel.normalize().dot(right.normalize())));
       const panner = ctx.createStereoPanner();
       panner.pan.value = pan;
-      src.connect(gain).connect(panner).connect(ctx.destination);
+      src.connect(gain).connect(panner).connect(this.audioOutput(ctx));
       this.startAudioSource(src);
     });
+  }
+
+  private hasNetworkSoundNear(time: number, pattern: RegExp, entity?: number): boolean {
+    const sounds = this.timeline?.network_sounds;
+    if (!sounds?.length) return false;
+    let left = 0;
+    let right = sounds.length;
+    while (left < right) {
+      const middle = (left + right) >> 1;
+      if (sounds[middle].time < time - .14) left = middle + 1;
+      else right = middle;
+    }
+    for (let index = left; index < sounds.length; index++) {
+      const sound = sounds[index];
+      if (sound.time > time + 0.14) break;
+      if (entity !== undefined && sound.entity !== 0 && sound.entity !== entity) continue;
+      if (pattern.test(sound.sample)) return true;
+    }
+    return false;
+  }
+
+  private playFallbackSample(sample: string, volume: number, origin?: Vec3): void {
+    if (!this.soundOn) return;
+    this.loadRecordedSound(sample).then((buffer) => {
+      const context = this.audioCtx;
+      if (!buffer || !context || !this.soundOn) return;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = THREE.MathUtils.clamp(this.playbackSpeed, 0.25, 4);
+      const gain = context.createGain();
+      gain.gain.value = volume;
+      source.connect(gain);
+      if (origin) {
+        const panner = context.createPanner();
+        const position = this.effectPosition(origin);
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'inverse';
+        panner.refDistance = 1;
+        panner.maxDistance = 65;
+        panner.rolloffFactor = 1.15;
+        panner.positionX.value = position.x;
+        panner.positionY.value = position.y;
+        panner.positionZ.value = position.z;
+        gain.connect(panner).connect(this.audioOutput(context));
+      } else {
+        gain.connect(this.audioOutput(context));
+      }
+      this.startAudioSource(source);
+    });
+  }
+
+  private updateFallbackAudio(states: PlayerState[], deaths: Map<string, number>): void {
+    const demo = this.timeline;
+    const time = this.currentTime;
+    if (!demo || !this.soundOn) {
+      this.lastFallbackAudioT = time;
+      return;
+    }
+    if (this.lastFallbackAudioT < 0 || time < this.lastFallbackAudioT || time - this.lastFallbackAudioT > 1) {
+      this.lastFallbackAudioT = time;
+      this.nextFootstepAt.clear();
+      return;
+    }
+
+    // Fill absent local footsteps from authoritative velocity. Existing demo
+    // sounds always win, so this never doubles a recorded step.
+    for (const state of states) {
+      const speed = state.velocity ? Math.hypot(state.velocity.x, state.velocity.y) : 0;
+      if (deaths.has(state.name) || speed < 105) {
+        this.nextFootstepAt.delete(state.name);
+        continue;
+      }
+      const next = this.nextFootstepAt.get(state.name) ?? time;
+      if (time < next) continue;
+      const player = this.players.find((candidate) => candidate.name === state.name);
+      const entity = player ? player.index + 1 : undefined;
+      if (!this.hasNetworkSoundNear(time, /player\/(pl_(step|tile|metal|dirt|grate|duct|snow)|foot)/i, entity)) {
+        const variant = 1 + ((player?.index ?? 0) + Math.floor(time * 2)) % 4;
+        this.playFallbackSample(`player/pl_step${variant}.wav`, 0.18, state.origin);
+      }
+      const cadence = THREE.MathUtils.lerp(0.46, 0.27, THREE.MathUtils.clamp((speed - 105) / 175, 0, 1));
+      this.nextFootstepAt.set(state.name, time + cadence);
+    }
+
+    for (const event of demo.events) {
+      if (event.time <= this.lastFallbackAudioT) continue;
+      if (event.time > time) break;
+      let sample: string | null = null;
+      let pattern: RegExp | null = null;
+      if (event.event_type === 'BombPlanted') { sample = 'weapons/c4_plant.wav'; pattern = /c4_plant|bombpl/i; }
+      else if (event.event_type === 'BombDefused') { sample = 'weapons/c4_disarmed.wav'; pattern = /c4_disarm|bombdef/i; }
+      else if (event.event_type === 'BombExploded') { sample = 'weapons/c4_explode1.wav'; pattern = /c4_explode|explode/i; }
+      else if (event.event_type === 'RoundEnd' && /CT/i.test(event.data.winner ?? '')) {
+        sample = 'radio/ctwin.wav'; pattern = /ctwin/i;
+      } else if (event.event_type === 'RoundEnd' && /TERROR|^T$/i.test(event.data.winner ?? '')) {
+        sample = 'radio/terwin.wav'; pattern = /terwin/i;
+      }
+      if (sample && pattern && !this.hasNetworkSoundNear(event.time, pattern)) {
+        this.playFallbackSample(sample, 0.42);
+      }
+    }
+
+    // Grenade bounce phases are inferred from vertical direction changes only
+    // when the network stream supplied no bounce sound.
+    let objectStart = 2;
+    let objectEnd = demo.objTimes.length;
+    while (objectStart < objectEnd) {
+      const middle = (objectStart + objectEnd) >> 1;
+      if (demo.objTimes[middle] <= this.lastFallbackAudioT) objectStart = middle + 1;
+      else objectEnd = middle;
+    }
+    for (let index = Math.max(2, objectStart); index < demo.objTimes.length; index++) {
+      const sampleTime = demo.objTimes[index];
+      if (sampleTime > time) break;
+      const entity = demo.objEnts[index];
+      if (demo.objKinds[index] < 1 || demo.objKinds[index] > 3
+          || demo.objEnts[index - 1] !== entity || demo.objEnts[index - 2] !== entity) continue;
+      const before = demo.objPositions[(index - 1) * 3 + 2] - demo.objPositions[(index - 2) * 3 + 2];
+      const after = demo.objPositions[index * 3 + 2] - demo.objPositions[(index - 1) * 3 + 2];
+      if (before < -1.2 && after > 0.35 && !this.hasNetworkSoundNear(sampleTime, /bounce|grenade_hit/i, entity)) {
+        this.playFallbackSample(`weapons/g_bounce${1 + entity % 5}.wav`, 0.2, {
+          x: demo.objPositions[index * 3],
+          y: demo.objPositions[index * 3 + 1],
+          z: demo.objPositions[index * 3 + 2],
+        });
+      }
+    }
+    this.lastFallbackAudioT = time;
   }
 
   /// Fire muzzle flashes + sounds for shots that occurred since last frame
@@ -3528,12 +3949,16 @@ class DemoPlayer {
     if (dt > 0) {
       this.frameTimeEma += (dt * 1000 - this.frameTimeEma) * 0.04;
       this.qualityFrameCounter++;
-      if (this.renderQuality === 'auto' && this.qualityFrameCounter >= 120) {
+      if (this.renderQuality === 'auto' && this.qualityFrameCounter >= 45) {
         this.qualityFrameCounter = 0;
         const maxRatio = Math.min(window.devicePixelRatio, 2);
-        const nextRatio = this.frameTimeEma > 24
-          ? Math.max(1, this.renderScale - 0.25)
-          : this.frameTimeEma < 17 ? Math.min(maxRatio, this.renderScale + 0.25) : this.renderScale;
+        const nextRatio = this.frameTimeEma > 38
+          ? Math.max(0.67, this.renderScale - 0.5)
+          : this.frameTimeEma > 22
+            ? Math.max(0.67, this.renderScale - 0.25)
+            : this.frameTimeEma < 15.5
+              ? Math.min(maxRatio, this.renderScale + 0.125)
+              : this.renderScale;
         if (Math.abs(nextRatio - this.renderScale) > 0.01) {
           this.renderScale = nextRatio;
           this.renderer?.setPixelRatio(nextRatio);
@@ -3541,6 +3966,11 @@ class DemoPlayer {
         }
       }
     }
+    // Advance replay state in the same callback that renders it. The previous
+    // pair of independent rAF loops could render an old state and then spend
+    // the remainder of the frame updating the next one, producing uneven
+    // cadence even when both callbacks were individually fast.
+    if (this.isPlaying) this.advancePlayback(now);
     if (this.flyMode) this.updateFlyCamera(dt);
     else if (!this.followTarget) this.controls?.update();
     this.animateViewModel();
@@ -3757,7 +4187,17 @@ class DemoPlayer {
       this.seekTo(time / this.duration);
       if (button.dataset.follow) this.setFollowTarget(button.dataset.follow);
     });
-    document.getElementById('replay-btn')?.addEventListener('click', () => this.replayPrevious());
+    document.getElementById('replay-btn')?.addEventListener('click', () => {
+      const seconds = Number((document.getElementById('skip-select') as HTMLSelectElement | null)?.value) || 5;
+      this.replayPrevious(seconds);
+    });
+    document.getElementById('prev-player-btn')?.addEventListener('click', () => this.cycleFollowTarget(-1));
+    document.getElementById('next-player-btn')?.addEventListener('click', () => this.cycleFollowTarget(1));
+    document.getElementById('camera-back-btn')?.addEventListener('click', () => this.restorePreviousCamera());
+    document.getElementById('spectator-roster')?.addEventListener('click', (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-player]');
+      if (button?.dataset.player && !button.disabled) this.setFollowTarget(button.dataset.player);
+    });
     document.getElementById('prev-round-btn')?.addEventListener('click', () => {
       this.seekToRound(this.roundIndexAt(this.currentTime) - 1);
     });
@@ -3789,8 +4229,13 @@ class DemoPlayer {
       }
       if (e.code === 'KeyF') { this.toggleFlyMode(); return; }
       if (e.code === 'Space') { e.preventDefault(); this.togglePlayback(); }
-      if (e.code === 'ArrowLeft') this.seekRelative(-5);
-      if (e.code === 'ArrowRight') this.seekRelative(5);
+      const skip = Number((document.getElementById('skip-select') as HTMLSelectElement | null)?.value) || 5;
+      if (e.code === 'ArrowLeft') this.seekRelative(-skip);
+      if (e.code === 'ArrowRight') this.seekRelative(skip);
+      if (e.code === 'PageUp') { e.preventDefault(); this.cycleFollowTarget(-1); }
+      if (e.code === 'PageDown') { e.preventDefault(); this.cycleFollowTarget(1); }
+      if (e.code === 'Backspace') { e.preventDefault(); this.restorePreviousCamera(); }
+      if (e.code === 'KeyX') this.toggleSlowMotion();
       if (e.code === 'Escape') {
         const help = document.getElementById('help-overlay');
         const navigator = document.getElementById('event-navigator');
@@ -3937,6 +4382,7 @@ class DemoPlayer {
       de_cbble: 'Cobblestone',
       de_cpl_mill: 'CPL Mill',
       de_cpl_strike: 'CPL Strike',
+      de_prodigy: 'Prodigy',
     };
     return names[map.toLowerCase()] ?? map.replace(/^de_/, '').replace(/_/g, ' ');
   }
@@ -4025,6 +4471,12 @@ class DemoPlayer {
       this.duration = result.duration;
       this.mapName = result.map_name;
       this.players = result.players || [];
+      this.assetPreflight = null;
+      this.preloadScheduled = false;
+      this.lastPreloadTime = -Infinity;
+      this.deathsCacheTimeline = null;
+      this.deathsCacheTime = Number.NaN;
+      this.deathsCache.clear();
       this.buildHudTracks();
       this.loadBookmarks();
       this.runReplayVerification();
@@ -4052,6 +4504,8 @@ class DemoPlayer {
       this.createAllPlayerMeshes();
 
       // Reset camera follow from any previous demo
+      this.cameraHistory = [];
+      this.preferredFollowTeam = null;
       this.setFollowTarget(null);
 
       // Create event feed
@@ -4075,7 +4529,7 @@ class DemoPlayer {
       }
 
       // Try auto-load map
-      this.tryAutoLoadMap(this.mapName);
+      void this.tryAutoLoadMap(this.mapName).finally(() => this.runAssetPreflight());
 
     } catch (error) {
       console.error('Failed to load demo:', error);
@@ -4096,12 +4550,13 @@ class DemoPlayer {
   }
 
   /// Fetch the WAD files a map may need (best effort; missing ones are fine).
-  /// Nuke and Train keep nearly all of their pixels in external archives.
+  /// Nuke, Train, and Prodigy keep nearly all of their pixels in external archives.
   private async fetchWads(mapName: string): Promise<ArrayBuffer[]> {
     const defaultWads = ['cstrike.wad', 'cs_dust.wad', 'cs_cbble.wad', 'decals.wad'];
     const mapWads: Record<string, string[]> = {
       de_nuke: ['classic_maps.wad'],
       de_train: ['classic_maps.wad'],
+      de_prodigy: ['prodigy_map.wad'],
     };
     const names = mapWads[mapName.toLowerCase()] ?? defaultWads;
     const results = await Promise.all(names.map((name) => {
@@ -4141,21 +4596,37 @@ class DemoPlayer {
     if (this.mapMesh) {
       this.scene!.remove(this.mapMesh);
     }
+    this.dynamicBrushes = [];
+    this.animatedMapMaterials = [];
 
     // Hide grid
     const grid = this.scene!.getObjectByName('grid');
     if (grid) grid.visible = false;
 
-    // Create geometry from WASM data
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(bsp.positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(bsp.normals, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(bsp.colors, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(bsp.uvs, 2));
+    const attributes = {
+      position: new THREE.BufferAttribute(bsp.positions, 3),
+      normal: new THREE.BufferAttribute(bsp.normals, 3),
+      color: new THREE.BufferAttribute(bsp.colors, 3),
+      uv: new THREE.BufferAttribute(bsp.uvs, 2),
+    };
+    const createGeometry = () => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', attributes.position);
+      geometry.setAttribute('normal', attributes.normal);
+      geometry.setAttribute('color', attributes.color);
+      geometry.setAttribute('uv', attributes.uv);
+      return geometry;
+    };
 
     // One material per texture group. Vertex colors carry the baked lightmap,
     // which Three multiplies against the texture map.
+    const materialCache = new Map<string, THREE.MeshBasicMaterial>();
     const materials: THREE.Material[] = bsp.groups.map((g) => {
+      const materialKey = g.pix_offset >= 0
+        ? `${g.pix_offset}:${g.width}:${g.height}:${g.name.startsWith('{')}`
+        : `flat:${g.name.startsWith('{')}`;
+      const existing = materialCache.get(materialKey);
+      if (existing) return existing;
       if (g.pix_offset >= 0 && g.width > 0) {
         const pixels = bsp.pixels.subarray(g.pix_offset, g.pix_offset + g.width * g.height * 4);
         const tex = new THREE.DataTexture(pixels, g.width, g.height, THREE.RGBAFormat);
@@ -4166,20 +4637,144 @@ class DemoPlayer {
         tex.generateMipmaps = true;
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.needsUpdate = true;
-        return new THREE.MeshBasicMaterial({
+        const material = new THREE.MeshBasicMaterial({
           map: tex,
           vertexColors: true,
           side: THREE.DoubleSide,
           transparent: g.name.startsWith('{'),
           alphaTest: g.name.startsWith('{') ? 0.5 : 0,
         });
+        if (/water|!|slime|lava/i.test(g.name)) {
+          material.transparent = true;
+          material.opacity = 0.76;
+          material.depthWrite = false;
+          this.animatedMapMaterials.push(material);
+        }
+        materialCache.set(materialKey, material);
+        return material;
       }
-      return new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      materialCache.set(materialKey, material);
+      return material;
     });
-    bsp.groups.forEach((g, i) => geometry.addGroup(g.vert_start, g.vert_count, i));
+    const root = new THREE.Group();
+    root.name = 'bspMap';
+    const worldGeometry = createGeometry();
+    const entitiesByModel = new Map<number, BspEntity>();
+    const prop = (entity: BspEntity, key: string) => entity.properties.find(([name]) => name === key)?.[1];
+    for (const entity of bsp.entities) {
+      const model = prop(entity, 'model');
+      if (model?.startsWith('*')) entitiesByModel.set(Number(model.slice(1)), entity);
+    }
+    const groupsByModel = new Map<number, Array<{ group: typeof bsp.groups[number]; material: number }>>();
+    bsp.groups.forEach((group, material) => {
+      const entries = groupsByModel.get(group.model_index) ?? [];
+      entries.push({ group, material });
+      groupsByModel.set(group.model_index, entries);
+    });
+    for (const entry of groupsByModel.get(0) ?? []) {
+      worldGeometry.addGroup(entry.group.vert_start, entry.group.vert_count, entry.material);
+    }
+    const world = new THREE.Mesh(worldGeometry, materials);
+    world.name = 'worldspawn';
+    root.add(world);
 
-    this.mapMesh = new THREE.Mesh(geometry, materials);
-    this.scene!.add(this.mapMesh);
+    const corners = new Map<string, BspEntity>();
+    for (const entity of bsp.entities) {
+      const targetname = prop(entity, 'targetname');
+      if (entity.classname === 'path_corner' && targetname) corners.set(targetname, entity);
+    }
+    for (const [modelIndex, entries] of groupsByModel) {
+      if (modelIndex === 0) continue;
+      const geometry = createGeometry();
+      for (const entry of entries) geometry.addGroup(entry.group.vert_start, entry.group.vert_count, entry.material);
+      geometry.computeBoundingBox();
+      const box = geometry.boundingBox ?? new THREE.Box3();
+      // computeBoundingBox sees every shared vertex, so derive this submodel's
+      // bounds from its own draw ranges instead.
+      box.makeEmpty();
+      for (const entry of entries) {
+        const end = entry.group.vert_start + entry.group.vert_count;
+        for (let vertex = entry.group.vert_start; vertex < end; vertex++) {
+          box.expandByPoint(new THREE.Vector3(
+            bsp.positions[vertex * 3], bsp.positions[vertex * 3 + 1], bsp.positions[vertex * 3 + 2],
+          ));
+        }
+      }
+      const entity = entitiesByModel.get(modelIndex);
+      const mesh = new THREE.Mesh(geometry, materials);
+      if (!entity) {
+        root.add(mesh);
+        continue;
+      }
+      const center = box.getCenter(new THREE.Vector3());
+      const extent = box.getSize(new THREE.Vector3());
+      const origin = entity.origin
+        ? new THREE.Vector3(entity.origin.x * .01, entity.origin.z * .01, -entity.origin.y * .01)
+        : center;
+      const pivot = new THREE.Group();
+      pivot.name = `${entity.classname}:${modelIndex}`;
+      pivot.position.copy(origin);
+      mesh.position.copy(origin).multiplyScalar(-1);
+      pivot.add(mesh);
+      root.add(pivot);
+      const path: THREE.Vector3[] = [];
+      let target = prop(entity, 'target');
+      const visited = new Set<string>();
+      while (target && !visited.has(target) && path.length < 64) {
+        visited.add(target);
+        const corner = corners.get(target);
+        if (!corner?.origin) break;
+        path.push(new THREE.Vector3(corner.origin.x * .01, corner.origin.z * .01, -corner.origin.y * .01));
+        target = prop(corner, 'target');
+      }
+      const destroyedTimes: number[] = [];
+      if (entity.classname === 'func_breakable' && this.timeline?.temp_effects.length) {
+        const threshold = THREE.MathUtils.clamp(
+          Math.ceil(Number(prop(entity, 'health') ?? 1) / 25), 1, 5,
+        );
+        const impacts = new Map<number, number>();
+        for (const effect of this.timeline.temp_effects) {
+          const points = [effect.origin, effect.end].map((point) => new THREE.Vector3(
+            point.x * .01, point.z * .01, -point.y * .01,
+          ));
+          if (!points.some((point) =>
+            Math.abs(point.x - center.x) <= extent.x / 2 + .18
+            && Math.abs(point.y - center.y) <= extent.y / 2 + .18
+            && Math.abs(point.z - center.z) <= extent.z / 2 + .18)) continue;
+          const round = this.roundIndexAt(effect.time);
+          if (destroyedTimes.some((time) => this.roundIndexAt(time) === round)) continue;
+          const count = (impacts.get(round) ?? 0) + 1;
+          impacts.set(round, count);
+          if (count >= threshold) destroyedTimes.push(effect.time);
+        }
+      }
+      this.dynamicBrushes.push({
+        pivot, mesh, entity, kind: entity.classname, base: origin.clone(),
+        boundsCenter: center.clone(), extent, path, destroyedTimes,
+      });
+    }
+
+    // A bounded set of BSP point lights gives unlit props and viewmodels
+    // useful local contrast while baked lightmaps remain authoritative.
+    let lightCount = 0;
+    for (const entity of bsp.entities) {
+      if (!/^light($|_)/.test(entity.classname) || !entity.origin || lightCount >= 24) continue;
+      const lightValue = prop(entity, '_light') ?? prop(entity, 'light') ?? '255 240 210 180';
+      const values = lightValue.split(/\s+/).map(Number);
+      const color = new THREE.Color(
+        (values[0] ?? 255) / 255,
+        (values[1] ?? values[0] ?? 255) / 255,
+        (values[2] ?? values[0] ?? 255) / 255,
+      );
+      const intensity = THREE.MathUtils.clamp((values[3] ?? values[0] ?? 180) / 255, .18, 1.15);
+      const light = new THREE.PointLight(color, intensity, 7.5, 1.8);
+      light.position.set(entity.origin.x * .01, entity.origin.z * .01, -entity.origin.y * .01);
+      root.add(light);
+      lightCount++;
+    }
+    this.mapMesh = root;
+    this.scene!.add(root);
 
     // Update UI
     this.dropOverlay.classList.add('hidden');
@@ -4199,6 +4794,90 @@ class DemoPlayer {
 
     this.controls!.target.copy(center);
     this.camera!.position.set(center.x + size * 0.5, center.y + size * 0.5, center.z + size * 0.5);
+  }
+
+  private updateDynamicMapEntities(states: PlayerState[]): void {
+    if (!this.dynamicBrushes.length && !this.animatedMapMaterials.length) return;
+    const property = (entity: BspEntity, key: string) =>
+      entity.properties.find(([name]) => name === key)?.[1];
+    const playerPositions = states.map((state) => new THREE.Vector3(
+      state.origin.x * .01, state.origin.z * .01, -state.origin.y * .01,
+    ));
+    for (const material of this.animatedMapMaterials) {
+      if (material.map) {
+        material.map.offset.set(this.currentTime * .018, Math.sin(this.currentTime * .35) * .012);
+        material.map.needsUpdate = true;
+      }
+    }
+    for (const brush of this.dynamicBrushes) {
+      const flags = Number(property(brush.entity, 'spawnflags') ?? 0);
+      const speed = Math.max(1, Number(property(brush.entity, 'speed') ?? 100));
+      const closest = playerPositions.length
+        ? Math.min(...playerPositions.map((point) => point.distanceTo(brush.base)))
+        : Infinity;
+      brush.pivot.position.copy(brush.base);
+      brush.pivot.rotation.set(0, 0, 0);
+
+      if (brush.kind === 'func_breakable') {
+        const round = this.roundIndexAt(this.currentTime);
+        brush.mesh.visible = !brush.destroyedTimes.some((time) =>
+          time <= this.currentTime && this.roundIndexAt(time) === round);
+      } else if (brush.kind === 'func_rotating') {
+        if (!(flags & 1)) continue;
+        const radians = THREE.MathUtils.degToRad(speed * this.currentTime * ((flags & 2) ? -1 : 1));
+        // GoldSrc X/Y axis flags map to Three X/-Z; default is vertical Z -> Y.
+        if (flags & 4) brush.pivot.rotation.x = radians;
+        else if (flags & 8) brush.pivot.rotation.z = -radians;
+        else brush.pivot.rotation.y = radians;
+      } else if (brush.kind === 'func_train' || brush.kind === 'func_tracktrain') {
+        const points = [brush.base, ...brush.path];
+        if (points.length < 2) continue;
+        const segments: Array<{ from: THREE.Vector3; to: THREE.Vector3; length: number }> = [];
+        let total = 0;
+        for (let index = 0; index < points.length - 1; index++) {
+          const length = points[index].distanceTo(points[index + 1]);
+          if (length > .001) { segments.push({ from: points[index], to: points[index + 1], length }); total += length; }
+        }
+        if (!segments.length || total <= 0) continue;
+        let distance = (this.currentTime * speed * .01) % total;
+        for (const segment of segments) {
+          if (distance <= segment.length) {
+            brush.pivot.position.lerpVectors(segment.from, segment.to, distance / segment.length);
+            break;
+          }
+          distance -= segment.length;
+        }
+      } else if (/^func_door/.test(brush.kind)) {
+        const open = 1 - THREE.MathUtils.smoothstep(closest, .55, 1.15);
+        if (brush.kind === 'func_door_rotating') {
+          const sign = flags & 2 ? -1 : 1;
+          brush.pivot.rotation.y = THREE.MathUtils.degToRad(90 * open * sign);
+          continue;
+        }
+        const angle = Number(property(brush.entity, 'angle') ?? 0);
+        const direction = angle === -1 ? new THREE.Vector3(0, 1, 0)
+          : angle === -2 ? new THREE.Vector3(0, -1, 0)
+            : new THREE.Vector3(
+              Math.cos(THREE.MathUtils.degToRad(angle)),
+              0,
+              -Math.sin(THREE.MathUtils.degToRad(angle)),
+            );
+        const lip = Number(property(brush.entity, 'lip') ?? 8) * .01;
+        const travel = Math.max(.05,
+          Math.abs(direction.x) * brush.extent.x
+          + Math.abs(direction.y) * brush.extent.y
+          + Math.abs(direction.z) * brush.extent.z - lip);
+        brush.pivot.position.addScaledVector(direction, travel * open);
+      } else if (brush.kind === 'func_plat') {
+        const travel = Math.max(.1, brush.extent.y - Number(property(brush.entity, 'lip') ?? 8) * .01);
+        const active = 1 - THREE.MathUtils.smoothstep(closest, .65, 1.25);
+        brush.pivot.position.y = brush.base.y + travel * active;
+      } else if (brush.kind === 'func_button') {
+        const pressed = 1 - THREE.MathUtils.smoothstep(closest, .42, .85);
+        const angle = THREE.MathUtils.degToRad(Number(property(brush.entity, 'angle') ?? 0));
+        brush.pivot.position.add(new THREE.Vector3(Math.cos(angle), 0, -Math.sin(angle)).multiplyScalar(-.035 * pressed));
+      }
+    }
   }
 
   private async tryAutoLoadMap(mapName: string): Promise<void> {
@@ -4231,16 +4910,13 @@ class DemoPlayer {
 
     if (this.isPlaying) {
       this.lastFrameTime = performance.now();
-      this.animationId = requestAnimationFrame(() => this.playbackLoop());
-    } else {
-      cancelAnimationFrame(this.animationId);
+      this.schedulePlaybackPreload();
     }
   }
 
-  private playbackLoop(): void {
+  private advancePlayback(now: number): void {
     if (!this.isPlaying || !this.timeline) return;
 
-    const now = performance.now();
     const deltaTime = (now - this.lastFrameTime) / 1000 * this.playbackSpeed;
     this.lastFrameTime = now;
 
@@ -4268,10 +4944,6 @@ class DemoPlayer {
     } catch (e) {
       console.error('Error in updatePlayback:', e);
     }
-
-    if (this.isPlaying) {
-      this.animationId = requestAnimationFrame(() => this.playbackLoop());
-    }
   }
 
   private updatePlayback(): void {
@@ -4289,6 +4961,15 @@ class DemoPlayer {
 
     // Update each player mesh based on their state from the timeline
     for (const state of playerStates) {
+      const rostered = this.players.some((player) => player.name === state.name);
+      if (this.players.length > 0 && !rostered && /^Player \d+$/.test(state.name)) {
+        // HLTV streams can carry an entity update for an unregistered proxy or
+        // spectator slot. The parser gives it a synthetic name, but without
+        // userinfo there is no authoritative team, skin, or weapon to render.
+        const synthetic = this.playerMeshes.get(state.name);
+        if (synthetic) synthetic.visible = false;
+        continue;
+      }
       statesByName.set(state.name, state);
       // Convert GoldSrc coordinates to Three.js coordinates
       // GoldSrc: X=forward, Y=left, Z=up
@@ -4393,12 +5074,14 @@ class DemoPlayer {
     }
 
     this.updateDeathMarkers(deaths);
+    this.updateDynamicMapEntities(playerStates);
     this.updateObjects();
     this.updateRecordedEffects();
     this.updateFx();
     this.updateShots();
     this.updateNetworkSounds();
     this.updateRecordedSounds();
+    this.updateFallbackAudio(playerStates, deaths);
     this.updateBombIndicator();
     this.updateFollowCamera(statesByName, deaths);
     this.updatePlayerHud(playerStates);
@@ -4406,19 +5089,26 @@ class DemoPlayer {
     this.updateTacticalTracks(playerStates);
     this.updateEconomyStrip();
     this.updateRoundIndicator();
-    this.renderPlayerList(deaths);
+    this.renderPlayerList(deaths, playerStates);
 
-    // Update timeline UI
-    const progress = Math.min(100, (this.currentTime / this.duration) * 100);
-    this.timelineProgress.style.width = `${progress}%`;
-    this.timeDisplay.textContent = `${this.formatTime(this.currentTime)} / ${this.formatTime(this.duration)}`;
-    this.updateRoundTimer(this.currentTime);
+    // The progress bar is compositor-driven and the text/HUD clock only need
+    // a 10 Hz refresh. Rewriting layout-bound DOM on every display frame can
+    // otherwise create a small but visible periodic hitch.
+    const timelineTick = Math.floor(this.currentTime * 10);
+    if (timelineTick !== this.timelineUiTick) {
+      this.timelineUiTick = timelineTick;
+      const progress = Math.min(1, this.currentTime / this.duration);
+      this.timelineProgress.style.transform = `scaleX(${progress})`;
+      this.timeDisplay.textContent = `${this.formatTime(this.currentTime)} / ${this.formatTime(this.duration)}`;
+      this.updateRoundTimer(this.currentTime);
+    }
     const statsPanel = document.getElementById('stats-panel');
     if (statsPanel && statsPanel.dataset.second !== String(Math.floor(this.currentTime))) {
       statsPanel.dataset.second = String(Math.floor(this.currentTime));
       this.renderStatsPanel();
     }
     this.updateDiagnostics();
+    if (this.isPlaying) this.schedulePlaybackPreload();
   }
 
   private seekTo(percent: number): void {
@@ -4432,10 +5122,12 @@ class DemoPlayer {
   private seekToTime(time: number): void {
     if (!this.timeline) return;
     this.currentTime = Math.max(0, Math.min(this.duration, time));
+    this.timelineUiTick = -1;
     this.resetEventFeed();
     this.stopActiveAudio();
     this.displayEventsUpToTime(this.currentTime);
     this.smoothedEye = null;
+    this.smoothedForward = null;
     this.cameraSmoothWallTime = performance.now();
     this.lastSeen.clear();
     this.playerTrails.clear();
@@ -4452,7 +5144,36 @@ class DemoPlayer {
     void this.preloadNearTime(this.currentTime);
   }
 
-  private async preloadNearTime(time: number): Promise<void> {
+  private schedulePlaybackPreload(): void {
+    if (
+      !this.timeline
+      || this.preloadScheduled
+      || Math.abs(this.currentTime - this.lastPreloadTime) < 1.5
+    ) return;
+    this.preloadScheduled = true;
+    this.lastPreloadTime = this.currentTime;
+    const preloadTime = Math.min(this.duration, this.currentTime + 2.5);
+    const run = () => {
+      this.preloadScheduled = false;
+      void this.preloadNearTime(preloadTime, true);
+    };
+    const requestIdle = window.requestIdleCallback?.bind(window);
+    if (requestIdle) {
+      requestIdle(run, { timeout: 600 });
+    } else {
+      window.setTimeout(run, 0);
+    }
+  }
+
+  private idlePreloadYield(): Promise<void> {
+    return new Promise((resolve) => {
+      const requestIdle = window.requestIdleCallback?.bind(window);
+      if (requestIdle) requestIdle(() => resolve(), { timeout: 350 });
+      else window.setTimeout(resolve, 0);
+    });
+  }
+
+  private async preloadNearTime(time: number, stagger = false): Promise<void> {
     const demo = this.timeline;
     if (!demo) return;
     const states = interpolateSoa(demo, time, this.playbackMode);
@@ -4463,7 +5184,7 @@ class DemoPlayer {
       models.add(playerModel);
       models.add(`${playerModel}|${this.weaponFor(state.name, state.weapon)}`);
     }
-    const modelLoads = [...models].slice(0, 24).map((model) => this.loadPlayerModelTemplate(model));
+    const modelNames = [...models].slice(0, 24);
 
     const audioLoads: Array<Promise<AudioBuffer | null>> = [];
     if (this.soundOn && this.audioCtx) {
@@ -4475,7 +5196,75 @@ class DemoPlayer {
       }
       for (const sample of samples) audioLoads.push(this.loadRecordedSound(sample));
     }
-    await Promise.allSettled([...modelLoads, ...audioLoads]);
+    if (stagger) {
+      // MDL parsing and geometry creation are synchronous once bytes arrive.
+      // Let at most one model consume an idle slice so a group of future
+      // weapon/player changes cannot monopolize a display frame.
+      for (const model of modelNames) {
+        await this.loadPlayerModelTemplate(model);
+        await this.idlePreloadYield();
+      }
+      await Promise.allSettled(audioLoads);
+    } else {
+      await Promise.allSettled([
+        ...modelNames.map((model) => this.loadPlayerModelTemplate(model)),
+        ...audioLoads,
+      ]);
+    }
+  }
+
+  private async runAssetPreflight(): Promise<void> {
+    const demo = this.timeline;
+    const status = document.getElementById('asset-status');
+    if (!demo || !status) return;
+    status.textContent = 'CHECKING DEMO ASSETS…';
+    status.classList.remove('hidden');
+    const models = new Set<string>();
+    for (const player of this.players) if (player.model) models.add(player.model);
+    for (const changes of this.modelTimeline.values()) {
+      for (const [, model] of changes) if (model) models.add(model);
+    }
+    for (const [, model] of demo.model_names) {
+      const base = model.replace(/^models\//i, '').replace(/\.mdl$/i, '').split('/').pop() ?? '';
+      if (/^[pvw]_/.test(base)) models.add(base);
+    }
+    const sounds = [...new Set(demo.network_sounds.map((sound) =>
+      sound.sample.replace(/^sound\//i, '').replace(/^\/+/, '')))]
+      .filter((sample) => sample && !sample.includes('..') && /^[a-z0-9_./-]+$/i.test(sample));
+    const before = this.missingAssets.size;
+    const tasks: Array<() => Promise<void>> = [];
+    for (const model of models) tasks.push(async () => { await this.fetchMdl(model); });
+    for (const sample of sounds) tasks.push(async () => {
+      const path = `sounds/${sample}`;
+      try {
+        const response = await fetch(path);
+        if (!response.ok) { this.reportMissingAsset(path); return; }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== 'RIFF') {
+          this.reportMissingAsset(path);
+        }
+      } catch {
+        this.reportMissingAsset(path);
+      }
+    });
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(8, tasks.length) }, async () => {
+      while (cursor < tasks.length) {
+        const task = tasks[cursor++];
+        await task();
+      }
+    });
+    await Promise.all(workers);
+    const missing = this.missingAssets.size - before;
+    this.assetPreflight = { checked: tasks.length, missing, models: models.size, sounds: sounds.length };
+    if (missing === 0) {
+      status.textContent = `ASSET PREFLIGHT PASSED · ${tasks.length} CHECKED`;
+      status.title = `${models.size} models · ${sounds.length} sounds`;
+      window.setTimeout(() => {
+        if (this.assetPreflight?.missing === 0) status.classList.add('hidden');
+      }, 3500);
+    }
+    this.updateDiagnostics(true);
   }
 
   private updateUI(): void {
@@ -4575,6 +5364,10 @@ class DemoPlayer {
         <span>HUD messages</span><strong>${this.timeline.hudTimes.length.toLocaleString()}</strong>
         <span>Observer updates</span><strong>${this.timeline.observerTimes.length.toLocaleString()}</strong>
         <span>Network sounds</span><strong>${this.timeline.network_sounds.length.toLocaleString()}</strong>
+        <span>Asset preflight</span><strong>${this.assetPreflight
+          ? `${this.assetPreflight.checked} checked · ${this.assetPreflight.missing} missing`
+          : 'running / not yet run'}</strong>
+        <span>Map dynamics</span><strong>${this.dynamicBrushes.length} brush models · ${this.animatedMapMaterials.length} animated surfaces</strong>
       </div>
     `;
   }
@@ -4655,7 +5448,7 @@ class DemoPlayer {
 
   /// Team-grouped live roster: CT and T sections, alive/dead state, K/D.
   /// Rebuilt only when its content signature changes.
-  private renderPlayerList(deaths?: Map<string, number>): void {
+  private renderPlayerList(deaths?: Map<string, number>, states?: PlayerState[]): void {
     if (this.players.length === 0) {
       this.playerListPanel.classList.add('hidden');
       return;
@@ -4663,6 +5456,7 @@ class DemoPlayer {
     this.playerListPanel.classList.remove('hidden');
 
     const dead = deaths ?? new Map<string, number>();
+    const byName = new Map((states ?? []).map((state) => [state.name, state]));
     const groups: Record<string, PlayerInfo[]> = { CT: [], T: [], other: [] };
     for (const p of [...this.players].sort((a, b) => a.index - b.index)) {
       const team = this.teamAt(p.name, this.currentTime) ?? this.teamOf(p);
@@ -4674,6 +5468,10 @@ class DemoPlayer {
       ...['CT', 'T', 'other'].map((t) => groups[t].map((p) => p.name).join('|')),
       [...dead.keys()].sort().join('|'),
       [...this.killCounts.entries()].map(([n, r]) => `${n}${r.k}${r.d}`).join('|'),
+      this.players.map((player) => {
+        const state = byName.get(player.name);
+        return `${player.name}:${state?.health ?? -1}:${state?.weapon ?? 0}`;
+      }).join('|'),
       this.followTarget ?? '',
     ].join('#');
     if (sig === this.rosterSignature) return;
@@ -4740,6 +5538,35 @@ class DemoPlayer {
       });
       this.playersEl.appendChild(entry);
     }
+
+    const compact = document.getElementById('spectator-roster');
+    if (!compact) return;
+    compact.classList.toggle('hidden', !this.followTarget || this.hudMode === 'off' || this.hudMode === 'broadcast');
+    if (!this.followTarget || this.hudMode === 'off' || this.hudMode === 'broadcast') return;
+    if (!states) {
+      for (const state of interpolateSoa(this.timeline!, this.currentTime, this.playbackMode)) {
+        byName.set(state.name, state);
+      }
+    }
+    const renderCompactTeam = (team: 'CT' | 'T') => {
+      const members = groups[team];
+      if (!members.length) return '';
+      const alive = members.filter((player) => !dead.has(player.name)).length;
+      const rows = members.map((player) => {
+        const isDead = dead.has(player.name);
+        const state = byName.get(player.name);
+        const health = isDead ? 'DEAD' : state?.health != null ? `${Math.max(0, state.health)} HP` : 'ALIVE';
+        return `<button class="spectator-player${isDead ? ' dead' : ''}${this.followTarget === player.name ? ' active' : ''}"`
+          + ` data-player="${this.escapeHtml(player.name)}"${isDead ? ' disabled' : ''}`
+          + ` title="View ${this.escapeHtml(player.name)}"><span class="spectator-player-dot"></span>`
+          + `<span class="spectator-player-name">${this.escapeHtml(player.name)}</span>`
+          + `<span class="spectator-player-health">${health}</span></button>`;
+      }).join('');
+      return `<section class="spectator-team ${team.toLowerCase()}"><div class="spectator-team-label">`
+        + `<span>${team === 'CT' ? 'COUNTER-TERRORISTS' : 'TERRORISTS'}</span><span>${alive}/${members.length}</span>`
+        + `</div>${rows}</section>`;
+    };
+    compact.innerHTML = renderCompactTeam('CT') + renderCompactTeam('T');
   }
 
   private createEventFeed(): void {
@@ -4850,7 +5677,12 @@ class DemoPlayer {
       case 'RoundStart':
         this.bombPlantedAt = null;
         this.setRoundTimerFallback(event.time);
-        if (live) this.showAnnouncement(`Round ${this.roundIndexAt(event.time) + 1}`, '#dde5f0');
+        if (live) {
+          this.showAnnouncement(`Round ${this.roundIndexAt(event.time) + 1}`, '#dde5f0');
+          // updatePlayback runs before event dispatch, so refresh an open
+          // scoreboard immediately instead of leaving stale flags for a frame.
+          this.renderStatsPanel();
+        }
         break;
       case 'RoundEnd': {
         const winner = event.data.winner || '???';
@@ -4983,6 +5815,8 @@ class DemoPlayer {
     this.resetRoundTimer();
     this.lastDemoSoundT = this.currentTime;
     this.lastNetworkSoundT = this.currentTime;
+    this.lastFallbackAudioT = this.currentTime;
+    this.nextFootstepAt.clear();
     this.lastTempEffectT = -1;
     this.lastShotT = this.currentTime;
     this.lastRenderedShotBySlot.clear();
