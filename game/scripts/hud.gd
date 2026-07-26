@@ -196,7 +196,7 @@ func _build_deploy_overlay(root: Control) -> void:
 	)
 	description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(description)
-	var controls := _label("WASD MOVE  •  1–4 WEAPONS  •  E PLANT  •  R RELOAD  •  ESC SETTINGS", 12, Color("#e5bd6f"))
+	var controls := _label("WASD MOVE  •  SHIFT WALK  •  1–4 WEAPONS  •  E PLANT  •  R RELOAD  •  ESC SETTINGS", 12, Color("#e5bd6f"))
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(controls)
 	var buy_hint := _label("FREEZE BUY:  F1 AK $2500  •  F2 DEAGLE $650  •  F3 ARMOR $1000  •  F4 HE $300", 11, Color("#77e3ae"))

@@ -9,6 +9,7 @@ const DEFAULT_PORT := 27447
 const MAX_CLIENTS := 10
 const SNAPSHOT_HZ := 20.0
 const MAX_INPUT_DISTANCE := 12.0
+const ALLOWED_INPUT_BUTTONS := 0x3F
 
 var status := "OFFLINE"
 var is_host := false
@@ -119,7 +120,7 @@ func sanitize_input(command: Dictionary, sequence: int) -> Dictionary:
 		"movement": movement.limit_length(1.0),
 		"yaw": wrapf(float(command.get("yaw", 0.0)), -PI, PI),
 		"pitch": clampf(float(command.get("pitch", 0.0)), -PI * 0.495, PI * 0.495),
-		"buttons": int(command.get("buttons", 0)) & 0x1F,
+		"buttons": int(command.get("buttons", 0)) & ALLOWED_INPUT_BUTTONS,
 	}
 
 

@@ -131,6 +131,7 @@ func _physics_process(delta: float) -> void:
 			| (4 if command.get("crouch", false) else 0)
 			| (8 if command.get("reload", false) else 0)
 			| (16 if command.get("use", false) else 0)
+			| (32 if command.get("walk", false) else 0)
 		),
 	})
 	network.tick_snapshot(delta, {

@@ -71,6 +71,40 @@ func _run() -> void:
 	_check(game.targets.all(func(target: TargetActor) -> bool: return target.active), "targets activate when live")
 	_check(game.allied_bots.all(func(target: TargetActor) -> bool: return target.active), "allies activate when live")
 	_check(not Input.use_accumulated_input, "raw mouse input is not frame-accumulated")
+	_check(InputMap.has_action("walk"), "Shift walk input is registered")
+	_check(
+		game.player._movement_speed(false, true) < game.player._movement_speed(false, false),
+		"walking has a lower maximum speed than running",
+	)
+	Input.action_press("walk")
+	var walking_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	_check(walking_command.walk, "holding Shift reaches the human controller")
+	Input.action_release("walk")
+
+	Input.action_press("crouch")
+	var control_click := InputEventMouseButton.new()
+	control_click.button_index = MOUSE_BUTTON_RIGHT
+	control_click.ctrl_pressed = true
+	control_click.pressed = true
+	game.player.combat_controller.ingest_input(control_click)
+	var crouch_fire_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	_check(crouch_fire_command.crouch, "holding Control requests crouch")
+	_check(crouch_fire_command.fire, "macOS Control-click still requests fire")
+	_check(crouch_fire_command.fire_pressed, "macOS Control-click preserves the fire edge")
+	control_click.ctrl_pressed = false
+	control_click.pressed = false
+	game.player.combat_controller.ingest_input(control_click)
+	Input.action_release("crouch")
+	var released_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	_check(not released_command.fire, "Control-click fire releases cleanly")
+
+	game.player._walking = true
+	game.player._standing = true
+	game.player._step_distance = game.player._next_step_at
+	game.player.footstep_audio.stop()
+	game.player._apply_view_bob()
+	_check(not game.player.footstep_audio.playing, "Shift walking does not emit footsteps")
+	game.player._walking = false
 	for bot in game._all_bots():
 		bot.active = false
 	var duel_ally: TargetActor = game.allied_bots[0]
@@ -92,7 +126,7 @@ func _run() -> void:
 	}, 7)
 	_check(sanitized_input.movement.length() <= 1.001, "network input magnitude is server-clamped")
 	_check(sanitized_input.pitch < PI * 0.5, "network pitch is server-clamped")
-	_check(sanitized_input.buttons == 31, "network action bitfield is allow-listed")
+	_check(sanitized_input.buttons == 63, "network action bitfield includes allow-listed walking")
 
 	var initial_yaw: float = game.player.rotation.y
 	var initial_pitch: float = game.player.camera.rotation.x

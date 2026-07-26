@@ -14,6 +14,7 @@ npm run game:run
 Click **Deploy**, then use:
 
 - `WASD` — movement
+- `Shift` — walk silently
 - `Space` — jump
 - `Ctrl` — crouch
 - Mouse — aim

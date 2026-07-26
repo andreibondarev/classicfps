@@ -2,11 +2,27 @@ class_name HumanCombatController
 extends CombatController
 
 var _look_delta := Vector2.ZERO
+var _fire_held := false
+var _fire_pressed := false
+var _control_click_fire := false
 
 
 func ingest_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_look_delta += event.relative
+	elif event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		var is_left_fire := mouse_event.button_index == MOUSE_BUTTON_LEFT
+		var is_control_click := (
+			mouse_event.button_index == MOUSE_BUTTON_RIGHT
+			and (mouse_event.ctrl_pressed or _control_click_fire)
+		)
+		if is_left_fire or is_control_click:
+			_fire_held = mouse_event.pressed
+			if mouse_event.pressed:
+				_fire_pressed = true
+			if mouse_event.button_index == MOUSE_BUTTON_RIGHT:
+				_control_click_fire = mouse_event.pressed
 
 
 func gather_command(delta: float) -> Dictionary:
@@ -16,8 +32,10 @@ func gather_command(delta: float) -> Dictionary:
 	_look_delta = Vector2.ZERO
 	command.jump = Input.is_action_just_pressed("jump")
 	command.crouch = Input.is_action_pressed("crouch")
-	command.fire = Input.is_action_pressed("fire")
-	command.fire_pressed = Input.is_action_just_pressed("fire")
+	command.walk = Input.is_action_pressed("walk")
+	command.fire = Input.is_action_pressed("fire") or _fire_held
+	command.fire_pressed = Input.is_action_just_pressed("fire") or _fire_pressed
+	_fire_pressed = false
 	command.reload = Input.is_action_just_pressed("reload")
 	command.use = Input.is_action_pressed("use")
 	if Input.is_action_just_pressed("weapon_primary"):

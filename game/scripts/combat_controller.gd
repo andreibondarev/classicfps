@@ -20,6 +20,7 @@ func gather_command(_delta: float) -> Dictionary:
 		"look_target": Vector3.INF,
 		"jump": false,
 		"crouch": false,
+		"walk": false,
 		"fire": false,
 		"fire_pressed": false,
 		"reload": false,

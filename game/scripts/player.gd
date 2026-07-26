@@ -12,7 +12,8 @@ const CROUCH_HEIGHT := 1.22
 const CAPSULE_RADIUS := 0.34
 const STAND_EYE := 1.62
 const CROUCH_EYE := 1.05
-const WALK_SPEED := 6.35
+const RUN_SPEED := 6.35
+const WALK_SPEED := 3.20
 const CROUCH_SPEED := 2.75
 const GROUND_ACCEL := 10.0
 const AIR_ACCEL := 11.5
@@ -71,6 +72,7 @@ var _next_fire_at := 0.0
 var _reload_generation := 0
 var _rng := RandomNumberGenerator.new()
 var _standing := true
+var _walking := false
 var _step_distance := 0.0
 var _next_step_at := 1.65
 var _step_index := 0
@@ -124,6 +126,7 @@ func _configure_input() -> void:
 	_ensure_key_action("move_right", KEY_D)
 	_ensure_key_action("jump", KEY_SPACE)
 	_ensure_key_action("crouch", KEY_CTRL)
+	_ensure_key_action("walk", KEY_SHIFT)
 	_ensure_key_action("reload", KEY_R)
 	_ensure_key_action("use", KEY_E)
 	_ensure_key_action("weapon_primary", KEY_1)
@@ -253,11 +256,12 @@ func _physics_process(delta: float) -> void:
 	if not look_delta.is_zero_approx():
 		_apply_mouse_look(look_delta)
 	_update_crouch(delta, command.crouch)
+	_walking = command.walk and _standing
 	var input: Vector2 = command.movement
 	var wish_direction: Vector3 = Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, _yaw)
 	if wish_direction.length_squared() > 1.0:
 		wish_direction = wish_direction.normalized()
-	var wish_speed: float = (CROUCH_SPEED if not _standing else WALK_SPEED) * minf(1.0, input.length())
+	var wish_speed := _movement_speed(not _standing, _walking) * minf(1.0, input.length())
 
 	if is_on_floor():
 		if not command.jump:
@@ -317,6 +321,12 @@ func _accelerate(wish_direction: Vector3, wish_speed: float, acceleration: float
 	velocity.z += wish_direction.z * acceleration_speed
 
 
+func _movement_speed(crouching: bool, walking: bool) -> float:
+	if crouching:
+		return CROUCH_SPEED
+	return WALK_SPEED if walking else RUN_SPEED
+
+
 func _update_crouch(delta: float, wants_crouch: bool) -> void:
 	if not wants_crouch and not _standing:
 		var probe := Transform3D(Basis.IDENTITY, Vector3(0, (STAND_HEIGHT - CROUCH_HEIGHT) * 0.5, 0))
@@ -332,7 +342,7 @@ func _update_crouch(delta: float, wants_crouch: bool) -> void:
 
 
 func _apply_view_bob() -> void:
-	var speed_ratio: float = clampf(Vector2(velocity.x, velocity.z).length() / WALK_SPEED, 0.0, 1.0)
+	var speed_ratio: float = clampf(Vector2(velocity.x, velocity.z).length() / RUN_SPEED, 0.0, 1.0)
 	var motion_scale := 0.0 if settings.reduced_motion else 1.0
 	var eye_height := STAND_EYE if _standing else CROUCH_EYE
 	camera.position.y = eye_height + sin(_step_distance * 10.5) * 0.018 * speed_ratio * motion_scale
@@ -342,6 +352,8 @@ func _apply_view_bob() -> void:
 	)
 	if _step_distance >= _next_step_at:
 		_next_step_at = _step_distance + (2.15 if not _standing else 1.65)
+		if _walking or not _standing:
+			return
 		_step_index = (_step_index + 1) % 4
 		footstep_audio.stream = load("res://assets/sounds/pl_step%d.wav" % (_step_index + 1))
 		footstep_audio.pitch_scale = _rng.randf_range(0.96, 1.04)
@@ -376,7 +388,7 @@ func _try_fire() -> void:
 			muzzle_light.visible = false
 	)
 
-	var movement := Vector2(velocity.x, velocity.z).length() / WALK_SPEED
+	var movement := Vector2(velocity.x, velocity.z).length() / RUN_SPEED
 	var spread: float = float(definition.spread) + movement * 0.008 + (0.006 if not is_on_floor() else 0.0)
 	var direction := -camera.global_transform.basis.z
 	direction += camera.global_transform.basis.x * _rng.randfn(0.0, spread)
@@ -617,6 +629,7 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	clip = int(ammunition.ak47.clip)
 	reserve = int(ammunition.ak47.reserve)
 	velocity = Vector3.ZERO
+	_walking = false
 	_yaw = 0.0
 	_pitch = 0.0
 	rotation = Vector3.ZERO
