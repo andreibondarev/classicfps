@@ -34,6 +34,10 @@ CS weapon models and sounds; rifle, pistol, knife and grenade combat; navigating
 teammates and opponents; headshots and recoil; freeze/live/bomb/post phases; persistent score
 and economy; planting at the original map sites; and a native HUD.
 
+All bots use the original four Terrorist and four Counter-Terrorist player
+skins with baked idle, run, crouch, fire, and death animation frames. Their
+third-person AK-47 is bone-merged to the same GoldSrc player pose.
+
 Pause exposes sensitivity, inverted aim, field of view, VSync, render quality,
 master volume, high-contrast/scalable crosshair, and reduced camera motion.
 
@@ -62,14 +66,17 @@ map spawns.
 
 ```bash
 npm run game:import:dust2
+npm run game:import:players
 npm run game:import:weapons
 ```
 
 The Rust converter emits a versioned `map.json`, TGA textures, entity metadata,
 and world/submodel geometry under `game/generated/de_dust2`. The companion MDL
-converter emits the original first-person weapon meshes and textures under
-`game/generated/weapons`. Godot builds render surfaces, collision, navigation,
-and viewmodels from those portable assets.
+converter emits first-person weapons under `game/generated/weapons`, all stock
+team models under `game/generated/players`, and bone-merged third-person
+weapons under `game/generated/player_weapons`. Compact binary vertex frames
+carry the original animation poses. Godot builds render surfaces, collision,
+navigation, animated players, and viewmodels from those portable assets.
 
 ## Multiplayer foundation
 

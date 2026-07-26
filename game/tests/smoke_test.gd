@@ -13,6 +13,21 @@ func _check(condition: bool, message: String) -> void:
 		push_error("SMOKE TEST: " + message)
 
 
+func _uses_authentic_model(target: TargetActor) -> bool:
+	return (
+		target.character_model != null
+		and target.character_model.model_loaded
+		and not target._fallback_visual.visible
+	)
+
+
+func _has_body_and_weapon(target: TargetActor) -> bool:
+	return (
+		target.character_model.body_instance.mesh.get_surface_count() > 0
+		and target.character_model.weapon_instance.mesh.get_surface_count() > 0
+	)
+
+
 func _run() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_check(packed != null, "main scene loads")
@@ -55,6 +70,34 @@ func _run() -> void:
 			func(target: TargetActor) -> bool: return target.team == Combatant.TEAM_COUNTER_TERRORIST
 		),
 		"hostile bots have counter-terrorist team identity",
+	)
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return _uses_authentic_model(target)
+		),
+		"every bot uses an authentic player model instead of fallback geometry",
+	)
+	var represented_skins := {}
+	for bot in game._all_bots():
+		represented_skins[bot.player_skin] = true
+	_check(
+		represented_skins.size() == 8,
+		"all four T and all four CT player skins are represented",
+	)
+	var required_animations := ["idle", "run", "crouchidle", "crouchrun", "shoot", "die"]
+	var has_required_animations := true
+	for animation in required_animations:
+		if not game.allied_bots[0].character_model.available_animations.has(animation):
+			has_required_animations = false
+	_check(
+		has_required_animations,
+		"player models provide the original locomotion, firing, and death states",
+	)
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return _has_body_and_weapon(target)
+		),
+		"all player skins render with an attached third-person weapon",
 	)
 	_check(game.hud != null, "HUD instantiated")
 	_check(Engine.physics_ticks_per_second == 128, "128 Hz fixed physics configured")
@@ -107,6 +150,14 @@ func _run() -> void:
 	game.player._walking = false
 	for bot in game._all_bots():
 		bot.active = false
+	var animated_model: MdlCharacterModel = game.allied_bots[0].character_model
+	animated_model.set_locomotion(true)
+	animated_model._process(0.1)
+	_check(animated_model.animation_state == "run", "moving bots select the run animation")
+	animated_model.play_action("shoot")
+	animated_model._process(0.02)
+	_check(animated_model.animation_state == "shoot", "bot firing selects the shoot animation")
+	animated_model.reset_animation()
 	var duel_ally: TargetActor = game.allied_bots[0]
 	var duel_enemy: TargetActor = game.targets[0]
 	duel_ally.reset_target(Vector3(-6, 0.08, 6))
@@ -152,6 +203,10 @@ func _run() -> void:
 	_check(game.player.clip == 29, "firing consumes one round")
 	_check(not first_target.alive, "camera ray and weapon damage eliminate a target")
 	_check(game.kills == 1, "elimination advances the objective")
+	_check(
+		first_target.character_model.animation_state == "die",
+		"eliminated bots select the original death animation",
+	)
 
 	var previous_health: int = game.player.health
 	game.player.apply_damage(10.0)

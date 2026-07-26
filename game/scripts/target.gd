@@ -5,10 +5,16 @@ signal died(actor: TargetActor, headshot: bool)
 signal damaged(actor: TargetActor, health: int, headshot: bool)
 signal fired
 
+const CharacterModelScript = preload("res://scripts/mdl_character_model.gd")
+const TERRORIST_SKINS := ["terror", "leet", "arctic", "guerilla"]
+const COUNTER_TERRORIST_SKINS := ["urban", "gsg9", "sas", "gign"]
+
 var active := false
 var index := 0
 var combat_state := "idle"
 var navigation_agent: NavigationAgent3D
+var player_skin := ""
+var character_model: MdlCharacterModel
 
 var _anchor := Vector3.ZERO
 var _next_shot := 0.0
@@ -16,6 +22,7 @@ var _rng := RandomNumberGenerator.new()
 var _body_material: StandardMaterial3D
 var _body_mesh: MeshInstance3D
 var _muzzle: OmniLight3D
+var _fallback_visual: Node3D
 
 
 func _ready() -> void:
@@ -58,6 +65,9 @@ func _build_actor() -> void:
 	shape_node.position.y = 0.89
 	add_child(shape_node)
 
+	_fallback_visual = Node3D.new()
+	_fallback_visual.name = "FallbackVisual"
+	add_child(_fallback_visual)
 	_body_material = StandardMaterial3D.new()
 	_body_material.albedo_color = _team_color()
 	_body_material.roughness = 0.64
@@ -69,7 +79,7 @@ func _build_actor() -> void:
 	body.material = _body_material
 	_body_mesh.mesh = body
 	_body_mesh.position.y = 0.89
-	add_child(_body_mesh)
+	_fallback_visual.add_child(_body_mesh)
 
 	var visor_material := StandardMaterial3D.new()
 	visor_material.albedo_color = Color("#151c24")
@@ -81,7 +91,13 @@ func _build_actor() -> void:
 	visor_mesh.material = visor_material
 	visor.mesh = visor_mesh
 	visor.position = Vector3(0, 1.53, -0.29)
-	add_child(visor)
+	_fallback_visual.add_child(visor)
+
+	player_skin = _skin_for_identity()
+	character_model = CharacterModelScript.new()
+	character_model.name = "PlayerModel"
+	add_child(character_model)
+	_fallback_visual.visible = not character_model.load_character(player_skin, "ak47")
 
 	_muzzle = OmniLight3D.new()
 	_muzzle.position = Vector3(0.24, 1.15, -0.55)
@@ -97,6 +113,8 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 		last_command = {}
 		combat_state = "idle"
+		if is_instance_valid(character_model):
+			character_model.set_locomotion(false)
 		return
 	var command := combat_controller.gather_command(delta)
 	last_command = command
@@ -109,6 +127,8 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y = -0.1
 	move_and_slide()
+	if is_instance_valid(character_model):
+		character_model.set_locomotion(Vector2(velocity.x, velocity.z).length() > 0.18)
 
 	var look_target: Vector3 = command.look_target
 	if look_target != Vector3.INF:
@@ -132,15 +152,17 @@ func _try_fire(enemy: Combatant) -> void:
 		return
 	var query := PhysicsRayQueryParameters3D.create(origin, target, 1 | 2 | 4, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty() or hit.collider != enemy:
-		return
 	_muzzle.visible = true
 	get_tree().create_timer(0.04).timeout.connect(func() -> void:
 		if is_instance_valid(_muzzle):
 			_muzzle.visible = false
 	)
-	_spawn_tracer(origin, target)
-	enemy.receive_damage(_rng.randf_range(6.0, 10.0), hit.position, false, self)
+	if is_instance_valid(character_model):
+		character_model.play_action("shoot")
+	var trace_end: Vector3 = hit.get("position", target)
+	_spawn_tracer(origin, trace_end)
+	if not hit.is_empty() and hit.collider == enemy:
+		enemy.receive_damage(_rng.randf_range(6.0, 10.0), hit.position, false, self)
 	fired.emit()
 
 
@@ -184,14 +206,15 @@ func _on_combatant_damaged(
 func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
 	active = false
 	collision_layer = 0
-	var tween := create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(self, "rotation:z", deg_to_rad(82.0), 0.24)
-	tween.tween_property(self, "position:y", global_position.y - 0.32, 0.24)
+	if is_instance_valid(character_model):
+		character_model.play_death()
 	died.emit(self, headshot)
 
 
 func _flash_hit(headshot: bool) -> void:
+	if is_instance_valid(character_model) and character_model.model_loaded:
+		character_model.flash_hit(headshot)
+		return
 	var normal_color := _team_color()
 	_body_material.albedo_color = Color.WHITE if headshot else Color("#ffb087")
 	get_tree().create_timer(0.07).timeout.connect(func() -> void:
@@ -212,6 +235,8 @@ func reset_target(spawn_position: Vector3) -> void:
 		navigation_agent.target_position = spawn_position
 	if is_instance_valid(combat_controller):
 		(combat_controller as BotCombatController).current_enemy = null
+	if is_instance_valid(character_model):
+		character_model.reset_animation()
 	if is_instance_valid(_body_material):
 		_body_material.albedo_color = _team_color()
 
@@ -222,3 +247,12 @@ func _team_color() -> Color:
 		if team == TEAM_TERRORIST
 		else Color("#416f9d")
 	)
+
+
+func _skin_for_identity() -> String:
+	var skins := (
+		TERRORIST_SKINS
+		if team == TEAM_TERRORIST
+		else COUNTER_TERRORIST_SKINS
+	)
+	return skins[index % skins.size()]

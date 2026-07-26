@@ -19,6 +19,7 @@
     "game:capture": "godot --log-file /tmp/protocol47-capture.log --path game --script res://tests/capture_preview.gd",
     "game:build:mac": "mkdir -p game/builds && godot --headless --log-file /tmp/protocol47-export.log --path game --export-release macOS builds/Protocol47.zip && test -s game/builds/Protocol47.zip",
     "game:import:dust2": "cargo run --manifest-path crate/Cargo.toml --bin godot_bsp -- public/maps/de_dust2.bsp game/generated/de_dust2 public/wads/cstrike.wad public/wads/cs_dust.wad public/wads/decals.wad public/wads/classic_maps.wad",
+    "game:import:players": "bash scripts/import-game-players.sh",
     "game:import:weapons": "cargo run --manifest-path crate/Cargo.toml --bin godot_mdl -- public/models/weapons/v_ak47.mdl game/generated/weapons/ak47 && cargo run --manifest-path crate/Cargo.toml --bin godot_mdl -- public/models/weapons/v_deagle.mdl game/generated/weapons/deagle && cargo run --manifest-path crate/Cargo.toml --bin godot_mdl -- public/models/weapons/v_knife.mdl game/generated/weapons/knife && cargo run --manifest-path crate/Cargo.toml --bin godot_mdl -- public/models/weapons/v_hegrenade.mdl game/generated/weapons/hegrenade"
   },
   "dependencies": {
