@@ -37,6 +37,7 @@ const LOSER_BONUS_MAX := 3000
 const LOSER_BONUS_ADD := 500
 const DEFUSE_USE_REFRESH_TICKS := 50
 const C4_DAMAGE := 500.0
+# RadiusDamage's C4 overload expands m_flBombRadius (500) by 3.5.
 const C4_RADIUS_HU := 1750.0
 const T_ONLY_ITEMS := [
 	"glock18", "elite", "mac10", "galil", "ak47", "sg552", "g3sg1",
@@ -72,6 +73,7 @@ var round_reason := ""
 
 var players := {}
 var bomb_owner := ""
+var bomb_planter_id := ""
 var bomb_state := BOMB_NONE
 var bomb_position := Vector3.ZERO
 var bomb_site_id := ""
@@ -83,6 +85,7 @@ var frequency_interval_ticks := 0
 var beep_wave := 0
 var plant_actor := ""
 var plant_started_tick := -1
+var plant_retry_deadline_by_actor := {}
 var defuse_actor := ""
 var defuse_started_tick := -1
 var defuse_duration_ticks := 0
@@ -143,10 +146,21 @@ func advance_tick(command := {}) -> Array[Dictionary]:
 			if phase == PHASE_LIVE and tick >= deadline_tick:
 				_end_round(TEAM_CT, "target_saved", REWARD_TARGET_SAVED)
 		PHASE_BOMB:
-			_update_defuse(command.get("defuse", {}))
+			# C4Think processes expiry before accepting a new +use. The narrow
+			# ReGameDLL exception is an already-running defuse whose countdown
+			# completes on this exact blow tick.
+			var completed_defuse_on_blow_tick := (
+				tick >= bomb_deadline_tick
+				and defuse_actor != ""
+				and tick - defuse_started_tick >= defuse_duration_ticks
+			)
+			if tick >= bomb_deadline_tick and not completed_defuse_on_blow_tick:
+				_update_bomb_clock()
+			else:
+				_update_defuse(command.get("defuse", {}))
 			if phase == PHASE_BOMB:
 				_check_elimination()
-			if phase == PHASE_BOMB:
+			if phase == PHASE_BOMB and tick < bomb_deadline_tick:
 				_update_bomb_clock()
 		PHASE_POST:
 			if tick >= deadline_tick:
@@ -224,6 +238,34 @@ func pickup_bomb(player_id: String, position := Vector3.ZERO) -> bool:
 	bomb_state = BOMB_CARRIED
 	bomb_position = position
 	_emit("bomb_picked_up", {"player_id": player_id})
+	return true
+
+
+func update_dropped_bomb_position(position: Vector3) -> bool:
+	if bomb_state != BOMB_DROPPED:
+		return false
+	bomb_position = position
+	return true
+
+
+func drop_bomb(player_id: String, position := Vector3.ZERO) -> bool:
+	if (
+		bomb_state != BOMB_CARRIED
+		or player_id != bomb_owner
+		or not _is_alive_team(player_id, TEAM_T)
+	):
+		return false
+	var player: Dictionary = players[player_id]
+	player.has_c4 = false
+	players[player_id] = player
+	bomb_owner = ""
+	bomb_state = BOMB_DROPPED
+	bomb_position = position
+	_emit("bomb_dropped", {
+		"player_id": player_id,
+		"position": position,
+		"reason": "manual",
+	})
 	return true
 
 
@@ -349,21 +391,32 @@ func _start_round(distribute_accounts := true) -> void:
 	round_winner = ""
 	round_reason = ""
 	bomb_owner = ""
+	bomb_planter_id = ""
 	bomb_state = BOMB_NONE
 	bomb_position = Vector3.ZERO
 	bomb_site_id = ""
 	bomb_deadline_tick = -1
 	next_beep_tick = -1
 	next_frequency_tick = -1
+	frequency_interval_ticks = 0
+	beep_interval_ticks = 140
+	beep_wave = 0
 	plant_actor = ""
 	plant_started_tick = -1
+	plant_retry_deadline_by_actor.clear()
 	defuse_actor = ""
 	defuse_started_tick = -1
+	defuse_duration_ticks = 0
 	defuse_refresh_deadline_tick = -1
 	for player_id: String in players:
 		var player: Dictionary = players[player_id]
+		var survived_previous_round := bool(player.alive)
 		player.alive = true
 		player.has_c4 = false
+		# CS equipment is carried by survivors, but a defuse kit is a dropped
+		# death item and must not be resurrected with a respawning CT.
+		if not survived_previous_round:
+			player.has_defuser = false
 		players[player_id] = player
 	_assign_bomb()
 	round_started_tick = tick
@@ -415,7 +468,24 @@ func _update_plant(raw: Variant) -> void:
 		and bool(request.get("in_bomb_site", false))
 	)
 	if not valid:
-		_cancel_plant("interrupted")
+		var cooldown_ticks := 0
+		var reason := "interrupted"
+		if plant_actor != "":
+			if not bool(request.get("grounded", false)):
+				cooldown_ticks = 150
+				reason = "left_ground"
+			elif not bool(request.get("in_bomb_site", false)):
+				cooldown_ticks = 150
+				reason = "left_bombsite"
+			elif (
+				not bool(request.get("attack", false))
+				or not bool(request.get("equipped_c4", false))
+			):
+				cooldown_ticks = 100
+				reason = "released"
+		_cancel_plant(reason, cooldown_ticks)
+		return
+	if tick < int(plant_retry_deadline_by_actor.get(player_id, -1)):
 		return
 	if plant_actor == "":
 		plant_actor = player_id
@@ -431,6 +501,7 @@ func _update_plant(raw: Variant) -> void:
 		return
 	bomb_state = BOMB_PLANTED
 	bomb_position = request.get("position", Vector3.ZERO)
+	bomb_planter_id = player_id
 	bomb_deadline_tick = tick + int(config.c4_ticks)
 	deadline_tick = bomb_deadline_tick
 	next_beep_tick = tick + 50
@@ -448,16 +519,20 @@ func _update_plant(raw: Variant) -> void:
 		"player_id": player_id,
 		"site_id": bomb_site_id,
 		"position": bomb_position,
+		"yaw": float(request.get("yaw", 0.0)),
 		"deadline_tick": bomb_deadline_tick,
 	})
 
 
-func _cancel_plant(reason: String) -> void:
+func _cancel_plant(reason: String, cooldown_ticks := 0) -> void:
 	if plant_actor == "":
 		return
+	var cancelled_actor := plant_actor
 	_emit("plant_abort", {"player_id": plant_actor, "reason": reason})
 	plant_actor = ""
 	plant_started_tick = -1
+	if cooldown_ticks > 0:
+		plant_retry_deadline_by_actor[cancelled_actor] = tick + cooldown_ticks
 	if bomb_state == BOMB_PLANTING:
 		bomb_state = BOMB_CARRIED
 
@@ -511,6 +586,7 @@ func _update_defuse(raw: Variant) -> void:
 		return
 	bomb_state = BOMB_DEFUSED
 	var completed_by := defuse_actor
+	_grant_objective_score(completed_by, 3, "defused_bomb")
 	defuse_actor = ""
 	defuse_started_tick = -1
 	defuse_refresh_deadline_tick = -1
@@ -548,12 +624,34 @@ func _update_bomb_clock() -> void:
 		return
 	_cancel_defuse("bomb_expired")
 	bomb_state = BOMB_EXPLODED
+	_grant_objective_score(bomb_planter_id, 3, "bomb_exploded")
 	_emit("bomb_exploded", {
 		"position": bomb_position,
 		"damage": C4_DAMAGE,
 		"radius_hu": C4_RADIUS_HU,
+		# Keep player_id for the existing event consumer while carrying explicit
+		# source ownership for damage/death attribution and planted-model cleanup.
+		"player_id": bomb_planter_id,
+		"planter_id": bomb_planter_id,
+		"attacker_id": bomb_planter_id,
+		"inflictor": "c4",
+		"cleanup_world_c4": true,
 	})
 	_end_round(TEAM_T, "target_bombed", REWARD_TARGET_BOMB)
+
+
+func _grant_objective_score(player_id: String, amount: int, reason: String) -> void:
+	if player_id.is_empty() or not players.has(player_id):
+		return
+	var player: Dictionary = players[player_id]
+	player.kills = int(player.kills) + amount
+	players[player_id] = player
+	_emit("score", {
+		"player_id": player_id,
+		"amount": amount,
+		"reason": reason,
+		"score": player.kills,
+	})
 
 
 func _check_elimination() -> void:

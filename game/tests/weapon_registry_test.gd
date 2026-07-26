@@ -22,6 +22,11 @@ func _initialize() -> void:
 	_check(int(Registry.definition("flashbang").reserve_max) == 2, "flashbang carry maximum is two")
 	_check(int(Registry.definition("m249").magazine) == 100, "M249 magazine is 100 rounds")
 	_check(int(Registry.definition("p90").reserve_max) == 100, "P90 reserve cap is 100 rounds")
+	_check(
+		int(Registry.definition("c4").damage) == 500
+		and is_equal_approx(float(Registry.definition("c4").range_units), 1750.0),
+		"C4 registry separates 500 base damage from 1750 HU effective radius",
+	)
 
 	for weapon_name: String in Registry.ROSTER:
 		var item := Registry.definition(weapon_name)

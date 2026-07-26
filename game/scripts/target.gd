@@ -33,6 +33,12 @@ var weapon_reserve := BotTacticsScript.AK_RESERVE_SIZE
 var weapon_reloading := false
 var weapon_tick := 0
 var shot_trace: Array[Dictionary] = []
+var owns_c4 := false
+var c4_equipped := false
+var c4_deploy_ready_tick := -1
+var objective_movement_locked := false
+var objective_crouch := false
+var objective_look_target := Vector3.INF
 
 var _anchor := Vector3.ZERO
 var _body_material: StandardMaterial3D
@@ -59,10 +65,14 @@ func _ready() -> void:
 	add_to_group("bots")
 	add_to_group("targets")
 	collision_layer = 2
-	# GoldSrc player hulls are solid to the BSP and to every live player. RVO is
-	# still used to choose smooth velocities, while the physical mask provides
-	# the authoritative no-overlap backstop for bots, allies, and the player.
+	# GoldSrc player hulls are solid to the BSP and to every live player.
+	# CharacterBody collision is authoritative; asynchronous RVO is deliberately
+	# disabled because identical 100 Hz replays must produce identical travel.
 	collision_mask = 1 | 2 | 4
+	# Keep the swept 32 HU hull a half-unit off BSP planes. This matches the
+	# separation epsilon GoldSrc's PMove retains after clipping and prevents a
+	# solved wall contact from being reported as a one-frame penetration.
+	safe_margin = 0.25 * GOLDSRC_UNIT
 	floor_max_angle = acos(FLOOR_NORMAL_MINIMUM)
 	floor_snap_length = FLOOR_CATEGORIZE_DISTANCE
 	floor_stop_on_slope = true
@@ -92,8 +102,7 @@ func _build_navigation_agent() -> void:
 	navigation_agent.neighbor_distance = 2.2
 	navigation_agent.max_neighbors = 8
 	navigation_agent.time_horizon_agents = 0.65
-	navigation_agent.avoidance_enabled = true
-	navigation_agent.velocity_computed.connect(_on_safe_velocity_computed)
+	navigation_agent.avoidance_enabled = false
 	add_child(navigation_agent)
 
 
@@ -163,29 +172,47 @@ func _physics_process(delta: float) -> void:
 			character_model.set_locomotion(false, false, is_on_floor())
 		return
 	var command := combat_controller.gather_command(delta)
+	if objective_movement_locked:
+		command.world_velocity = Vector3.ZERO
+		command.fire = false
+		command.reload = false
+		command.crouch = objective_crouch
+		if objective_look_target != Vector3.INF:
+			command.look_target = objective_look_target
 	last_command = command
 	combat_state = command.state
 	var look_target: Vector3 = command.look_target
 	if look_target != Vector3.INF:
 		face_aim_target(look_target)
 	var desired_velocity: Vector3 = command.world_velocity
-	navigation_agent.velocity = desired_velocity
-	var movement_velocity := (
-		_safe_navigation_velocity
-		if _navigation_velocity_ready
-		else desired_velocity
-	)
-	# RVO may rotate the controller's already-validated strafe velocity toward
-	# a wall. Validate the final avoidance output against the physical GoldSrc
-	# hull as well, otherwise a distant engagement can wedge a bot a fraction
-	# of a unit into BSP.
+	var movement_velocity := desired_velocity
 	var planar_motion := Vector3(
 		movement_velocity.x,
 		0.0,
 		movement_velocity.z,
-	) * maxf(delta, 0.12)
+	) * maxf(delta, 0.02)
 	if test_move(global_transform, planar_motion, null, 0.015):
-		movement_velocity = Vector3.ZERO
+		var x_motion := Vector3(planar_motion.x, 0.0, 0.0)
+		var z_motion := Vector3(0.0, 0.0, planar_motion.z)
+		var x_clear := (
+			absf(x_motion.x) > 0.000001
+			and not test_move(global_transform, x_motion, null, 0.015)
+		)
+		var z_clear := (
+			absf(z_motion.z) > 0.000001
+			and not test_move(global_transform, z_motion, null, 0.015)
+		)
+		if x_clear and z_clear:
+			# Two clear axis sweeps can recombine into a blocked convex-corner
+			# diagonal. GoldSrc clips one contact plane at a time, so keep only
+			# the dominant component for this tick.
+			if absf(x_motion.x) >= absf(z_motion.z):
+				movement_velocity.z = 0.0
+			else:
+				movement_velocity.x = 0.0
+		else:
+			movement_velocity.x = movement_velocity.x if x_clear else 0.0
+			movement_velocity.z = movement_velocity.z if z_clear else 0.0
 	velocity.x = movement_velocity.x
 	velocity.z = movement_velocity.z
 	if not is_on_floor():
@@ -200,6 +227,8 @@ func _physics_process(delta: float) -> void:
 			bool(command.crouch),
 			is_on_floor(),
 		)
+	if command.has("c4_equipped"):
+		set_c4_state(owns_c4, bool(command.c4_equipped))
 	consume_combat_weapon_command(command)
 
 
@@ -218,7 +247,7 @@ func consume_combat_weapon_command(command: Dictionary) -> void:
 		_emit_audio("ak47.clip_in", AudioRouterScript.CHAN_ITEM)
 
 	var enemy := command.enemy as Combatant
-	if command.fire and is_instance_valid(enemy):
+	if command.fire and not c4_equipped and is_instance_valid(enemy):
 		var fire_events: Array = command.get("fire_events", [])
 		if fire_events.is_empty():
 			fire_events = [{
@@ -251,15 +280,6 @@ func face_aim_target(world_target: Vector3) -> void:
 	# this child so aiming only rotates the actor's visuals, never its 32 HU hull.
 	if is_instance_valid(_collision_shape):
 		_collision_shape.rotation.y = -rotation.y
-
-
-func _on_safe_velocity_computed(safe_velocity: Vector3) -> void:
-	if active and alive:
-		_safe_navigation_velocity = safe_velocity
-		_navigation_velocity_ready = true
-	else:
-		_safe_navigation_velocity = Vector3.ZERO
-		_navigation_velocity_ready = false
 
 
 func _try_fire(
@@ -529,6 +549,7 @@ func reset_target(spawn_position: Vector3) -> void:
 		_collision_shape.rotation = Vector3.ZERO
 	combat_state = "idle"
 	if is_instance_valid(navigation_agent):
+		navigation_agent.avoidance_enabled = false
 		navigation_agent.target_position = spawn_position
 		navigation_agent.velocity = Vector3.ZERO
 	_safe_navigation_velocity = Vector3.ZERO
@@ -541,6 +562,8 @@ func reset_target(spawn_position: Vector3) -> void:
 	weapon_reloading = false
 	weapon_tick = 0
 	shot_trace.clear()
+	set_objective_lock(false)
+	set_c4_state(false, false)
 	_next_footstep_tick = audio_router.current_tick if is_instance_valid(audio_router) else 0
 	_left_foot = false
 	_footstep_serial = 0
@@ -550,6 +573,56 @@ func reset_target(spawn_position: Vector3) -> void:
 		character_model.reset_animation()
 	if is_instance_valid(_body_material):
 		_body_material.albedo_color = _team_color()
+
+
+func set_c4_state(owned: bool, equipped: bool) -> void:
+	owns_c4 = owned
+	var next_equipped := owned and equipped
+	if c4_equipped == next_equipped:
+		return
+	c4_equipped = next_equipped
+	c4_deploy_ready_tick = weapon_tick + 75 if c4_equipped else -1
+	if is_instance_valid(navigation_agent):
+		navigation_agent.max_speed = (
+			250.0 * GOLDSRC_UNIT
+			if c4_equipped
+			else AK47_MAX_SPEED
+		)
+	if is_instance_valid(character_model):
+		_replace_character_weapon("c4" if c4_equipped else "ak47")
+		if c4_equipped:
+			character_model.set_locomotion(false, true, is_on_floor())
+			character_model.play_action("shoot")
+
+
+func c4_ready_for_plant() -> bool:
+	return c4_equipped and c4_deploy_ready_tick >= 0 and weapon_tick >= c4_deploy_ready_tick
+
+
+func _replace_character_weapon(weapon_name: String) -> void:
+	if is_instance_valid(character_model):
+		remove_child(character_model)
+		character_model.queue_free()
+	character_model = CharacterModelScript.new()
+	character_model.name = "PlayerModel"
+	add_child(character_model)
+	_fallback_visual.visible = not character_model.load_character(
+		player_skin,
+		weapon_name,
+	)
+
+
+func set_objective_lock(
+	locked: bool,
+	crouched := false,
+	look_target := Vector3.INF,
+) -> void:
+	objective_movement_locked = locked
+	objective_crouch = locked and crouched
+	objective_look_target = look_target if locked else Vector3.INF
+	if locked:
+		velocity.x = 0.0
+		velocity.z = 0.0
 
 
 func _team_color() -> Color:

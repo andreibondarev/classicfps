@@ -55,6 +55,24 @@ func _run() -> void:
 		"knife attack selects an original knife sequence",
 	)
 
+	_check(viewmodel.load_weapon("c4"), "animated C4 viewmodel loads")
+	_check(
+		viewmodel.base_position == MdlViewModel.C4_BASE_POSITION
+		and viewmodel.model_root.scale == MdlViewModel.C4_MODEL_SCALE,
+		"C4 uses its source-model-specific full-frame calibration",
+	)
+	_check(
+		viewmodel._template.animations.has("draw")
+		and viewmodel._template.animations.has("pressbutton")
+		and viewmodel._template.animations.has("drop"),
+		"C4 exposes the original deploy/arming/final-drop sequence strip",
+	)
+	_check(
+		is_instance_valid(viewmodel._model_instance)
+		and viewmodel._model_instance.mesh.get_surface_count() == 8,
+		"C4 renders every original v_c4 texture group",
+	)
+
 	if not _failures.is_empty():
 		for failure: String in _failures:
 			push_error(failure)

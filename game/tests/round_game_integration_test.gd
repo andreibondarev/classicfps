@@ -110,16 +110,44 @@ func _run() -> void:
 	]
 	game._consume_round_events(defuse_start_events)
 	_check(
-		not game.player.controls_enabled,
-		"human defuse start freezes movement at the live integration boundary",
+		game.player.controls_enabled
+		and game.player.objective_movement_locked,
+		"human defuse start locks translation while preserving source view/+use controls",
+	)
+	var locked_position: Vector3 = game.player.global_position
+	var locked_yaw: float = game.player.rotation.y
+	var locked_pitch: float = game.player.camera.rotation.x
+	var look_event := InputEventMouseMotion.new()
+	look_event.relative = Vector2(24.0, -12.0)
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	game.player._input(look_event)
+	game.player._physics_process(0.01)
+	var locked_distance: float = game.player.global_position.distance_to(locked_position)
+	var yaw_changed: bool = not is_equal_approx(game.player.rotation.y, locked_yaw)
+	var pitch_changed: bool = not is_equal_approx(
+		game.player.camera.rotation.x,
+		locked_pitch,
+	)
+	_check(
+		locked_distance <= 0.01
+		and Vector2(game.player.velocity.x, game.player.velocity.z).length() <= 0.01
+		and is_equal_approx(game.player._movement_speed(false, false), 0.01)
+		and yaw_changed
+		and pitch_changed,
+		(
+			"active defuse accepts mouse yaw/pitch under the source 1-HU/s cap "
+			+ "(distance=%.6f yaw=%s pitch=%s)"
+			% [locked_distance, yaw_changed, pitch_changed]
+		),
 	)
 	var defuse_abort_events: Array[Dictionary] = [
 		{"type": "defuse_abort", "player_id": "player"},
 	]
 	game._consume_round_events(defuse_abort_events)
 	_check(
-		game.player.controls_enabled,
-		"human defuse abort immediately restores live controls",
+		game.player.controls_enabled
+		and not game.player.objective_movement_locked,
+		"human defuse abort immediately restores live movement",
 	)
 	game.phase = "live"
 

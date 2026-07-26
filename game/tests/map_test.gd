@@ -15,7 +15,10 @@ func _check(condition: bool, message: String) -> void:
 
 func _has_bot_path(targets: Array[TargetActor]) -> bool:
 	for target in targets:
-		if target.navigation_agent.get_current_navigation_path().size() > 1:
+		if (
+			target.combat_controller is BotCombatController
+			and (target.combat_controller as BotCombatController)._objective_route.size() > 1
+		):
 			return true
 	return false
 
@@ -67,7 +70,24 @@ func _run() -> void:
 		),
 		"both teams use the shared bot controller",
 	)
-	_check(game.targets.all(func(target: TargetActor) -> bool: return target.combat_state == "hunt"), "distant bots enter hunt state")
+	var ct_states: Array[String] = []
+	var ct_states_are_active := true
+	for target: TargetActor in game.targets:
+		ct_states.append(target.combat_state)
+		ct_states_are_active = (
+			ct_states_are_active
+				and target.combat_state in ["patrol", "defend_site"]
+		)
+	_check(
+		ct_states_are_active,
+		"distant CT bots enter an active hunt or bombsite-defense state: %s"
+		% [ct_states],
+	)
+	_check(
+		ct_states.has("patrol") and ct_states.has("defend_site"),
+		"Dust2 CTs split between patrol and bombsite defense roles: %s"
+		% [ct_states],
+	)
 	_check(_has_bot_path(game._all_bots()), "Dust2 produces at least one team bot path")
 
 	if failures.is_empty():

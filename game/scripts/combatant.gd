@@ -26,6 +26,7 @@ var has_helmet := false
 var alive := true
 var combat_controller: CombatController
 var last_command: Dictionary = {}
+var last_damage_attacker: Combatant
 
 
 func _ready() -> void:
@@ -120,12 +121,32 @@ func receive_explosion_damage(
 	)
 
 
+func receive_c4_explosion_damage(
+	raw_damage: float,
+	hit_position := Vector3.ZERO,
+	attacker: Combatant = null,
+) -> bool:
+	if not alive or raw_damage <= 0.0:
+		return false
+	# C4 RadiusDamage is objective world damage: unlike bullets and grenades it
+	# reaches the planter and teammates regardless of the normal ally filter.
+	var result := Ballistics.apply_explosion_armor(raw_damage, float(armor))
+	armor = maxi(0, int(float(result.armor_remaining)))
+	return _commit_damage(
+		int(result.health_damage),
+		hit_position,
+		false,
+		attacker,
+	)
+
+
 func _commit_damage(
 	health_damage: int,
 	hit_position: Vector3,
 	headshot: bool,
 	attacker: Combatant,
 ) -> bool:
+	last_damage_attacker = attacker if is_instance_valid(attacker) else null
 	health = maxi(0, health - maxi(health_damage, 0))
 	_on_combatant_damaged(attacker, hit_position, headshot)
 	combatant_damaged.emit(self, attacker, health, headshot)
@@ -144,6 +165,7 @@ func reset_combatant(spawn_position: Vector3, starting_armor := 0) -> void:
 		has_helmet = false
 	alive = true
 	last_command = {}
+	last_damage_attacker = null
 	velocity = Vector3.ZERO
 	global_position = spawn_position
 

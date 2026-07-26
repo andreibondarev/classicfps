@@ -44,6 +44,7 @@ const EVENT_HE_SMOKE := "he_smoke"
 const EVENT_HE_SPARKS := "he_sparks"
 const EVENT_HE_FLICKER := "he_flicker"
 const EVENT_HE_LIGHT := "he_light"
+const EVENT_C4_FIREBALL := "c4_fireball"
 const EVENT_RICOCHET := "ricochet"
 const EVENT_SOUND := "sound"
 
@@ -303,6 +304,56 @@ func spawn_he_explosion(position: Vector3, normal: Vector3) -> void:
 		position,
 		"debris%d" % (serial % 3 + 1),
 	)
+
+
+func spawn_c4_explosion(position: Vector3, normal: Vector3, underwater := false) -> void:
+	var serial := _next_serial()
+	# CGrenade::Explode2 emits four large sprites. Scale 25 is derived from the
+	# stock 500-damage C4 expression `(dmg - 275) * .6` / ten.
+	var offsets := [
+		Vector3(0.0, -0.10, 0.0),
+		Vector3(
+			_signed_hash(serial, 17) * 5.12,
+			_signed_hash(serial, 31) * 0.10,
+			_signed_hash(serial, 47) * 5.12,
+		),
+		Vector3(
+			_signed_hash(serial, 61) * 5.12,
+			_signed_hash(serial, 73) * 0.10,
+			_signed_hash(serial, 89) * 5.12,
+		),
+		Vector3(
+			_signed_hash(serial, 101) * 5.12,
+			_signed_hash(serial, 113) * 0.10,
+			_signed_hash(serial, 127) * 5.12,
+		),
+	]
+	# The fourth stock sprite is zerogxplode. The CS depot fixture carries only
+	# fexplo/eexplo, so retain the exact fourth temp entity with fexplo until
+	# that Half-Life base sprite is present in the verified asset corpus.
+	var assets := ["fexplo", "eexplo", "fexplo", "fexplo"]
+	for index in offsets.size():
+		var node := _spawn_sprite(
+			assets[index],
+			position + offsets[index],
+			13.5,
+			15.0 if index < 3 else 1.7,
+			EVENT_C4_FIREBALL,
+			0,
+			false,
+		)
+		if is_instance_valid(node):
+			_spawn_explosion_lights(node, node.position, 12.0, 100, serial + index)
+	spawn_decal(
+		"scorch%d" % (serial % 2 + 1),
+		position,
+		normal,
+		"scorch",
+		serial,
+	)
+	# Explode2 suppresses only its spark shower when PointContents is water.
+	if not underwater:
+		_spawn_spark_shower(position, normal, serial % 4, serial)
 
 
 func _spawn_te_explosion(

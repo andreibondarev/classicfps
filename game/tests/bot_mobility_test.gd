@@ -69,9 +69,33 @@ func _run() -> void:
 	var floor_error_count := 0
 	var world_intersection_count := 0
 	var violation_samples: Array[Dictionary] = []
+	var canonical_chain := "protocol47-bot-logical-v1"
+	var canonical_checkpoints: Array[Dictionary] = []
+	var canonical_combatants: Array[Node3D] = combatants.duplicate()
+	canonical_combatants.sort_custom(
+		func(first: Node3D, second: Node3D) -> bool:
+			return str(first.name) < str(second.name)
+	)
 
 	for tick in range(TICK_COUNT):
 		await physics_frame
+		canonical_chain = (
+			canonical_chain
+			+ "|"
+			+ JSON.stringify(
+				_canonical_logical_snapshot(game, canonical_combatants, tick + 1),
+			)
+		).sha256_text()
+		if (tick + 1) % 100 == 0:
+			var physical_snapshot := _canonical_physical_snapshot(
+				canonical_combatants,
+			)
+			canonical_checkpoints.append({
+				"tick": tick + 1,
+				"logical_sha256": canonical_chain,
+				"physical_sha256": JSON.stringify(physical_snapshot).sha256_text(),
+				"physical": physical_snapshot,
+			})
 		var space_state: PhysicsDirectSpaceState3D = (
 			game.get_world_3d().direct_space_state
 		)
@@ -177,12 +201,26 @@ func _run() -> void:
 		"floor_error_over_2hu_count": floor_error_count,
 		"bsp_hull_intersection_count": world_intersection_count,
 		"bot_travel_hu": travel_hu,
+		"canonical_quantum_hu": 1.0 / 64.0,
+		"canonical_signature_sha256": canonical_chain,
+		"canonical_100_tick_checkpoints": canonical_checkpoints,
 		"violation_samples": violation_samples,
 	}
 	var artifact_file := FileAccess.open(ARTIFACT_PATH, FileAccess.WRITE)
 	_check(artifact_file != null, "crowd-gate artifact opens")
 	if artifact_file != null:
 		artifact_file.store_string(JSON.stringify(artifact, "\t"))
+	var signature_path := _signature_output_path()
+	if not signature_path.is_empty():
+		var signature_file := FileAccess.open(signature_path, FileAccess.WRITE)
+		_check(signature_file != null, "canonical signature artifact opens")
+		if signature_file != null:
+			signature_file.store_string(JSON.stringify({
+				"quantum_hu": 1.0 / 64.0,
+				"ticks": TICK_COUNT,
+				"sha256": canonical_chain,
+				"checkpoints": canonical_checkpoints,
+			}, "\t"))
 
 	_check(pair_overlap_count == 0, "32 HU pair hulls never overlap on both X and Z")
 	_check(missing_floor_count == 0, "every combatant has a valid BSP floor trace")
@@ -232,6 +270,59 @@ func _add_sample(samples: Array[Dictionary], sample: Dictionary) -> void:
 
 func _vector_array(value: Vector3) -> Array[float]:
 	return [value.x, value.y, value.z]
+
+
+func _canonical_logical_snapshot(
+	game: Node,
+	combatants: Array[Node3D],
+	tick: int,
+) -> Dictionary:
+	var actors: Array[Dictionary] = []
+	for actor: Node3D in combatants:
+		var command: Dictionary = actor.last_command
+		actors.append({
+			"id": str(actor.name),
+			"alive": bool(actor.alive),
+			"state": (
+				str((actor as TargetActor).combat_state)
+				if actor is TargetActor
+				else "human"
+			),
+			"objective": str(command.get("objective_action", "")),
+			"weapon_tick": int(command.get("weapon_tick", -1)),
+		})
+	return {
+		"tick": tick,
+		"phase": str(game.round_state.phase),
+		"bomb_state": str(game.round_state.bomb_state),
+		"round_tick": int(game.round_state.tick),
+		"actors": actors,
+	}
+
+
+func _canonical_physical_snapshot(combatants: Array[Node3D]) -> Array[Dictionary]:
+	var actors: Array[Dictionary] = []
+	for actor: Node3D in combatants:
+		actors.append({
+			"id": str(actor.name),
+			"position_q64_hu": _quantized_vector(actor.global_position),
+		})
+	return actors
+
+
+func _quantized_vector(value: Vector3) -> Array[int]:
+	return [
+		int(round(value.x / 0.01 * 64.0)),
+		int(round(value.y / 0.01 * 64.0)),
+		int(round(value.z / 0.01 * 64.0)),
+	]
+
+
+func _signature_output_path() -> String:
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--signature-output="):
+			return argument.trim_prefix("--signature-output=")
+	return ""
 
 
 func _trace_hull_floor(

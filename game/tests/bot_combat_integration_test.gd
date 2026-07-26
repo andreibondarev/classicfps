@@ -85,8 +85,6 @@ func _prepare_duel(clip: int, reserve: int) -> BotCombatController:
 	victim.has_helmet = true
 	var controller := shooter.combat_controller as BotCombatController
 	controller.reset_tactics()
-	controller.current_enemy = victim
-	controller._next_target_refresh = 1000.0
 	controller.tactics.clip = clip
 	controller.tactics.reserve = reserve
 	shooter.weapon_clip = clip

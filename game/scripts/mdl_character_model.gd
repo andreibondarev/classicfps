@@ -211,11 +211,26 @@ func advance_animation(delta: float) -> void:
 		state_time = _action_time
 		loop = false
 		var action_meta: Dictionary = _body_template.animations.get(_action_state, {})
-		var duration := (
+		var body_duration := (
 			float(action_meta.frames) / maxf(1.0, float(action_meta.fps))
 			if not action_meta.is_empty()
 			else 0.0
 		)
+		var weapon_action_meta: Dictionary = _weapon_template.animations.get(
+			_action_state,
+			{},
+		)
+		var weapon_duration := (
+			float(weapon_action_meta.frames)
+			/ maxf(1.0, float(weapon_action_meta.fps))
+			if not weapon_action_meta.is_empty()
+			else 0.0
+		)
+		# p_c4 carries the authored four/five-second plant activity while the
+		# base player model's generic shoot alias is much shorter. The attached
+		# weapon animation is not allowed to disappear after the body's first
+		# 0.167 s; both samplers remain active for the longest source tape.
+		var duration := maxf(body_duration, weapon_duration)
 		if _action_time >= duration:
 			_action_state = ""
 			_action_time = 0.0

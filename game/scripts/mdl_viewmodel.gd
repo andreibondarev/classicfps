@@ -5,6 +5,11 @@ const CharacterModelScript := preload("res://scripts/mdl_character_model.gd")
 const MAX_VISUAL_FPS := 60.0
 const CLASSIC_BASE_POSITION := Vector3(0.16, -0.075, -0.36)
 const CLASSIC_MODEL_SCALE := Vector3(-0.63, 1.0, -1.0)
+# v_c4 is authored substantially closer to the GoldSrc view origin than the
+# firearm models. This source-specific calibration keeps the keypad/device
+# centered and legible while the forearms naturally exit the lower-right frame.
+const C4_BASE_POSITION := Vector3(0.42, -0.03, -0.62)
+const C4_MODEL_SCALE := Vector3(-2.70, 4.30, -4.30)
 
 var loaded_weapon := ""
 var model_root: Node3D
@@ -47,7 +52,9 @@ func load_weapon(weapon: String) -> bool:
 	model_root.rotation.y = 0.0
 	# GoldSrc viewmodels are authored for a left-handed model coordinate basis
 	# and mirrored by the client into the conventional right-hand view.
-	model_root.scale = CLASSIC_MODEL_SCALE
+	base_position = C4_BASE_POSITION if weapon == "c4" else CLASSIC_BASE_POSITION
+	position = base_position
+	model_root.scale = C4_MODEL_SCALE if weapon == "c4" else CLASSIC_MODEL_SCALE
 	add_child(model_root)
 
 	_model_instance = CharacterModelScript._create_instance(

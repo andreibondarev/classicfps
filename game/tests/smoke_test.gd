@@ -228,8 +228,14 @@ func _run() -> void:
 	var duel_enemy: TargetActor = game.targets[0]
 	duel_ally.reset_target(Vector3(-6, 0.08, 6))
 	duel_enemy.reset_target(Vector3(-6, 0.08, 1))
+	duel_ally.face_aim_target(duel_enemy.aim_point())
+	duel_ally.combat_controller.reset_tactics()
 	await physics_frame
-	var bot_command: Dictionary = duel_ally.combat_controller.gather_command(1.0 / 100.0)
+	var bot_command: Dictionary
+	# Source bot vision scans on a deterministic 10-tick cadence rather than
+	# reading every enemy transform on the first arbitrary render frame.
+	for perception_tick in range(10):
+		bot_command = duel_ally.combat_controller.gather_command(1.0 / 100.0)
 	_check(bot_command.enemy == duel_enemy, "bot perception selects the nearest opposing combatant")
 	_check(bot_command.state == "react", "visible opposing bots honor acquisition reaction time")
 	for reaction_tick in range(18):

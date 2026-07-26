@@ -72,6 +72,9 @@ const RECOIL_PATTERN := [
 ]
 
 var controls_enabled := false
+var objective_movement_locked := false
+var objective_lock_origin := Vector3.ZERO
+var objective_crouch_locked := false
 var active_weapon := "ak47"
 var clip := 30
 var reserve := 90
@@ -167,6 +170,7 @@ func _configure_input() -> void:
 	_ensure_key_action("walk", KEY_SHIFT)
 	_ensure_key_action("reload", KEY_R)
 	_ensure_key_action("use", KEY_E)
+	_ensure_key_action("drop", KEY_G)
 	_ensure_key_action("weapon_primary", KEY_1)
 	_ensure_key_action("weapon_secondary", KEY_2)
 	_ensure_key_action("weapon_melee", KEY_3)
@@ -289,6 +293,8 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var command := combat_controller.gather_command(delta)
+	if objective_movement_locked:
+		command.crouch = objective_crouch_locked
 	last_command = command
 	_drop_punch_angle()
 	_movement_grounded = movement_kernel.categorize_ground(velocity)
@@ -483,6 +489,10 @@ func _prevent_mega_bunny_jumping() -> void:
 
 
 func _movement_speed(crouching: bool, walking: bool) -> float:
+	if objective_movement_locked:
+		# CBasePlayer::ResetMaxSpeed caps active plant/defuse actors at 1 HU/s.
+		# Keeping the tiny non-zero source cap also preserves view/+use input.
+		return GOLDSRC_UNIT
 	var speed := _maximum_speed(walking)
 	return speed * DUCK_SPEED_MULTIPLIER if crouching else speed
 
@@ -504,6 +514,16 @@ func set_max_speed(max_speed_units_per_second: float) -> void:
 	# Mirrors playermove_t::clientmaxspeed. Pass zero to return control to the
 	# active weapon's CS 1.6 max-speed value.
 	_max_speed_override_ups = maxf(0.0, max_speed_units_per_second)
+
+
+func set_objective_movement_locked(locked: bool, force_crouch := false) -> void:
+	if locked and not objective_movement_locked:
+		objective_lock_origin = global_position
+	objective_movement_locked = locked
+	objective_crouch_locked = locked and force_crouch
+	if locked:
+		velocity.x = 0.0
+		velocity.z = 0.0
 
 
 func _update_crouch(delta: float, wants_crouch: bool) -> void:
@@ -687,6 +707,10 @@ func _emit_due_audio() -> void:
 
 func _try_fire(burst_followup := false) -> void:
 	if reloading:
+		return
+	if active_weapon == "c4":
+		# The authoritative 100 Hz round state consumes held primary attack.
+		# C4 never enters FireBullets3 and never consumes a firearm clip here.
 		return
 	if active_weapon == "knife":
 		_fire_knife()
@@ -1341,6 +1365,8 @@ func _on_combatant_damaged(
 
 func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
 	controls_enabled = false
+	objective_movement_locked = false
+	objective_crouch_locked = false
 	reloading = false
 	_audio_schedule.clear()
 	_emit_audio(
@@ -1363,6 +1389,8 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	clip = int(ammunition[active_weapon].clip)
 	reserve = int(ammunition[active_weapon].reserve)
 	velocity = Vector3.ZERO
+	objective_movement_locked = false
+	objective_crouch_locked = false
 	_standing = true
 	_walking = false
 	_duck_elapsed = 0.0

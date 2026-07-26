@@ -8,6 +8,12 @@ const AudioRouterScript = preload("res://scripts/cs16_audio_event_router.gd")
 const AudioPlaybackScript = preload("res://scripts/cs16_audio_playback_adapter.gd")
 const RoundStateScript = preload("res://scripts/cs16_round_state.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
+const C4WorldScript = preload("res://scripts/cs16_c4_world.gd")
+const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
+const BombKnowledgeScript = preload("res://scripts/cs16_bomb_knowledge.gd")
+const PlayerUseResolverScript = preload("res://scripts/cs16_player_use_resolver.gd")
+const C4DropContractScript = preload("res://scripts/cs16_c4_drop_contract.gd")
+const BombEscapeScript = preload("res://scripts/cs16_bomb_escape.gd")
 
 const FREEZE_SECONDS := 6.0
 const ROUND_SECONDS := 300.0
@@ -16,6 +22,8 @@ const PLANT_SECONDS := 3.0
 const GOLDSRC_UNIT := 0.01
 const MAX_PLAYER_USE_RADIUS := 64.0 * GOLDSRC_UNIT
 const VIEW_FIELD_NARROW := 0.7
+const BOT_DEFUSER_STALL_FRAMES := 500
+const BOT_DEFUSER_PROGRESS_EPSILON := 8.0 * GOLDSRC_UNIT
 const LEGACY_BUY_RADIUS := 200.0 * GOLDSRC_UNIT
 const IMPORTED_MAP_PATH := "res://generated/de_dust2/map.json"
 const FALLBACK_PLAYER_SPAWN := Vector3(0, 0.08, 12)
@@ -102,6 +110,7 @@ var money := 800
 var plant_progress := 0.0
 var bomb_planted := false
 var bomb: Node3D
+var dropped_c4: CS16C4World
 var bomb_position := Vector3.ZERO
 var bomb_sites: Array[Vector3] = []
 var bomb_regions: Array[Dictionary] = []
@@ -121,6 +130,14 @@ var round_state: RefCounted
 var _consumed_round_events := 0
 var _last_hud_second := -1
 var _c4_equipped := false
+var _c4_drop_animation_played := false
+var _bot_site_assignments: Dictionary = {}
+var _bot_defuser_id := ""
+var _bot_defuser_progress_position := Vector3.INF
+var _bot_defuser_last_progress_frame := -1
+var _bot_defuser_stalled_ids: Dictionary = {}
+var _ct_bomb_location_known := false
+var bomb_knowledge: CS16BombKnowledge
 var selected_class_id := 1
 var selected_player_skin := "terror"
 
@@ -192,6 +209,7 @@ func _physics_process(delta: float) -> void:
 		and not get_tree().paused
 		and is_instance_valid(round_state)
 	):
+		_sync_dropped_c4_position()
 		var round_events: Array[Dictionary] = round_state.advance_tick(
 			_round_tick_command()
 		)
@@ -307,13 +325,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		and key_event.keycode == KEY_5
 		and phase == RoundStateScript.PHASE_LIVE
 	):
-		_c4_equipped = (
-			is_instance_valid(round_state)
-			and str(round_state.bomb_owner) == "player"
-			and str(round_state.bomb_state) == RoundStateScript.BOMB_CARRIED
-		)
+		_c4_equipped = _equip_player_c4()
 		if _c4_equipped:
 			hud.update_objective("C4 EQUIPPED  •  HOLD FIRE IN A BOMB SITE")
+	elif (
+		key_event.pressed
+		and not key_event.echo
+		and key_event.keycode == KEY_G
+	):
+		_request_drop_active_weapon()
 	elif (
 		key_event.pressed
 		and not key_event.echo
@@ -785,6 +805,24 @@ func _build_round_state() -> void:
 		round_state.register_player(bot.name, bot.team)
 	for bot in targets:
 		round_state.register_player(bot.name, bot.team)
+	bomb_knowledge = BombKnowledgeScript.new()
+	_refresh_bomb_knowledge_roster()
+
+
+func _refresh_bomb_knowledge_roster() -> void:
+	if not is_instance_valid(bomb_knowledge):
+		return
+	bomb_knowledge.register_actor("player", _knowledge_team(player.team))
+	for bot in _all_bots():
+		bomb_knowledge.register_actor(bot.name, _knowledge_team(bot.team))
+
+
+func _knowledge_team(team: String) -> String:
+	return (
+		BombKnowledgeScript.TEAM_CT
+		if team == Combatant.TEAM_COUNTER_TERRORIST
+		else BombKnowledgeScript.TEAM_T
+	)
 
 
 func _build_bomb_sites() -> void:
@@ -929,6 +967,7 @@ func _apply_bot_sides(player_team: String) -> void:
 		if bot_index < target_spawns.size():
 			targets[bot_index].reset_target(target_spawns[bot_index])
 			targets[bot_index].active = false
+	_refresh_bomb_knowledge_roster()
 
 
 func _set_bot_team(bot: TargetActor, team: String) -> void:
@@ -993,7 +1032,9 @@ func _on_target_died(target: TargetActor, headshot: bool) -> void:
 			target.name,
 			false,
 			target.global_position,
-			"player" if target.team == Combatant.TEAM_COUNTER_TERRORIST else "",
+			_round_id_for_actor(target.last_damage_attacker)
+			if is_instance_valid(target.last_damage_attacker)
+			else "",
 		)
 		_consume_new_round_trace()
 		_sync_round_public_state()
@@ -1026,7 +1067,9 @@ func _on_player_died() -> void:
 			"player",
 			false,
 			player.global_position,
-		"",
+			_round_id_for_actor(player.last_damage_attacker)
+			if is_instance_valid(player.last_damage_attacker)
+			else "",
 		)
 		_consume_new_round_trace()
 		_sync_round_public_state()
@@ -1077,19 +1120,47 @@ func _reset_round() -> void:
 
 func _round_tick_command() -> Dictionary:
 	var command := {}
-	if phase == RoundStateScript.PHASE_LIVE and is_instance_valid(player):
+	if phase == RoundStateScript.PHASE_LIVE:
+		var carrier := _actor_for_round_id(str(round_state.bomb_owner))
+		if not is_instance_valid(carrier):
+			return command
 		var site := _bomb_region_at(
-			player.global_position,
-			_player_hull_size(),
+			carrier.global_position,
+			_player_hull_size()
+			if carrier == player
+			else TargetActor.STANDING_HULL_SIZE,
+		)
+		var is_human_carrier := carrier == player
+		var bot_command: Dictionary = carrier.last_command
+		var c4_is_equipped := (
+			player.active_weapon == "c4"
+			if is_human_carrier
+			else bool((carrier as TargetActor).c4_equipped)
 		)
 		command.plant = {
-			"player_id": "player",
-			"attack": Input.is_action_pressed("fire"),
-			"equipped_c4": _c4_equipped,
-			"grounded": player.is_on_floor(),
+			"player_id": _round_id_for_actor(carrier),
+			"attack": (
+				(
+					Input.is_action_pressed("fire")
+					and player.weapon_clock.can_primary_attack()
+				)
+				if is_human_carrier
+				else (
+					str(bot_command.get("objective_action", "")) == "plant"
+					and not site.is_empty()
+					and (carrier as TargetActor).c4_ready_for_plant()
+				)
+			),
+			"equipped_c4": c4_is_equipped,
+			"grounded": (
+				_player_objective_grounded()
+				if is_human_carrier
+				else carrier.is_on_floor()
+			),
 			"in_bomb_site": not site.is_empty(),
 			"site_id": str(site.get("target", "")),
-			"position": player.global_position,
+			"position": carrier.global_position,
+			"yaw": carrier.global_rotation.y,
 		}
 	elif phase == RoundStateScript.PHASE_BOMB:
 		var active_defuser := _active_round_defuser()
@@ -1100,16 +1171,44 @@ func _round_tick_command() -> Dictionary:
 				else true
 			)
 			command.defuse = _defuse_request(active_defuser, use_pressed)
-		elif player.team == Combatant.TEAM_COUNTER_TERRORIST:
+		elif (
+			player.team == Combatant.TEAM_COUNTER_TERRORIST
+			and Input.is_action_pressed("use")
+		):
 			command.defuse = _defuse_request(
 				player,
-				Input.is_action_pressed("use"),
+				true,
 			)
 		else:
 			var bot_defuser := _active_bot_defuser()
 			if is_instance_valid(bot_defuser):
 				command.defuse = _defuse_request(bot_defuser, true)
 	return command
+
+
+func _player_objective_grounded() -> bool:
+	if player._movement_grounded:
+		return true
+	player._movement_grounded = player.movement_kernel.categorize_ground(
+		player.velocity,
+	)
+	if not player._movement_grounded:
+		# Objective eligibility uses the same 2-HU downward floor contract even
+		# on the exact coplanar frame where Godot's simulated box sweep returns
+		# no new collision.
+		var query := PhysicsRayQueryParameters3D.create(
+			player.global_position + Vector3.UP * GOLDSRC_UNIT,
+			player.global_position - Vector3.UP * 3.0 * GOLDSRC_UNIT,
+			1,
+			[player.get_rid()],
+		)
+		query.collide_with_areas = false
+		var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
+		player._movement_grounded = (
+			not hit.is_empty()
+			and Vector3(hit.get("normal", Vector3.ZERO)).dot(Vector3.UP) >= 0.7
+		)
+	return player._movement_grounded
 
 
 func _bomb_region_at(
@@ -1141,19 +1240,71 @@ func _bomb_region_at(
 func _active_bot_defuser() -> TargetActor:
 	if not bomb_planted:
 		return null
+	var physics_frame := Engine.get_physics_frames()
+	var assigned := _actor_for_round_id(_bot_defuser_id) as TargetActor
+	if (
+		is_instance_valid(assigned)
+		and assigned.alive
+		and assigned.active
+		and assigned.team == Combatant.TEAM_COUNTER_TERRORIST
+	):
+		if str(round_state.defuse_actor) == assigned.name:
+			return assigned
+		if (
+			_bot_defuser_progress_position == Vector3.INF
+			or assigned.global_position.distance_to(
+				_bot_defuser_progress_position,
+			) >= BOT_DEFUSER_PROGRESS_EPSILON
+		):
+			# Detours around BSP often increase straight-line bomb distance.
+			# Count physical displacement as progress so a valid corridor route
+			# is not reassigned merely for initially moving away from the C4.
+			_bot_defuser_progress_position = assigned.global_position
+			_bot_defuser_last_progress_frame = physics_frame
+		elif (
+			_bot_defuser_last_progress_frame >= 0
+			and physics_frame - _bot_defuser_last_progress_frame
+				>= BOT_DEFUSER_STALL_FRAMES
+		):
+			_bot_defuser_stalled_ids[assigned.name] = true
+			_bot_defuser_id = ""
+		else:
+			return assigned
+	_bot_defuser_id = ""
 	var nearest: TargetActor
 	var nearest_distance := INF
-	for target in targets:
-		if (
-			not target.alive
-			or target.team != Combatant.TEAM_COUNTER_TERRORIST
-		):
-			continue
-		var distance := target.global_position.distance_to(bomb_position)
-		if distance < nearest_distance:
-			nearest = target
-			nearest_distance = distance
+	for include_stalled in [false, true]:
+		for target in _all_bots():
+			if (
+				not target.alive
+				or not target.active
+				or target.team != Combatant.TEAM_COUNTER_TERRORIST
+				or (
+					not include_stalled
+					and _bot_defuser_stalled_ids.has(target.name)
+				)
+			):
+				continue
+			var distance := target.global_position.distance_to(bomb_position)
+			if distance < nearest_distance:
+				nearest = target
+				nearest_distance = distance
+		if is_instance_valid(nearest):
+			break
+		_bot_defuser_stalled_ids.clear()
+	if is_instance_valid(nearest):
+		_bot_defuser_id = nearest.name
+		_bot_defuser_progress_position = nearest.global_position
+		_bot_defuser_last_progress_frame = physics_frame
 	return nearest
+
+
+func _reset_bot_defuser_assignment() -> void:
+	_bot_defuser_id = ""
+	_bot_defuser_progress_position = Vector3.INF
+	_bot_defuser_last_progress_frame = -1
+	_bot_defuser_stalled_ids.clear()
+	_ct_bomb_location_known = false
 
 
 func _active_round_defuser() -> Combatant:
@@ -1174,6 +1325,39 @@ func _defuse_request(actor: Combatant, use_pressed: bool) -> Dictionary:
 	if actor == player and is_instance_valid(player.camera):
 		eye_position = player.camera.global_position
 		view_forward = -player.camera.global_transform.basis.z
+	var candidates: Array = [{
+		"id": "c4",
+		"origin": bomb_position,
+		"usable": bomb_planted,
+	}]
+	for candidate_node in get_tree().get_nodes_in_group("source_use_targets"):
+		var candidate_origin: Variant = (
+			candidate_node.call("source_use_origin")
+			if candidate_node.has_method("source_use_origin")
+			else (
+				(candidate_node as Node3D).global_position
+				if candidate_node is Node3D
+				else Vector3.INF
+			)
+		)
+		if candidate_origin is Vector3 and candidate_origin != Vector3.INF:
+			candidates.append({
+				"id": str(candidate_node.name),
+				"origin": candidate_origin,
+				"usable": (
+					bool(candidate_node.call("source_use_usable", actor))
+					if candidate_node.has_method("source_use_usable")
+					else true
+				),
+				"node": candidate_node,
+			})
+	var selected := PlayerUseResolverScript.select_candidate(
+		actor.global_position,
+		eye_position,
+		view_forward,
+		candidates,
+	)
+	var c4_selected := str(selected.get("id", "")) == "c4"
 	var geometry := _c4_use_geometry(
 		actor.global_position,
 		eye_position,
@@ -1181,8 +1365,8 @@ func _defuse_request(actor: Combatant, use_pressed: bool) -> Dictionary:
 		bomb_position,
 	)
 	return {
-		"player_id": actor.name,
-		"use": use_pressed,
+		"player_id": _round_id_for_actor(actor),
+		"use": use_pressed and c4_selected,
 		"grounded": actor.is_on_floor(),
 		"in_range": bool(geometry.in_range),
 		"facing": bool(geometry.facing),
@@ -1208,6 +1392,334 @@ func _c4_use_geometry(
 	}
 
 
+func _round_id_for_actor(actor: Combatant) -> String:
+	return "player" if actor == player else actor.name
+
+
+func _actor_for_round_id(actor_id: String) -> Combatant:
+	if actor_id == "player":
+		return player
+	for bot in _all_bots():
+		if bot.name == actor_id:
+			return bot
+	return null
+
+
+func _assigned_bomb_site(actor: TargetActor) -> Vector3:
+	if bomb_sites.is_empty():
+		return actor.global_position
+	if not _bot_site_assignments.has(actor.name):
+		var best_index := 0
+		var best_distance := INF
+		for site_index in range(bomb_sites.size()):
+			var distance := actor.global_position.distance_squared_to(
+				bomb_sites[site_index],
+			)
+			if distance < best_distance:
+				best_distance = distance
+				best_index = site_index
+		_bot_site_assignments[actor.name] = best_index
+	return bomb_sites[int(_bot_site_assignments[actor.name]) % bomb_sites.size()]
+
+
+func _bomb_site_position_by_id(site_id: String) -> Vector3:
+	for site_index in bomb_regions.size():
+		if str((bomb_regions[site_index] as Dictionary).get("target", "")) == site_id:
+			return bomb_sites[site_index]
+	return bomb_sites[0] if not bomb_sites.is_empty() else bomb_position
+
+
+func _nearest_living_terrorist_to(position: Vector3) -> TargetActor:
+	var nearest: TargetActor
+	var nearest_distance := INF
+	for bot in _all_bots():
+		if not bot.alive or bot.team != Combatant.TEAM_TERRORIST:
+			continue
+		var distance := bot.global_position.distance_squared_to(position)
+		if distance < nearest_distance:
+			nearest = bot
+			nearest_distance = distance
+	return nearest
+
+
+func _objective_cover_position(center: Vector3, bot: TargetActor) -> Vector3:
+	# ReGameDLL's hide/guard tasks select distinct nav-area hiding spots rather
+	# than stopping every teammate on a concentric radius around one point.
+	# These stable candidates are subsequently projected/path-resolved by the
+	# bot's NavigationAgent, so each guard owns a separate destination.
+	var angle := (
+		float((bot.index * 137 + (0 if bot.team == Combatant.TEAM_TERRORIST else 53)) % 360)
+		* PI
+		/ 180.0
+	)
+	var radius := 3.2 + float(bot.index % 3) * 0.75
+	return center + Vector3(cos(angle), 0.0, sin(angle)) * radius
+
+
+func _objective_escape_position(center: Vector3, bot: TargetActor) -> Vector3:
+	var away := bot.global_position - center
+	away.y = 0.0
+	if away.is_zero_approx():
+		var angle := float((bot.index * 137 + 29) % 360) * PI / 180.0
+		away = Vector3(cos(angle), 0.0, sin(angle))
+	return bot.global_position + away.normalized() * 8.0
+
+
+func _bot_is_attacking(bot: TargetActor) -> bool:
+	return (
+		bool(bot.last_command.get("fire", false))
+		or str(bot.combat_state) in ["react", "engage"]
+	)
+
+
+func _bot_has_bomb_knowledge(bot: TargetActor) -> bool:
+	if not is_instance_valid(bomb_knowledge):
+		return false
+	var to_bomb := bomb_position - bot.aim_point()
+	var view_forward := -bot.global_transform.basis.z
+	var in_fov := (
+		not to_bomb.is_zero_approx()
+		and not view_forward.is_zero_approx()
+		and to_bomb.normalized().dot(view_forward.normalized()) > VIEW_FIELD_NARROW
+	)
+	var query := PhysicsRayQueryParameters3D.create(
+		bot.aim_point(),
+		bomb_position + Vector3.UP * 4.0 * GOLDSRC_UNIT,
+		1,
+		[bot.get_rid()],
+	)
+	query.collide_with_areas = false
+	var hit: Dictionary = bot.get_world_3d().direct_space_state.intersect_ray(query)
+	var line_clear: bool = hit.is_empty() or (
+		is_instance_valid(bomb)
+		and hit.get("collider") == bomb
+	)
+	bomb_knowledge.on_visual_contact(
+		bot.name,
+		bomb_position,
+		in_fov,
+		line_clear,
+	)
+	return bomb_knowledge.knows_exact(bot.name)
+
+
+func bot_objective_context(bot: TargetActor) -> Dictionary:
+	if (
+		not match_started
+		or not is_instance_valid(round_state)
+		or not bot.alive
+		or bomb_sites.is_empty()
+		or phase not in [
+			RoundStateScript.PHASE_LIVE,
+			RoundStateScript.PHASE_BOMB,
+		]
+	):
+		return {}
+
+	var bomb_state := str(round_state.bomb_state)
+	if phase == RoundStateScript.PHASE_BOMB:
+		var bomb_ticks_left := maxi(0, round_state.bomb_deadline_tick - round_state.tick)
+		var active_round_defuser := _active_round_defuser()
+		if (
+			bot.team == Combatant.TEAM_TERRORIST
+			and BombEscapeScript.should_escape(
+				bomb_ticks_left,
+				float((bot.combat_controller as BotCombatController).aggression),
+				false,
+				_bot_is_attacking(bot),
+				false,
+			)
+		):
+			var t_escape := _objective_escape_position(bomb_position, bot)
+			return {
+				"state": "escape_from_bomb",
+				"action": "flee",
+				"target": t_escape,
+				"look_target": bomb_position,
+				"stop_radius": 0.32,
+			}
+		if bot.team == Combatant.TEAM_COUNTER_TERRORIST:
+			if is_instance_valid(active_round_defuser) and active_round_defuser != bot:
+				var coordinated_guard_target := _objective_cover_position(
+					active_round_defuser.global_position,
+					bot,
+				)
+				return {
+					"state": "guard_defuser",
+					"action": "guard",
+					"target": coordinated_guard_target,
+					"look_target": bomb_position,
+					"stop_radius": 0.32,
+				}
+			if not _bot_has_bomb_knowledge(bot):
+				var search_site := bomb_sites[0]
+				var known_site := bomb_knowledge.known_site(bot.name)
+				if not known_site.is_empty():
+					search_site = _bomb_site_position_by_id(known_site)
+				else:
+					search_site = bomb_sites[bot.index % bomb_sites.size()]
+				return {
+					"state": "search_planted_site",
+					"action": "search_site",
+					"target": search_site,
+					"look_target": search_site,
+					"stop_radius": 0.42,
+					"round_number": round_state.round_number,
+				}
+			var has_kit := bool(
+				round_state.players.get(bot.name, {}).get("has_defuser", false)
+			)
+			var needed_ticks := (
+				int(round_state.config.defuse_kit_ticks)
+				if has_kit
+				else int(round_state.config.defuse_ticks)
+			)
+			if (
+				BombEscapeScript.should_escape(
+					bomb_ticks_left,
+					float((bot.combat_controller as BotCombatController).aggression),
+					has_kit,
+					_bot_is_attacking(bot),
+					active_round_defuser == bot,
+				)
+			):
+				var ct_escape := _objective_escape_position(bomb_position, bot)
+				return {
+					"state": "escape_from_bomb",
+					"action": "flee",
+					"target": ct_escape,
+					"look_target": bomb_position,
+					"stop_radius": 0.32,
+				}
+			if is_instance_valid(active_round_defuser) and active_round_defuser != bot:
+				var active_guard_target := _objective_cover_position(
+					active_round_defuser.global_position,
+					bot,
+				)
+				return {
+					"state": "guard_defuser",
+					"action": "guard",
+					"target": active_guard_target,
+					"look_target": bomb_position,
+					"stop_radius": 0.32,
+				}
+			var assigned_defuser := _active_bot_defuser()
+			if assigned_defuser != bot:
+				var guard_center := (
+					assigned_defuser.global_position
+					if is_instance_valid(assigned_defuser)
+					else bomb_position
+				)
+				var guard_target := _objective_cover_position(guard_center, bot)
+				return {
+					"state": "guard_defuser",
+					"action": "guard",
+					"target": guard_target,
+					"look_target": bomb_position,
+					"stop_radius": 0.32,
+				}
+			var within_approach_radius := (
+				bot.global_position.distance_to(bomb_position)
+				<= 100.0 * GOLDSRC_UNIT
+			)
+			return {
+				"state": "retake",
+				"action": "defuse",
+				"target": bomb_position,
+				"look_target": bomb_position + Vector3.UP * 0.04,
+				"stop_radius": 0.42,
+				"crouch": within_approach_radius,
+			}
+		var bomb_cover := _objective_cover_position(bomb_position, bot)
+		return {
+			"state": "defend_bomb",
+			"action": "cover",
+			"target": bomb_cover,
+			"look_target": bomb_position,
+			"stop_radius": 0.32,
+		}
+
+	if bomb_state == RoundStateScript.BOMB_DROPPED:
+		if bot.team == Combatant.TEAM_TERRORIST:
+			var recoverer := _nearest_living_terrorist_to(round_state.bomb_position)
+			var loose_c4_target: Vector3 = (
+				round_state.bomb_position
+				if recoverer == bot
+				else _objective_cover_position(round_state.bomb_position, bot)
+			)
+			return {
+				"state": "recover_c4" if recoverer == bot else "cover_c4",
+				"action": "recover" if recoverer == bot else "cover",
+				"target": loose_c4_target,
+				"look_target": round_state.bomb_position,
+				"stop_radius": 0.18 if recoverer == bot else 0.32,
+			}
+		if not _bot_has_bomb_knowledge(bot):
+			return {}
+		var ct_loose_cover := _objective_cover_position(round_state.bomb_position, bot)
+		return {
+			"state": "guard_dropped_c4",
+			"action": "guard",
+			"target": ct_loose_cover,
+			"look_target": round_state.bomb_position,
+			"stop_radius": 0.32,
+		}
+
+	if bot.team == Combatant.TEAM_TERRORIST:
+		var carrier := _actor_for_round_id(str(round_state.bomb_owner))
+		if carrier == bot:
+			var site := _assigned_bomb_site(bot)
+			var inside := not _bomb_region_at(
+				bot.global_position,
+				TargetActor.STANDING_HULL_SIZE,
+			).is_empty()
+			var plant_look := -bot.global_transform.basis.z
+			plant_look.y = 0.0
+			if plant_look.is_zero_approx():
+				plant_look = Vector3(0.0, 0.0, -1.0)
+			plant_look = (
+				bot.global_position + plant_look.normalized() * 10.0 * GOLDSRC_UNIT
+			)
+			plant_look.y = bot.global_position.y
+			return {
+				"state": "plant_c4" if inside else "carry_c4",
+				"action": "plant" if inside else "route_to_site",
+				"target": site,
+				"site_candidates": bomb_sites.duplicate(),
+				"look_target": plant_look if inside else site,
+				"stop_radius": 0.05 if inside else 0.28,
+				"equip_c4": inside,
+				"crouch": inside,
+				"plant_in_progress": str(round_state.plant_actor) == bot.name,
+				"round_number": round_state.round_number,
+				"live_elapsed_ticks": (
+					int(round_state.config.round_ticks)
+					- maxi(0, round_state.deadline_tick - round_state.tick)
+				),
+			}
+		# ReGameDLL does not blanket-assign every non-carrier as a follower.
+		# Without a radio/follow role they retain normal hunt/combat behavior,
+		# which also prevents the entire T team converging on a stationary
+		# human carrier at spawn.
+		return {}
+
+	# Counter-Terrorists split into source-like roles: alternating bots guard
+	# the two bombsites while their teammates patrol/hunt. Assigning all five
+	# to static guard tasks can leave a spawn-adjacent guard with no route and
+	# recreates the original stuck-player crowd.
+	if bot.index % 2 == 1:
+		return {}
+	var defense_site := bomb_sites[bot.index % bomb_sites.size()]
+	var defense_cover := _objective_cover_position(defense_site, bot)
+	return {
+		"state": "defend_site",
+		"action": "guard",
+		"target": defense_cover,
+		"look_target": defense_site,
+		"stop_radius": 0.32,
+	}
+
+
 func _consume_new_round_trace() -> void:
 	if not is_instance_valid(round_state):
 		return
@@ -1227,24 +1739,63 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				if int(event.round) > 1:
 					_reset_combatants_for_round()
 				_c4_equipped = false
+				_c4_drop_animation_played = false
+				_bot_site_assignments.clear()
+				_reset_bot_defuser_assignment()
 				round_ending = false
 				kills = 0
+				if is_instance_valid(bomb_knowledge):
+					bomb_knowledge.reset_round()
+					bomb_knowledge.on_bomb_carried()
 				_update_scoreboard()
 			"bomb_dropped":
 				_c4_equipped = false
+				if is_instance_valid(bomb_knowledge):
+					bomb_knowledge.on_bomb_dropped(event.position)
+				_spawn_dropped_c4(
+					event.position,
+					_actor_for_round_id(str(event.player_id)),
+				)
 			"bomb_picked_up":
 				_c4_equipped = false
+				if is_instance_valid(bomb_knowledge):
+					bomb_knowledge.on_bomb_picked_up()
+				_clear_dropped_c4()
 			"plant_start":
-				player.controls_enabled = false
+				_c4_drop_animation_played = false
+				_set_objective_actor_frozen(str(event.player_id), true, "plant")
+				if str(event.player_id) == "player":
+					player.viewmodel._start_animation("pressbutton", false)
 			"plant_abort":
-				player.controls_enabled = player.alive and phase == "live"
+				_set_objective_actor_frozen(str(event.player_id), false, "plant")
+				_c4_drop_animation_played = false
+				if str(event.player_id) == "player" and player.active_weapon == "c4":
+					player.viewmodel._start_animation("idle1", true)
 			"defuse_start":
-				_set_objective_actor_frozen(str(event.player_id), true)
+				_set_objective_actor_frozen(str(event.player_id), true, "defuse")
 			"defuse_abort":
-				_set_objective_actor_frozen(str(event.player_id), false)
+				_set_objective_actor_frozen(str(event.player_id), false, "defuse")
 			"bomb_planted":
 				_c4_equipped = false
-				_spawn_bomb_visual(event.position)
+				_reset_bot_defuser_assignment()
+				_clear_dropped_c4()
+				_spawn_bomb_visual(
+					event.position,
+					float(event.get("yaw", 0.0)),
+				)
+				if is_instance_valid(bomb_knowledge):
+					bomb_knowledge.on_bomb_planted(
+						event.position,
+						_round_actor_positions(),
+					)
+					var ct_ids: Array[String] = []
+					for bot in _all_bots():
+						if bot.team == Combatant.TEAM_COUNTER_TERRORIST:
+							ct_ids.append(bot.name)
+					bomb_knowledge.broadcast_planted_site(
+						str(event.get("site_id", "")),
+						ct_ids,
+					)
 				_emit_world_audio(
 					"c4.plant",
 					AudioRouterScript.CHAN_WEAPON,
@@ -1263,6 +1814,11 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				)
 			"bomb_beep":
 				var wave := clampi(int(event.wave), 1, 5)
+				if is_instance_valid(bomb_knowledge):
+					bomb_knowledge.on_bomb_beep(
+						event.position,
+						_round_actor_positions(),
+					)
 				_emit_world_audio(
 					"c4.beep%d" % wave,
 					AudioRouterScript.CHAN_VOICE,
@@ -1270,6 +1826,8 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 					{"attenuation": [1.5, 1.0, 0.8, 0.5, 0.2][wave - 1]},
 				)
 			"bomb_defused":
+				_bot_defuser_id = ""
+				_set_objective_actor_frozen(str(event.player_id), false, "defuse")
 				hud.show_banner("THE BOMB HAS BEEN DEFUSED", Color("#77d9ff"), 2.0)
 			"bomb_exploded":
 				_apply_c4_explosion(event)
@@ -1277,6 +1835,7 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				if str(event.player_id) == "player":
 					money = int(event.balance)
 			"round_end":
+				player.set_objective_movement_locked(false)
 				round_ending = true
 				_emit_round_result(event)
 				_update_scoreboard()
@@ -1287,11 +1846,22 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				player.controls_enabled = false
 
 
-func _set_objective_actor_frozen(actor_id: String, frozen: bool) -> void:
+func _round_actor_positions() -> Dictionary:
+	var result := {"player": player.global_position}
+	for bot in _all_bots():
+		result[bot.name] = bot.global_position
+	return result
+
+
+func _set_objective_actor_frozen(
+	actor_id: String,
+	frozen: bool,
+	action := "",
+) -> void:
 	if actor_id == "player":
+		player.set_objective_movement_locked(frozen, frozen)
 		player.controls_enabled = (
-			not frozen
-			and player.alive
+			player.alive
 			and phase in [
 				RoundStateScript.PHASE_LIVE,
 				RoundStateScript.PHASE_BOMB,
@@ -1300,7 +1870,18 @@ func _set_objective_actor_frozen(actor_id: String, frozen: bool) -> void:
 		return
 	for bot in _all_bots():
 		if bot.name == actor_id:
-			bot.active = not frozen and bot.alive
+			var look_target := Vector3.INF
+			if frozen and action == "defuse":
+				look_target = bomb_position
+			elif frozen and action == "plant":
+				var forward := -bot.global_transform.basis.z
+				forward.y = 0.0
+				if forward.is_zero_approx():
+					forward = Vector3(0.0, 0.0, -1.0)
+				look_target = bot.global_position + forward.normalized() * 0.1
+				look_target.y = bot.global_position.y
+			bot.set_objective_lock(frozen, frozen, look_target)
+			bot.active = bot.alive
 			return
 
 
@@ -1308,15 +1889,22 @@ func _apply_round_phase(next_phase: String) -> void:
 	match next_phase:
 		RoundStateScript.PHASE_FREEZE:
 			player.controls_enabled = false
+			player.set_objective_movement_locked(false)
 			for target in _all_bots():
+				target.set_objective_lock(false)
 				target.active = false
 		RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB:
+			player.set_objective_movement_locked(false)
 			player.controls_enabled = player.alive
 			for target in _all_bots():
+				if str(round_state.plant_actor) != target.name and str(round_state.defuse_actor) != target.name:
+					target.set_objective_lock(false)
 				target.active = target.alive
 		RoundStateScript.PHASE_POST, RoundStateScript.PHASE_INTERMISSION:
 			player.controls_enabled = false
+			player.set_objective_movement_locked(false)
 			for target in _all_bots():
+				target.set_objective_lock(false)
 				target.active = false
 
 
@@ -1334,6 +1922,7 @@ func _sync_round_public_state() -> void:
 	if round_state.players.has("player"):
 		money = int(round_state.players.player.money)
 	_sync_player_c4_ownership()
+	_sync_bot_c4_ownership()
 
 
 func _update_round_hud(force := false) -> void:
@@ -1352,6 +1941,14 @@ func _update_round_hud(force := false) -> void:
 		)
 	var action: Dictionary = round_state.action_progress()
 	if not action.is_empty():
+		if (
+			str(action.action) == "plant"
+			and str(action.actor) == "player"
+			and not _c4_drop_animation_played
+			and int(action.elapsed_ticks) >= int(action.duration_ticks) - 75
+		):
+			_c4_drop_animation_played = true
+			player.viewmodel._start_animation("drop", false)
 		var percent := int(
 			float(action.elapsed_ticks) / float(action.duration_ticks) * 100.0
 		)
@@ -1390,15 +1987,50 @@ func _sync_player_c4_ownership() -> void:
 	if should_own:
 		if not player.owns_weapon("c4"):
 			player.grant_item("c4")
+		_c4_equipped = player.active_weapon == "c4"
 		return
+	if player.active_weapon == "c4":
+		player.switch_weapon(player._best_owned_weapon())
 	player.owned_weapons.erase("c4")
 	player.ammunition.erase("c4")
+	_c4_equipped = false
 
-	# Ownership can use Player's public inventory API today. Equipping the
-	# source v_c4 model remains an explicit boundary: Player's generic primary
-	# path treats every non-grenade item as a firearm, so switching to C4 here
-	# would emit a fake bullet and consume its clip. Game owns the virtual
-	# `_c4_equipped` plant input until Player exposes an objective-use callback.
+
+func _equip_player_c4() -> bool:
+	if (
+		not is_instance_valid(round_state)
+		or str(round_state.bomb_owner) != "player"
+		or str(round_state.bomb_state) not in [
+			RoundStateScript.BOMB_CARRIED,
+			RoundStateScript.BOMB_PLANTING,
+		]
+		or not player.owns_weapon("c4")
+	):
+		return false
+	player.switch_weapon("c4")
+	return player.active_weapon == "c4"
+
+
+func _sync_bot_c4_ownership() -> void:
+	if not is_instance_valid(round_state):
+		return
+	for bot in _all_bots():
+		var owned := (
+			str(round_state.bomb_owner) == bot.name
+			and str(round_state.bomb_state) in [
+				RoundStateScript.BOMB_CARRIED,
+				RoundStateScript.BOMB_PLANTING,
+			]
+			and bool(round_state.players.get(bot.name, {}).get("has_c4", false))
+		)
+		var equipped := (
+			owned
+			and (
+				bool(bot.last_command.get("c4_equipped", false))
+				or str(round_state.plant_actor) == bot.name
+			)
+		)
+		bot.set_c4_state(owned, equipped)
 
 
 func _reset_combatants_for_round() -> void:
@@ -1408,6 +2040,8 @@ func _reset_combatants_for_round() -> void:
 	if is_instance_valid(bomb):
 		bomb.queue_free()
 	bomb = null
+	_clear_dropped_c4()
+	_reset_bot_defuser_assignment()
 	var keep_loadout := not player.is_dead()
 	player.reset_player(player_spawn, keep_loadout)
 	if using_imported_map and not target_spawns.is_empty():
@@ -1419,6 +2053,69 @@ func _reset_combatants_for_round() -> void:
 	hud.update_health(player.health, player.armor)
 	hud.update_ammo(player.clip, player.reserve, player.reloading)
 	_update_scoreboard()
+
+
+func _spawn_dropped_c4(
+	position: Vector3,
+	dropped_by: Combatant = null,
+) -> void:
+	_clear_dropped_c4()
+	var forward := Vector3(0.0, 0.0, -1.0)
+	if is_instance_valid(dropped_by):
+		forward = -dropped_by.global_transform.basis.z
+		forward.y = 0.0
+		if forward.is_zero_approx():
+			forward = Vector3(0.0, 0.0, -1.0)
+		else:
+			forward = forward.normalized()
+	var drop := C4DropContractScript.build_drop(position, forward)
+	dropped_c4 = C4WorldScript.new()
+	dropped_c4.position = drop.origin
+	dropped_c4.pickup_requested.connect(_on_dropped_c4_pickup)
+	add_child(dropped_c4)
+	dropped_c4.linear_velocity = drop.velocity
+
+
+func _request_drop_active_weapon() -> bool:
+	if not is_instance_valid(round_state) or not is_instance_valid(player):
+		return false
+	var request := C4DropContractScript.resolve_manual_drop(
+		player.active_weapon,
+		player.alive,
+		str(round_state.bomb_owner) == "player",
+		str(round_state.bomb_state),
+		player.global_position,
+		-player.global_transform.basis.z,
+	)
+	if not bool(request.allowed):
+		return false
+	if not round_state.drop_bomb("player", player.global_position):
+		return false
+	_consume_new_round_trace()
+	_sync_round_public_state()
+	player.switch_weapon(player._best_owned_weapon())
+	return true
+
+
+func _clear_dropped_c4() -> void:
+	if is_instance_valid(dropped_c4):
+		dropped_c4.queue_free()
+	dropped_c4 = null
+
+
+func _on_dropped_c4_pickup(actor: Combatant) -> void:
+	if (
+		not is_instance_valid(round_state)
+		or not is_instance_valid(actor)
+		or not actor.alive
+	):
+		return
+	if round_state.pickup_bomb(
+		_round_id_for_actor(actor),
+		actor.global_position,
+	):
+		_consume_new_round_trace()
+		_sync_round_public_state()
 
 
 func _update_scoreboard() -> void:
@@ -1439,23 +2136,28 @@ func _update_scoreboard() -> void:
 	)
 
 
-func _spawn_bomb_visual(position: Vector3) -> void:
+func _spawn_bomb_visual(position: Vector3, planter_yaw := 0.0) -> void:
 	bomb_planted = true
 	if is_instance_valid(bomb):
 		bomb.queue_free()
 	bomb = Node3D.new()
 	bomb.name = "PlantedBomb"
-	var mesh_node := MeshInstance3D.new()
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.28, 0.16, 0.42)
-	var material := StandardMaterial3D.new()
-	material.albedo_color = Color("#263128")
-	material.emission_enabled = true
-	material.emission = Color("#4b160f")
-	mesh.material = material
-	mesh_node.mesh = mesh
-	bomb.add_child(mesh_node)
-	bomb.position = position + Vector3.UP * 0.1
+	bomb.add_child(C4WorldScript.create_planted_visual())
+	var body := StaticBody3D.new()
+	body.name = "C4UseBody"
+	body.collision_layer = 8
+	body.collision_mask = 0
+	var shape_node := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	# ShootSatchelCharge uses mins(-3,-6,0), maxs(3,6,8) HU.
+	shape.size = Vector3(6.0, 8.0, 12.0) * GOLDSRC_UNIT
+	shape_node.shape = shape
+	shape_node.position.y = 4.0 * GOLDSRC_UNIT
+	body.add_child(shape_node)
+	bomb.add_child(body)
+	bomb.position = position
+	# CGrenade::ShootSatchelCharge receives pev->angles.y - 90.
+	bomb.rotation.y = planter_yaw - deg_to_rad(90.0)
 	bomb_position = position
 	add_child(bomb)
 
@@ -1464,6 +2166,21 @@ func _apply_c4_explosion(event: Dictionary) -> void:
 	var origin: Vector3 = event.position
 	var radius_m := float(event.radius_hu) * 0.01
 	var base_damage := float(event.damage)
+	var planter := _actor_for_round_id(str(event.get(
+		"attacker_id",
+		event.get("planter_id", event.get("player_id", "")),
+	)))
+	# Explode2 makes the grenade invisible and non-solid before RadiusDamage.
+	if is_instance_valid(bomb):
+		bomb.visible = false
+		for child in bomb.get_children():
+			if child is CollisionObject3D:
+				(child as CollisionObject3D).collision_layer = 0
+				(child as CollisionObject3D).collision_mask = 0
+	var effects := CombatEffectsScript.for_scene(self)
+	var blast_underwater := _source_point_in_water(origin)
+	if is_instance_valid(effects):
+		effects.spawn_c4_explosion(origin, Vector3.UP, blast_underwater)
 	_emit_world_audio(
 		"c4.explode",
 		AudioRouterScript.CHAN_WEAPON,
@@ -1474,11 +2191,54 @@ func _apply_c4_explosion(event: Dictionary) -> void:
 		var combatant := node as Combatant
 		if not is_instance_valid(combatant) or not combatant.alive:
 			continue
+		var water_level := _source_water_level(combatant)
+		if (
+			(blast_underwater and water_level == 0)
+			or (not blast_underwater and water_level == 3)
+		):
+			continue
 		var distance := combatant.global_position.distance_to(origin)
 		if distance > radius_m:
 			continue
 		var damage := base_damage * maxf(0.0, 1.0 - distance / radius_m)
-		combatant.receive_explosion_damage(damage, origin, null)
+		combatant.receive_c4_explosion_damage(damage, origin, planter)
+	if is_instance_valid(bomb):
+		bomb.queue_free()
+		bomb = null
+	bomb_planted = false
+
+
+func _source_point_in_water(point: Vector3) -> bool:
+	for node in get_tree().get_nodes_in_group("water_volumes"):
+		if node.has_method("contains_point") and bool(node.call("contains_point", point)):
+			return true
+	return false
+
+
+func _source_water_level(combatant: Combatant) -> int:
+	if combatant.has_meta("source_water_level"):
+		return clampi(int(combatant.get_meta("source_water_level")), 0, 3)
+	var samples := [
+		combatant.global_position + Vector3.UP * 2.0 * GOLDSRC_UNIT,
+		combatant.global_position + Vector3.UP * 36.0 * GOLDSRC_UNIT,
+		combatant.global_position + Vector3.UP * 71.0 * GOLDSRC_UNIT,
+	]
+	var level := 0
+	for sample: Vector3 in samples:
+		if _source_point_in_water(sample):
+			level += 1
+	return level
+
+
+func _sync_dropped_c4_position() -> void:
+	if (
+		not is_instance_valid(round_state)
+		or str(round_state.bomb_state) != RoundStateScript.BOMB_DROPPED
+		or not is_instance_valid(dropped_c4)
+	):
+		return
+	if round_state.update_dropped_bomb_position(dropped_c4.global_position):
+		bomb_position = dropped_c4.global_position
 
 
 func _emit_round_result(event: Dictionary) -> void:
@@ -1506,23 +2266,9 @@ func _emit_round_result(event: Dictionary) -> void:
 # Retained as a test/diagnostic compatibility entry point. Live planting is driven
 # exclusively by CS16RoundState's 100 Hz command path.
 func _plant_bomb(site: Vector3) -> void:
-	bomb_planted = true
 	phase = "bomb"
 	seconds_left = BOMB_SECONDS
-	bomb = Node3D.new()
-	bomb.name = "PlantedBomb"
-	var mesh_node := MeshInstance3D.new()
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.28, 0.16, 0.42)
-	var material := StandardMaterial3D.new()
-	material.albedo_color = Color("#263128")
-	material.emission_enabled = true
-	material.emission = Color("#4b160f")
-	mesh.material = material
-	mesh_node.mesh = mesh
-	bomb.add_child(mesh_node)
-	bomb.position = site + Vector3.UP * 0.1
-	add_child(bomb)
+	_spawn_bomb_visual(site)
 	_emit_world_audio("c4.plant", AudioRouterScript.CHAN_WEAPON, bomb.global_position)
 	_emit_world_audio(
 		"radio.bomb_planted",

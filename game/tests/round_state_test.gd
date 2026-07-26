@@ -94,6 +94,7 @@ func _assert_plant_contract() -> void:
 		"in_bomb_site": true,
 		"site_id": "A",
 		"position": Vector3(1, 2, 3),
+		"yaw": 1.25,
 	}
 	_advance(state, 100, {"plant": valid})
 	_check(
@@ -108,6 +109,19 @@ func _assert_plant_contract() -> void:
 		state.bomb_state == "carried" and state.action_progress().is_empty(),
 		"plant release interrupts and clears progress",
 	)
+	var release_retry_tick: int = int(state.plant_retry_deadline_by_actor[owner])
+	_advance(state, 99, {"plant": valid})
+	_check(
+		state.plant_actor == "" and state.tick == release_retry_tick - 1,
+		"released C4 cannot restart during the source 100-tick cooldown",
+	)
+	state.advance_tick({"plant": valid})
+	_check(
+		state.plant_actor == owner and state.tick == release_retry_tick,
+		"released C4 may restart exactly on its cooldown deadline",
+	)
+	state.advance_tick({"plant": released})
+	_advance(state, 100)
 	for invalid_key in ["grounded", "in_bomb_site", "equipped_c4"]:
 		var request := valid.duplicate()
 		_advance(state, 20, {"plant": request})
@@ -117,6 +131,14 @@ func _assert_plant_contract() -> void:
 			state.bomb_state == "carried" and state.action_progress().is_empty(),
 			"plant interruption clears on %s loss" % invalid_key,
 		)
+		var expected_cooldown := 150 if invalid_key in ["grounded", "in_bomb_site"] else 100
+		_check(
+			int(state.plant_retry_deadline_by_actor[owner]) - state.tick
+			== expected_cooldown,
+			"plant %s interruption applies the source %d-tick retry lock"
+			% [invalid_key, expected_cooldown],
+		)
+		_advance(state, expected_cooldown)
 	_advance(state, 301, {"plant": valid})
 	_check(
 		state.phase == "bomb"
@@ -124,6 +146,14 @@ func _assert_plant_contract() -> void:
 		and state.bomb_position == Vector3(1, 2, 3)
 		and state.bomb_deadline_tick - state.tick == 4500,
 		"valid 3 s plant creates C4 with an exact 45 s deadline",
+	)
+	var planted_event: Dictionary = state.trace.filter(
+		func(event: Dictionary) -> bool:
+			return str(event.type) == "bomb_planted"
+	).back()
+	_check(
+		is_equal_approx(float(planted_event.yaw), 1.25),
+		"plant completion carries the authoritative planter yaw to w_c4",
 	)
 	_check(
 		int(state.players[owner].money) == 800,
@@ -177,6 +207,10 @@ func _assert_defuse_contract() -> void:
 			and state.round_winner == "CT",
 			"%s defuse completes at exactly %d ticks"
 			% ["kit" if has_kit else "no-kit", duration],
+		)
+		_check(
+			int(state.players.ct1.kills) == 3,
+			"source objective score grants the completing defuser +3",
 		)
 		_check(
 			int(state.players.t1.money) == 800
@@ -235,6 +269,21 @@ func _assert_defuse_contract() -> void:
 		"leaving the ground aborts defuse immediately without use grace",
 	)
 
+	var exclusive := _planted_fixture(false)
+	exclusive.advance_tick({"defuse": held})
+	var thief := held.duplicate()
+	thief.player_id = "ct2"
+	_advance(exclusive, 50, {"defuse": thief})
+	_check(
+		exclusive.defuse_actor == "ct1",
+		"a second Counter-Terrorist cannot steal or refresh the assigned defuse",
+	)
+	exclusive.advance_tick({"defuse": thief})
+	_check(
+		exclusive.defuse_actor == "",
+		"assigned defuse expires after exactly 50 unrefreshed ticks",
+	)
+
 	# ReGameDLL fixes deliberately let a completed defuse win when its countdown
 	# and the C4 blow time are the same tick.
 	var race := _planted_fixture(true, 501)
@@ -249,6 +298,15 @@ func _assert_defuse_contract() -> void:
 	_check(
 		race.bomb_state == "defused" and race.round_winner == "CT",
 		"same-tick defuse-versus-explosion race resolves to completed defuse",
+	)
+
+	var deadline_reject := _planted_fixture(true, 100)
+	_advance(deadline_reject, 99)
+	deadline_reject.advance_tick({"defuse": race_request})
+	_check(
+		deadline_reject.bomb_state == "exploded"
+		and deadline_reject.defuse_actor == "",
+		"a new defuse beginning on the C4 deadline is rejected before +use",
 	)
 
 
@@ -284,6 +342,10 @@ func _assert_win_truth_table() -> void:
 		and planted.round_winner == "T"
 		and planted.round_reason == "target_bombed",
 		"expired planted bomb damages and awards the target-bombed outcome",
+	)
+	_check(
+		int(planted.players[planted.bomb_planter_id].kills) == 3,
+		"source objective score grants the planter +3 when C4 explodes",
 	)
 
 

@@ -9,7 +9,16 @@ var _secondary_pressed := false
 
 
 func ingest_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if (
+		event is InputEventMouseMotion
+		and (
+			Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+			or (
+				is_instance_valid(actor)
+				and bool(actor.get("objective_movement_locked"))
+			)
+		)
+	):
 		_look_delta += event.relative
 	elif event is InputEventMouseButton:
 		var mouse_event := event as InputEventMouseButton
