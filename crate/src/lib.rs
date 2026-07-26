@@ -1,12 +1,12 @@
 mod bitreader;
-mod bsp;
+pub mod bsp;
 mod delta;
 mod demo;
 mod entity;
 mod events;
-mod mdl;
+pub mod mdl;
 mod netmsg;
-mod types;
+pub mod types;
 
 use types::*;
 use wasm_bindgen::prelude::*;

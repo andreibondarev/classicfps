@@ -15,6 +15,9 @@ __pycache__/
 dist/
 artifacts/
 crate/target/
+game/.godot/
+game/artifacts/
+game/builds/
 
 # The multi-gigabyte compatibility corpus stays local. Curated demos in the
 # top-level demos directory remain tracked and power the built-in library.

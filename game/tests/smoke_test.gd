@@ -1,0 +1,108 @@
+extends SceneTree
+
+var failures: Array[String] = []
+
+
+func _initialize() -> void:
+	call_deferred("_run")
+
+
+func _check(condition: bool, message: String) -> void:
+	if not condition:
+		failures.append(message)
+		push_error("SMOKE TEST: " + message)
+
+
+func _run() -> void:
+	var packed := load("res://scenes/main.tscn") as PackedScene
+	_check(packed != null, "main scene loads")
+	if packed == null:
+		quit(1)
+		return
+	var game := packed.instantiate()
+	root.add_child(game)
+	current_scene = game
+	await process_frame
+	await physics_frame
+
+	_check(game.player != null, "player spawned")
+	_check(game.player.camera != null, "first-person camera exists")
+	_check(game.targets.size() == 5, "five hostile targets spawned")
+	_check(game.hud != null, "HUD instantiated")
+	_check(Engine.physics_ticks_per_second == 128, "128 Hz fixed physics configured")
+	_check(not game.using_imported_map, "procedural test arena selected")
+
+	game.start_match()
+	await physics_frame
+	_check(game.match_started, "match deploys")
+	_check(game.phase == "freeze", "round starts in freeze time")
+	_check(not game.player.controls_enabled, "movement is locked during freeze time")
+	game._begin_live()
+	await physics_frame
+	_check(game.player.controls_enabled, "player controls enable when live")
+	_check(game.targets.all(func(target: TargetActor) -> bool: return target.active), "targets activate when live")
+	_check(not Input.use_accumulated_input, "raw mouse input is not frame-accumulated")
+	var network := root.get_node("NetworkSession")
+	var sanitized_input: Dictionary = network.sanitize_input({
+		"movement": Vector2(3, 4), "pitch": 99.0, "buttons": 255,
+	}, 7)
+	_check(sanitized_input.movement.length() <= 1.001, "network input magnitude is server-clamped")
+	_check(sanitized_input.pitch < PI * 0.5, "network pitch is server-clamped")
+	_check(sanitized_input.buttons == 31, "network action bitfield is allow-listed")
+
+	var initial_yaw: float = game.player.rotation.y
+	var initial_pitch: float = game.player.camera.rotation.x
+	game.player._apply_mouse_look(Vector2(80, -40))
+	_check(game.player.rotation.y < initial_yaw, "horizontal mouse motion changes yaw")
+	_check(game.player.camera.rotation.x > initial_pitch, "vertical mouse motion changes pitch")
+	_check(game.hud.hitmarker.mouse_filter == Control.MOUSE_FILTER_IGNORE, "center HUD cannot intercept aiming")
+	game.player.face_toward(Vector3(0, 0.08, 8))
+
+	var first_target: TargetActor = game.targets[0]
+	first_target.reset_target(Vector3(0, 0.08, 8))
+	first_target.active = false
+	await physics_frame
+	game.player._try_fire()
+	await process_frame
+	_check(game.player.clip == 29, "firing consumes one round")
+	_check(not first_target.alive, "camera ray and weapon damage eliminate a target")
+	_check(game.kills == 1, "elimination advances the objective")
+
+	var previous_health: int = game.player.health
+	game.player.apply_damage(10.0)
+	await process_frame
+	_check(game.player.health < previous_health, "incoming damage reaches the player")
+	_check(game.player.reserve == 90, "reserve ammunition initialized")
+	_check(game.player.viewmodel.loaded_weapon == "ak47", "authentic AK-47 viewmodel loads")
+	game.player.switch_weapon("deagle")
+	_check(game.player.active_weapon == "deagle", "number-slot weapon switching works")
+	_check(game.player.clip == 7, "Deagle maintains independent ammunition")
+	game.player.switch_weapon("knife")
+	_check(game.player.clip == -1, "knife correctly has no ammunition")
+	game.player.switch_weapon("hegrenade")
+	game.player._next_fire_at = 0.0
+	game.player._try_fire()
+	await process_frame
+	_check(game.player.ammunition.hegrenade.clip == 0, "HE grenade is consumed on throw")
+	_check(game.get_node_or_null("HEGrenade") != null, "HE grenade projectile spawns")
+
+	game._plant_bomb(game.bomb_sites[0])
+	_check(game.phase == "bomb", "planting transitions to the bomb phase")
+	_check(game.bomb_planted, "planted bomb state is authoritative")
+
+	for target in game.targets:
+		target.active = false
+	await create_timer(1.65).timeout
+
+	if failures.is_empty():
+		print("GAME_SMOKE_TEST_PASS")
+		current_scene = null
+		game.queue_free()
+		await process_frame
+		quit(0)
+	else:
+		print("GAME_SMOKE_TEST_FAIL: %s" % ", ".join(failures))
+		current_scene = null
+		game.queue_free()
+		await process_frame
+		quit(1)

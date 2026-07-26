@@ -5,6 +5,10 @@ turns GoldSrc `.dem` recordings into a deterministic timeline; Three.js renders
 textured BSP maps, studio models, first-person viewmodels, effects, and replay
 UI.
 
+The repository now also contains the native playable game under `game/`.
+See [`game/README.md`](game/README.md) for controls, validation, Dust2 content
+conversion, and macOS release packaging.
+
 ## Current capabilities
 
 - Protocol 47/48-style HLTV and POV demo parsing
