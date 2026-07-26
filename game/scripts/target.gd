@@ -8,6 +8,10 @@ signal fired
 const CharacterModelScript = preload("res://scripts/mdl_character_model.gd")
 const TERRORIST_SKINS := ["terror", "leet", "arctic", "guerilla"]
 const COUNTER_TERRORIST_SKINS := ["urban", "gsg9", "sas", "gign"]
+const STANDING_HULL_SIZE := Vector3(32, 72, 32) * GOLDSRC_UNIT
+const STANDING_HULL_CENTER_Y := 36.0 * GOLDSRC_UNIT
+const PLAYER_GRAVITY := 800.0 * GOLDSRC_UNIT
+const AK47_MAX_SPEED := 221.0 * GOLDSRC_UNIT
 
 var active := false
 var index := 0
@@ -52,12 +56,12 @@ func _build_navigation_agent() -> void:
 	# CharacterBody3D uses a feet-level origin while Godot returns navmesh path
 	# points about one agent radius above it. Remove that vertical discrepancy
 	# so the agent can actually consume its first waypoint.
-	navigation_agent.path_height_offset = 0.36
-	navigation_agent.radius = 0.34
-	navigation_agent.height = 1.78
-	navigation_agent.path_desired_distance = 0.35
+	navigation_agent.path_height_offset = 0.16
+	navigation_agent.radius = 16.0 * GOLDSRC_UNIT
+	navigation_agent.height = 72.0 * GOLDSRC_UNIT
+	navigation_agent.path_desired_distance = 32.0 * GOLDSRC_UNIT
 	navigation_agent.target_desired_distance = 5.5
-	navigation_agent.max_speed = 3.4
+	navigation_agent.max_speed = AK47_MAX_SPEED
 	navigation_agent.neighbor_distance = 2.2
 	navigation_agent.max_neighbors = 8
 	navigation_agent.time_horizon_agents = 0.65
@@ -68,11 +72,11 @@ func _build_navigation_agent() -> void:
 
 func _build_actor() -> void:
 	var shape_node := CollisionShape3D.new()
-	var shape := CapsuleShape3D.new()
-	shape.radius = 0.34
-	shape.height = 1.78
+	shape_node.name = "PlayerCollider"
+	var shape := BoxShape3D.new()
+	shape.size = STANDING_HULL_SIZE
 	shape_node.shape = shape
-	shape_node.position.y = 0.89
+	shape_node.position.y = STANDING_HULL_CENTER_Y
 	add_child(shape_node)
 
 	_fallback_visual = Node3D.new()
@@ -84,11 +88,11 @@ func _build_actor() -> void:
 	_body_mesh = MeshInstance3D.new()
 	_body_mesh.name = "Body"
 	var body := CapsuleMesh.new()
-	body.radius = 0.34
-	body.height = 1.78
+	body.radius = 16.0 * GOLDSRC_UNIT
+	body.height = 72.0 * GOLDSRC_UNIT
 	body.material = _body_material
 	_body_mesh.mesh = body
-	_body_mesh.position.y = 0.89
+	_body_mesh.position.y = STANDING_HULL_CENTER_Y
 	_fallback_visual.add_child(_body_mesh)
 
 	var visor_material := StandardMaterial3D.new()
@@ -97,10 +101,10 @@ func _build_actor() -> void:
 	visor_material.roughness = 0.25
 	var visor := MeshInstance3D.new()
 	var visor_mesh := BoxMesh.new()
-	visor_mesh.size = Vector3(0.42, 0.16, 0.08)
+	visor_mesh.size = Vector3(0.18, 0.07, 0.04)
 	visor_mesh.material = visor_material
 	visor.mesh = visor_mesh
-	visor.position = Vector3(0, 1.53, -0.29)
+	visor.position = Vector3(0, 0.61, -0.13)
 	_fallback_visual.add_child(visor)
 
 	player_skin = _skin_for_identity()
@@ -110,10 +114,10 @@ func _build_actor() -> void:
 	_fallback_visual.visible = not character_model.load_character(player_skin, "ak47")
 
 	_muzzle = OmniLight3D.new()
-	_muzzle.position = Vector3(0.24, 1.15, -0.55)
+	_muzzle.position = Vector3(0.10, 0.46, -0.23)
 	_muzzle.light_color = Color("#ff685d")
 	_muzzle.light_energy = 2.2
-	_muzzle.omni_range = 3.0
+	_muzzle.omni_range = 1.2
 	_muzzle.visible = false
 	add_child(_muzzle)
 
@@ -143,7 +147,7 @@ func _physics_process(delta: float) -> void:
 	velocity.x = movement_velocity.x
 	velocity.z = movement_velocity.z
 	if not is_on_floor():
-		velocity.y -= 20.0 * delta
+		velocity.y -= PLAYER_GRAVITY * delta
 	else:
 		velocity.y = -0.1
 	move_and_slide()
@@ -175,7 +179,7 @@ func _on_safe_velocity_computed(safe_velocity: Vector3) -> void:
 func _try_fire(enemy: Combatant) -> void:
 	if not is_instance_valid(enemy) or not enemy.alive:
 		return
-	var origin := global_position + Vector3(0, 1.25, 0)
+	var origin := aim_point()
 	var target := enemy.aim_point()
 	if origin.distance_to(target) > 38.0:
 		return

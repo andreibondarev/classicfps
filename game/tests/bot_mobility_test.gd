@@ -38,8 +38,8 @@ func _run() -> void:
 	var stalled_bots: Array[String] = []
 	for bot in game._all_bots():
 		var distance: float = bot.global_position.distance_to(starting_positions[bot])
-		if distance < 3.0:
-			stalled_bots.append("%s (%.2f m)" % [bot.name, distance])
+		if distance < 1.0:
+			stalled_bots.append("%s (%.2f world units)" % [bot.name, distance])
 	_check(
 		stalled_bots.is_empty(),
 		"every bot leaves its first navmesh waypoint: %s" % ", ".join(stalled_bots),

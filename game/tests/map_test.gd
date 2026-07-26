@@ -56,7 +56,9 @@ func _run() -> void:
 	_check(game.player.global_position.distance_to(game.player_spawn) < 0.1, "player uses a map spawn")
 	game.start_match()
 	game._begin_live()
-	for frame in range(4):
+	# The finer CS-sized navigation raster is synchronized with NavigationServer
+	# on a later physics iteration than the previous oversized mesh.
+	for frame in range(40):
 		await physics_frame
 	_check(game.targets.all(func(target: TargetActor) -> bool: return target.navigation_agent != null), "all bots have navigation agents")
 	_check(

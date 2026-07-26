@@ -7,44 +7,67 @@ signal weapon_changed(weapon_name: String, fire_mode: String)
 signal hit_confirmed(headshot: bool)
 signal died
 
-const STAND_HEIGHT := 1.82
-const CROUCH_HEIGHT := 1.22
-const CAPSULE_RADIUS := 0.34
-const STAND_EYE := 1.62
-const CROUCH_EYE := 1.05
-const RUN_SPEED := 6.35
-const WALK_SPEED := 3.20
-const CROUCH_SPEED := 2.75
-const GROUND_ACCEL := 10.0
-const AIR_ACCEL := 11.5
-const GROUND_FRICTION := 5.2
-const STOP_SPEED := 2.55
-const GRAVITY := 20.0
-const JUMP_SPEED := 6.65
-const RANGE := 180.0
+# GoldSrc BSP coordinates are imported at one Godot unit per 100 GoldSrc units.
+# Keep the original values visible here so movement can be audited against
+# CS 1.6/ReGameDLL pm_shared without silently mixing metres and engine units.
+const WORLD_SCALE := 0.01
+const CLASSIC_TICK_RATE := 100.0
+const STAND_HEIGHT := 72.0 * WORLD_SCALE
+const CROUCH_HEIGHT := 50.0 * WORLD_SCALE
+const HULL_WIDTH := 32.0 * WORLD_SCALE
+const CAPSULE_RADIUS := 16.0 * WORLD_SCALE # Compatibility alias; the hull is now a box.
+const STAND_EYE := 53.0 * WORLD_SCALE # -36 hull minimum + CS 17-unit view offset.
+const CROUCH_EYE := 30.0 * WORLD_SCALE # -18 hull minimum + CS 12-unit view offset.
+const DUCK_TIME := 0.4
+const DUCK_SPEED_MULTIPLIER := 0.333
+const CL_FORWARD_SPEED := 400.0
+const CL_BACK_SPEED := 400.0
+const CL_SIDE_SPEED := 400.0
+const CL_MOVE_SPEED_KEY := 0.52
+const SV_MAX_SPEED := 320.0
+const RUN_SPEED := 250.0 * WORLD_SCALE
+const WALK_SPEED := 208.0 * WORLD_SCALE
+const CROUCH_SPEED := 83.25 * WORLD_SCALE
+const GROUND_ACCEL := 5.0
+const AIR_ACCEL := 10.0
+const AIR_WISH_SPEED_CAP := 30.0 * WORLD_SCALE
+const GROUND_FRICTION := 4.0
+const PLAYER_FRICTION := 1.0
+const STOP_SPEED := 75.0 * WORLD_SCALE
+const GRAVITY := 800.0 * WORLD_SCALE
+const JUMP_SPEED := sqrt(2.0 * 800.0 * 45.0) * WORLD_SCALE
+const BUNNYJUMP_MAX_SPEED_FACTOR := 1.2
+const BUNNYJUMP_CROP_FACTOR := 0.8
+const FLOOR_NORMAL_MINIMUM := 0.7
+const FLOOR_CATEGORIZE_DISTANCE := 2.0 * WORLD_SCALE
+const STEP_HEIGHT := 18.0 * WORLD_SCALE
 const ViewModelScript = preload("res://scripts/mdl_viewmodel.gd")
 const GrenadeScript = preload("res://scripts/grenade.gd")
 const WEAPONS := {
 	"ak47": {
 		"name": "AK-47", "mode": "FULL AUTO", "magazine": 30, "reserve": 90,
-		"damage": 34.0, "interval": 0.10, "reload": 2.25, "spread": 0.0018,
+		"max_speed": 221.0,
+		"damage": 36.0, "interval": 0.0955, "reload": 2.45,
 		"shot": "res://assets/sounds/ak47-1.wav",
 		"reload_sound": "res://assets/sounds/ak47_clipin.wav",
 	},
 	"deagle": {
 		"name": "DESERT EAGLE", "mode": "SEMI AUTO", "magazine": 7, "reserve": 35,
-		"damage": 54.0, "interval": 0.225, "reload": 2.20, "spread": 0.0013,
+		"max_speed": 250.0,
+		"damage": 54.0, "interval": 0.225, "reload": 2.20,
 		"shot": "res://assets/sounds/deagle-1.wav",
 		"reload_sound": "res://assets/sounds/deagle_reload.wav",
 	},
 	"knife": {
 		"name": "KNIFE", "mode": "MELEE", "magazine": -1, "reserve": -1,
-		"damage": 65.0, "interval": 0.48, "reload": 0.0, "spread": 0.0,
+		"max_speed": 250.0,
+		"damage": 65.0, "interval": 0.48, "reload": 0.0,
 		"shot": "res://assets/sounds/knife_slash1.wav", "reload_sound": "",
 	},
 	"hegrenade": {
 		"name": "HE GRENADE", "mode": "THROW", "magazine": 1, "reserve": 0,
-		"damage": 0.0, "interval": 1.0, "reload": 0.0, "spread": 0.0,
+		"max_speed": 250.0,
+		"damage": 0.0, "interval": 1.0, "reload": 0.0,
 		"shot": "res://assets/sounds/hegrenade-1.wav", "reload_sound": "",
 	},
 }
@@ -73,11 +96,21 @@ var _reload_generation := 0
 var _rng := RandomNumberGenerator.new()
 var _standing := true
 var _walking := false
+var _duck_elapsed := 0.0
+var _jump_was_down := false
+var _max_speed_override_ups := 0.0
 var _step_distance := 0.0
 var _next_step_at := 1.65
 var _step_index := 0
 var _recoil_index := 0
 var _last_shot_at := -10.0
+var _ak_accuracy := 0.2
+var _ak_shots_fired := 0
+var _deagle_accuracy := 0.9
+var _deagle_last_fire := 0.0
+var _shot_sequence := 0
+var _recoil_direction := -1.0
+var _punch_degrees := Vector2.ZERO
 
 var camera: Camera3D
 var collider: CollisionShape3D
@@ -99,10 +132,11 @@ func _ready() -> void:
 	settings = get_node("/root/GameSettings")
 	collision_layer = 4
 	collision_mask = 1 | 2
-	floor_max_angle = deg_to_rad(48.0)
-	floor_snap_length = 0.22
+	floor_max_angle = acos(FLOOR_NORMAL_MINIMUM)
+	floor_snap_length = FLOOR_CATEGORIZE_DISTANCE
 	floor_stop_on_slope = true
 	armor = 100
+	has_helmet = true
 	_rng.seed = 0xC516
 	_configure_input()
 	combat_controller = HumanCombatController.new()
@@ -157,9 +191,8 @@ func _ensure_mouse_action(action: StringName, button: MouseButton) -> void:
 func _build_body() -> void:
 	collider = CollisionShape3D.new()
 	collider.name = "PlayerCollider"
-	var shape := CapsuleShape3D.new()
-	shape.radius = CAPSULE_RADIUS
-	shape.height = STAND_HEIGHT
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(HULL_WIDTH, STAND_HEIGHT, HULL_WIDTH)
 	collider.shape = shape
 	collider.position.y = STAND_HEIGHT * 0.5
 	add_child(collider)
@@ -224,8 +257,7 @@ func _apply_mouse_look(relative: Vector2) -> void:
 		deg_to_rad(-89.0),
 		deg_to_rad(89.0),
 	)
-	rotation.y = _yaw
-	camera.rotation.x = _pitch
+	_sync_view_angles()
 
 
 func _apply_settings() -> void:
@@ -240,8 +272,31 @@ func face_toward(world_position: Vector3) -> void:
 		return
 	_yaw = atan2(-planar_direction.x, -planar_direction.z)
 	_pitch = 0.0
-	rotation.y = _yaw
-	camera.rotation.x = _pitch
+	_sync_view_angles()
+
+
+func _sync_view_angles() -> void:
+	var rendered_yaw := _yaw + deg_to_rad(_punch_degrees.y)
+	rotation.y = rendered_yaw
+	if is_instance_valid(collider):
+		# GoldSrc traces an axis-aligned player hull, regardless of view yaw.
+		collider.rotation.y = -rendered_yaw
+	if is_instance_valid(camera):
+		camera.rotation.x = clampf(
+			_pitch + deg_to_rad(_punch_degrees.x),
+			deg_to_rad(-89.0),
+			deg_to_rad(89.0),
+		)
+
+
+func _drop_punch_angle(delta: float) -> void:
+	var length := _punch_degrees.length()
+	if length <= 0.00001:
+		_punch_degrees = Vector2.ZERO
+		return
+	var next_length := maxf(0.0, length - (10.0 + length * 0.5) * delta)
+	_punch_degrees *= next_length / length
+	_sync_view_angles()
 
 
 func _physics_process(delta: float) -> void:
@@ -252,29 +307,44 @@ func _physics_process(delta: float) -> void:
 
 	var command := combat_controller.gather_command(delta)
 	last_command = command
+	_drop_punch_angle(delta)
 	var look_delta: Vector2 = command.look_delta
 	if not look_delta.is_zero_approx():
 		_apply_mouse_look(look_delta)
 	_update_crouch(delta, command.crouch)
-	_walking = command.walk and _standing
+	_walking = command.walk
 	var input: Vector2 = command.movement
 	var wish_direction: Vector3 = Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, _yaw)
 	if wish_direction.length_squared() > 1.0:
 		wish_direction = wish_direction.normalized()
 	var wish_speed := _movement_speed(not _standing, _walking) * minf(1.0, input.length())
 
-	if is_on_floor():
-		if not command.jump:
+	var was_on_floor := is_on_floor()
+	var jump_pressed := _consume_jump_press(command.jump)
+	var jumped := was_on_floor and jump_pressed
+	if was_on_floor:
+		velocity.y = 0.0
+		if jumped:
+			_prevent_mega_bunny_jumping()
+			# PM_Jump replaces the first gravity half-step with the impulse, then
+			# applies PM_FixupGravityVelocity before collision integration.
+			velocity.y = JUMP_SPEED - GRAVITY * delta * 0.5
+			_air_accelerate(wish_direction, wish_speed, AIR_ACCEL, delta)
+		else:
 			_apply_friction(delta)
-		_accelerate(wish_direction, wish_speed, GROUND_ACCEL, delta)
-		if command.jump and _standing:
-			velocity.y = JUMP_SPEED
+			_accelerate(wish_direction, wish_speed, GROUND_ACCEL, delta)
 	else:
-		velocity.y -= GRAVITY * delta
-		_accelerate(wish_direction, wish_speed, AIR_ACCEL, delta)
+		# GoldSrc splits gravity equally around PM_AirMove.
+		velocity.y -= GRAVITY * delta * 0.5
+		_air_accelerate(wish_direction, wish_speed, AIR_ACCEL, delta)
 
 	var previous := global_position
 	move_and_slide()
+	if not is_on_floor():
+		velocity.y -= GRAVITY * delta * 0.5
+	else:
+		# PM_PlayerMove clears residual downward velocity after categorizing a landing.
+		velocity.y = 0.0
 	var horizontal_distance := Vector2(
 		global_position.x - previous.x,
 		global_position.z - previous.z,
@@ -294,51 +364,169 @@ func _physics_process(delta: float) -> void:
 		_start_reload()
 
 
+func _consume_jump_press(jump_down: bool) -> bool:
+	var pressed := jump_down and not _jump_was_down
+	_jump_was_down = jump_down
+	return pressed
+
+
 func _apply_friction(delta: float) -> void:
-	var horizontal: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
-	var speed: float = horizontal.length()
-	if speed < 0.001:
-		velocity.x = 0.0
-		velocity.z = 0.0
-		return
+	velocity = _friction_velocity(velocity, delta)
+
+
+func _friction_velocity(source: Vector3, delta: float, edge_friction := 1.0) -> Vector3:
+	var speed: float = source.length()
+	# pm_shared.c intentionally leaves velocities below 0.1 GoldSrc units/s alone.
+	if speed < 0.1 * WORLD_SCALE:
+		return source
 	var control: float = maxf(speed, STOP_SPEED)
-	var drop: float = control * GROUND_FRICTION * delta
+	var drop: float = control * GROUND_FRICTION * edge_friction * PLAYER_FRICTION * delta
 	var next_speed: float = maxf(0.0, speed - drop)
-	horizontal *= next_speed / speed
-	velocity.x = horizontal.x
-	velocity.z = horizontal.z
+	return source * (next_speed / speed)
 
 
 func _accelerate(wish_direction: Vector3, wish_speed: float, acceleration: float, delta: float) -> void:
+	velocity = _accelerated_velocity(velocity, wish_direction, wish_speed, acceleration, delta)
+
+
+func _accelerated_velocity(
+	source: Vector3,
+	wish_direction: Vector3,
+	wish_speed: float,
+	acceleration: float,
+	delta: float,
+) -> Vector3:
 	if wish_speed <= 0.0 or wish_direction.is_zero_approx():
-		return
-	var current_speed: float = Vector3(velocity.x, 0.0, velocity.z).dot(wish_direction)
+		return source
+	var current_speed: float = source.dot(wish_direction)
 	var add_speed: float = wish_speed - current_speed
 	if add_speed <= 0.0:
+		return source
+	var acceleration_speed: float = minf(
+		acceleration * wish_speed * delta * PLAYER_FRICTION,
+		add_speed,
+	)
+	return source + wish_direction * acceleration_speed
+
+
+func _air_accelerate(
+	wish_direction: Vector3,
+	wish_speed: float,
+	acceleration: float,
+	delta: float,
+) -> void:
+	velocity = _air_accelerated_velocity(
+		velocity,
+		wish_direction,
+		wish_speed,
+		acceleration,
+		delta,
+	)
+
+
+func _air_accelerated_velocity(
+	source: Vector3,
+	wish_direction: Vector3,
+	wish_speed: float,
+	acceleration: float,
+	delta: float,
+) -> Vector3:
+	if wish_speed <= 0.0 or wish_direction.is_zero_approx():
+		return source
+	# GoldSrc caps only "addspeed" at 30 ups. The acceleration term uses the
+	# original, uncapped wishspeed; this asymmetry is essential to air strafing.
+	var capped_wish_speed := minf(wish_speed, AIR_WISH_SPEED_CAP)
+	var current_speed: float = source.dot(wish_direction)
+	var add_speed: float = capped_wish_speed - current_speed
+	if add_speed <= 0.0:
+		return source
+	var acceleration_speed: float = minf(
+		acceleration * wish_speed * delta * PLAYER_FRICTION,
+		add_speed,
+	)
+	return source + wish_direction * acceleration_speed
+
+
+func _prevent_mega_bunny_jumping() -> void:
+	var speed := velocity.length()
+	var maximum := _maximum_speed(false) * BUNNYJUMP_MAX_SPEED_FACTOR
+	if maximum <= 0.0 or speed <= maximum:
 		return
-	var acceleration_speed: float = minf(acceleration * wish_speed * delta, add_speed)
-	velocity.x += wish_direction.x * acceleration_speed
-	velocity.z += wish_direction.z * acceleration_speed
+	velocity *= (maximum / speed) * BUNNYJUMP_CROP_FACTOR
 
 
 func _movement_speed(crouching: bool, walking: bool) -> float:
-	if crouching:
-		return CROUCH_SPEED
-	return WALK_SPEED if walking else RUN_SPEED
+	var speed := _maximum_speed(walking)
+	return speed * DUCK_SPEED_MULTIPLIER if crouching else speed
+
+
+func _maximum_speed(walking: bool) -> float:
+	var client_max_speed_ups := _max_speed_override_ups
+	if client_max_speed_ups <= 0.0:
+		client_max_speed_ups = float(WEAPONS[active_weapon].max_speed)
+	var command_speed_ups := CL_FORWARD_SPEED * (CL_MOVE_SPEED_KEY if walking else 1.0)
+	var maximum_ups := minf(SV_MAX_SPEED, minf(client_max_speed_ups, command_speed_ups))
+	return maximum_ups * WORLD_SCALE
+
+
+func set_max_speed(max_speed_units_per_second: float) -> void:
+	# Mirrors playermove_t::clientmaxspeed. Pass zero to return control to the
+	# active weapon's CS 1.6 max-speed value.
+	_max_speed_override_ups = maxf(0.0, max_speed_units_per_second)
 
 
 func _update_crouch(delta: float, wants_crouch: bool) -> void:
-	if not wants_crouch and not _standing:
-		var probe := Transform3D(Basis.IDENTITY, Vector3(0, (STAND_HEIGHT - CROUCH_HEIGHT) * 0.5, 0))
-		if test_move(global_transform, probe.origin):
-			wants_crouch = true
-	_standing = not wants_crouch
-	var target_height := STAND_HEIGHT if _standing else CROUCH_HEIGHT
-	var target_eye := STAND_EYE if _standing else CROUCH_EYE
-	var shape := collider.shape as CapsuleShape3D
-	shape.height = move_toward(shape.height, target_height, delta * 5.5)
-	collider.position.y = shape.height * 0.5
-	camera.position.y = move_toward(camera.position.y, target_eye, delta * 5.5)
+	if not wants_crouch:
+		if not _standing and not _can_use_standing_hull():
+			return
+		_standing = true
+		_duck_elapsed = 0.0
+		_apply_hull(STAND_HEIGHT)
+		camera.position.y = STAND_EYE
+		return
+
+	if not _standing:
+		_apply_hull(CROUCH_HEIGHT)
+		camera.position.y = CROUCH_EYE
+		return
+
+	# CS completes ducking immediately in the air. On the ground it uses
+	# PM_SplineFraction over TIME_TO_DUCK, changing to hull 1 at completion.
+	_duck_elapsed = DUCK_TIME if not is_on_floor() else minf(DUCK_TIME, _duck_elapsed + delta)
+	var fraction := _spline_fraction(_duck_elapsed / DUCK_TIME)
+	camera.position.y = lerpf(STAND_EYE, CROUCH_EYE, fraction)
+	if _duck_elapsed >= DUCK_TIME:
+		_standing = false
+		_apply_hull(CROUCH_HEIGHT)
+		camera.position.y = CROUCH_EYE
+
+
+func _spline_fraction(value: float) -> float:
+	var clamped := clampf(value, 0.0, 1.0)
+	return 3.0 * clamped * clamped - 2.0 * clamped * clamped * clamped
+
+
+func _apply_hull(height: float) -> void:
+	var shape := collider.shape as BoxShape3D
+	shape.size = Vector3(HULL_WIDTH, height, HULL_WIDTH)
+	# PlayerController's transform is feet-level. GoldSrc offsets the entity
+	# origin when changing its asymmetric duck hull; keeping the feet fixed is
+	# the equivalent representation in this coordinate system.
+	collider.position.y = height * 0.5
+
+
+func _can_use_standing_hull() -> bool:
+	if not is_inside_tree() or get_world_3d() == null:
+		return true
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(HULL_WIDTH, STAND_HEIGHT, HULL_WIDTH)
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = shape
+	query.transform = Transform3D(Basis.IDENTITY, global_position + Vector3.UP * STAND_HEIGHT * 0.5)
+	query.collision_mask = collision_mask
+	query.exclude = [get_rid()]
+	query.collide_with_areas = false
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
 
 
 func _apply_view_bob() -> void:
@@ -388,48 +576,173 @@ func _try_fire() -> void:
 			muzzle_light.visible = false
 	)
 
-	var movement := Vector2(velocity.x, velocity.z).length() / RUN_SPEED
-	var spread: float = float(definition.spread) + movement * 0.008 + (0.006 if not is_on_floor() else 0.0)
-	var direction := -camera.global_transform.basis.z
-	direction += camera.global_transform.basis.x * _rng.randfn(0.0, spread)
-	direction += camera.global_transform.basis.y * _rng.randfn(0.0, spread)
-	direction = direction.normalized()
+	var spread := _weapon_spread()
+	var direction := Ballistics.spread_direction(
+		-camera.global_transform.basis.z,
+		camera.global_transform.basis.x,
+		camera.global_transform.basis.y,
+		_shot_sequence,
+		spread,
+	)
+	_shot_sequence = (_shot_sequence + 1) & 0xff
 	var origin := camera.global_position
-	var end := origin + direction * RANGE
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 | 2, [get_rid()])
-	query.collide_with_areas = false
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	var trace_end := end
-	if not hit.is_empty():
-		trace_end = hit.position
-		var hit_collider: Object = hit.collider
-		var headshot := false
-		if hit_collider and hit_collider.has_method("head_height"):
-			headshot = hit.position.y >= float(hit_collider.call("head_height"))
-		if hit_collider and hit_collider.has_method("apply_damage"):
-			hit_collider.call(
-				"apply_damage",
-				float(definition.damage) * (4.0 if headshot else 1.0),
-				hit.position,
-				headshot,
-				self,
-			)
-			hit_confirmed.emit(headshot)
-		else:
-			_spawn_impact(hit.position, hit.normal)
+	var trace_end := _fire_cs_bullet(origin, direction)
 	_spawn_tracer(origin, trace_end, Color("#ffd46b"))
 
-	if now - _last_shot_at > 0.34:
-		_recoil_index = 0
-	var recoil: Vector2 = RECOIL_PATTERN[mini(_recoil_index, RECOIL_PATTERN.size() - 1)]
-	var recoil_scale := 1.36 if active_weapon == "deagle" else 1.0
-	_pitch = clamp(_pitch - deg_to_rad(recoil.y * recoil_scale), deg_to_rad(-89.0), deg_to_rad(89.0))
-	_yaw += deg_to_rad(recoil.x * recoil_scale)
-	_recoil_index += 1
+	_record_weapon_shot(now)
+	_apply_weapon_kickback()
 	_last_shot_at = now
-	rotation.y = _yaw
-	camera.rotation.x = _pitch
+	_sync_view_angles()
 	viewmodel.play_action("fire")
+
+
+func _weapon_spread() -> float:
+	var planar_speed := Vector2(velocity.x, velocity.z).length()
+	if active_weapon == "ak47":
+		if not is_on_floor():
+			return 0.04 + 0.4 * _ak_accuracy
+		if planar_speed > 140.0 * WORLD_SCALE:
+			return 0.04 + 0.07 * _ak_accuracy
+		return 0.0275 * _ak_accuracy
+	if not is_on_floor():
+		return 1.5 * (1.0 - _deagle_accuracy)
+	if planar_speed > 0.0:
+		return 0.25 * (1.0 - _deagle_accuracy)
+	if not _standing:
+		return 0.115 * (1.0 - _deagle_accuracy)
+	return 0.13 * (1.0 - _deagle_accuracy)
+
+
+func _record_weapon_shot(now: float) -> void:
+	if active_weapon == "ak47":
+		if now - _last_shot_at > 0.4:
+			_ak_shots_fired = 0
+		_ak_accuracy = 0.2
+		_ak_shots_fired += 1
+		_ak_accuracy = minf(
+			1.25,
+			float(_ak_shots_fired * _ak_shots_fired * _ak_shots_fired) / 200.0 + 0.35,
+		)
+		return
+	if _deagle_last_fire > 0.0:
+		_deagle_accuracy = clampf(
+			_deagle_accuracy - (0.4 - (now - _deagle_last_fire)) * 0.35,
+			0.55,
+			0.9,
+		)
+	_deagle_last_fire = now
+
+
+func _apply_weapon_kickback() -> void:
+	if active_weapon == "deagle":
+		_punch_degrees.x -= 2.0
+		return
+	var planar_speed := Vector2(velocity.x, velocity.z).length()
+	var parameters: Array[float]
+	if planar_speed > 0.0:
+		parameters = [1.5, 0.45, 0.225, 0.05, 6.5, 2.5, 7.0]
+	elif not is_on_floor():
+		parameters = [2.0, 1.0, 0.5, 0.35, 9.0, 6.0, 5.0]
+	elif not _standing:
+		parameters = [0.9, 0.35, 0.15, 0.025, 5.5, 1.5, 9.0]
+	else:
+		parameters = [1.0, 0.375, 0.175, 0.0375, 5.75, 1.75, 8.0]
+	var shot_count := maxi(_ak_shots_fired, 1)
+	var kick_up := parameters[0] + (float(shot_count) * parameters[2] if shot_count > 1 else 0.0)
+	var kick_lateral := parameters[1] + (float(shot_count) * parameters[3] if shot_count > 1 else 0.0)
+	_punch_degrees.x = maxf(_punch_degrees.x - kick_up, -parameters[4])
+	_punch_degrees.y = clampf(
+		_punch_degrees.y + kick_lateral * _recoil_direction,
+		-parameters[5],
+		parameters[5],
+	)
+	if _rng.randi_range(0, int(parameters[6])) == 0:
+		_recoil_direction *= -1.0
+
+
+func _fire_cs_bullet(origin: Vector3, direction: Vector3) -> Vector3:
+	var profile := Ballistics.weapon_profile(active_weapon)
+	if profile.is_empty():
+		return origin
+	var remaining_distance := float(profile.range_meters)
+	var current_damage := int(profile.base_damage)
+	var penetrations := int(profile.penetrations)
+	var penetration_power := -1
+	var damage_modifier := 0.5
+	var trace_origin := origin
+	var trace_end := origin + direction * remaining_distance
+	var exclusions: Array[RID] = [get_rid()]
+	while penetrations > 0 and remaining_distance > 0.0 and current_damage > 0:
+		var end := trace_origin + direction * remaining_distance
+		var query := PhysicsRayQueryParameters3D.create(
+			trace_origin,
+			end,
+			1 | 2 | 4,
+			exclusions,
+		)
+		query.collide_with_areas = false
+		var hit := get_world_3d().direct_space_state.intersect_ray(query)
+		if hit.is_empty():
+			trace_end = end
+			break
+		trace_end = hit.position
+		var hit_collider: Object = hit.collider
+		var traveled := trace_origin.distance_to(hit.position)
+		var damageable := hit_collider and hit_collider.has_method("receive_bullet_damage")
+		var is_world_surface := not damageable
+		var surface_type := (
+			Ballistics.SURFACE_CONCRETE
+			if is_world_surface
+			else Ballistics.SURFACE_DEFAULT
+		)
+		var step := Ballistics.penetration_step(
+			current_damage,
+			float(profile.range_modifier),
+			traveled,
+			str(profile.bullet_type),
+			surface_type,
+			is_world_surface,
+			penetrations,
+			penetration_power,
+			damage_modifier,
+		)
+		if damageable:
+			var hit_group := Ballistics.HitGroup.CHEST
+			if (
+				hit_collider.has_method("head_height")
+				and hit.position.y >= float(hit_collider.call("head_height"))
+			):
+				hit_group = Ballistics.HitGroup.HEAD
+			hit_collider.call(
+				"receive_bullet_damage",
+				int(step.damage_at_hit),
+				hit_group,
+				active_weapon,
+				hit.position,
+				self,
+			)
+			hit_confirmed.emit(hit_group == Ballistics.HitGroup.HEAD)
+		else:
+			_spawn_impact(hit.position, hit.normal)
+		if not bool(step.can_continue):
+			break
+		# The imported BSP uses one StaticBody for the entire world. Excluding
+		# that RID would incorrectly make every later wall transparent.
+		if damageable and hit_collider is CollisionObject3D:
+			exclusions.append((hit_collider as CollisionObject3D).get_rid())
+		remaining_distance = maxf(
+			0.0,
+			(remaining_distance - traveled) * float(step.remaining_distance_scale),
+		)
+		current_damage = int(step.next_damage)
+		penetrations = int(step.penetrations_remaining)
+		penetration_power = int(step.penetration_power_units)
+		damage_modifier = float(step.damage_modifier)
+		trace_origin = (
+			hit.position
+			+ direction * float(step.penetration_power_meters)
+		)
+	return trace_end
 
 
 func _fire_knife(now: float) -> void:
@@ -463,10 +776,11 @@ func _throw_grenade(now: float) -> void:
 	viewmodel.play_action("throw")
 	var grenade: HEGrenade = GrenadeScript.new()
 	get_tree().current_scene.add_child(grenade)
-	var direction := -camera.global_transform.basis.z
+	var view_pitch := rad_to_deg(camera.rotation.x)
+	var goldsrc_yaw := rad_to_deg(rotation.y) + 90.0
 	grenade.launch(
-		camera.global_position + direction * 0.55,
-		direction * 14.5 + Vector3.UP * 2.7 + velocity * 0.35,
+		Ballistics.he_throw_origin(camera.global_position, view_pitch, goldsrc_yaw),
+		Ballistics.he_throw_velocity(view_pitch, goldsrc_yaw, velocity),
 		self,
 	)
 	await get_tree().create_timer(0.28).timeout
@@ -495,6 +809,11 @@ func _start_reload() -> void:
 	reserve -= loaded
 	_store_active_ammunition()
 	reloading = false
+	if active_weapon == "ak47":
+		_ak_accuracy = 0.2
+		_ak_shots_fired = 0
+	elif active_weapon == "deagle":
+		_deagle_accuracy = 0.9
 	ammo_changed.emit(clip, reserve, reloading)
 
 
@@ -505,6 +824,11 @@ func switch_weapon(weapon: String) -> void:
 	_reload_generation += 1
 	reloading = false
 	active_weapon = weapon
+	if active_weapon == "ak47":
+		_ak_accuracy = 0.2
+		_ak_shots_fired = 0
+	elif active_weapon == "deagle":
+		_deagle_accuracy = 0.9
 	if ammunition.has(active_weapon):
 		clip = int(ammunition[active_weapon].clip)
 		reserve = int(ammunition[active_weapon].reserve)
@@ -544,6 +868,7 @@ func refill_weapon(weapon: String) -> void:
 
 func refill_armor() -> void:
 	armor = 100
+	has_helmet = true
 	health_changed.emit(health, armor)
 
 
@@ -629,11 +954,22 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	clip = int(ammunition.ak47.clip)
 	reserve = int(ammunition.ak47.reserve)
 	velocity = Vector3.ZERO
+	_standing = true
 	_walking = false
+	_duck_elapsed = 0.0
+	_jump_was_down = false
 	_yaw = 0.0
 	_pitch = 0.0
+	_punch_degrees = Vector2.ZERO
+	_ak_accuracy = 0.2
+	_ak_shots_fired = 0
+	_deagle_accuracy = 0.9
+	_deagle_last_fire = 0.0
 	rotation = Vector3.ZERO
+	collider.rotation = Vector3.ZERO
+	_apply_hull(STAND_HEIGHT)
 	camera.rotation = Vector3.ZERO
+	camera.position.y = STAND_EYE
 	weapon_anchor.rotation = Vector3.ZERO
 	weapon_anchor.position = Vector3.ZERO
 	viewmodel.load_weapon(active_weapon)

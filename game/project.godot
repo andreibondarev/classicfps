@@ -32,9 +32,14 @@ environment/defaults/default_clear_color=Color(0.018, 0.027, 0.043, 1)
 
 [physics]
 
-common/physics_ticks_per_second=128
+common/physics_ticks_per_second=100
 common/max_physics_steps_per_frame=16
-3d/default_gravity=20.0
+3d/default_gravity=8.0
+
+[navigation]
+
+3d/default_cell_size=0.04
+3d/default_cell_height=0.02
 
 [audio]
 

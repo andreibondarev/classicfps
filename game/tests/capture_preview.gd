@@ -54,8 +54,8 @@ func _run() -> void:
 		await physics_frame
 	var mobility_ok := _capture(output_root.path_join("protocol47-bot-mobility.png"))
 
-	game.player.global_position = Vector3(0, 0.08, 13)
-	game.player.face_toward(Vector3(0, 0.08, 0))
+	game.player.global_position = Vector3(0, 0.08, 4.2)
+	game.player.face_toward(Vector3(0, 0.08, 0.5))
 	if is_instance_valid(game.imported_map):
 		game.imported_map.visible = false
 	for child in game.get_children():
@@ -64,14 +64,14 @@ func _run() -> void:
 	var rows := [game.allied_bots, game.targets]
 	for row_index in range(rows.size()):
 		var row: Array[TargetActor] = rows[row_index]
-		var spacing := 2.4
+		var spacing := 0.62
 		for bot_index in range(row.size()):
 			var bot := row[bot_index]
 			bot.active = false
 			bot.global_position = Vector3(
 				(float(bot_index) - (float(row.size()) - 1.0) * 0.5) * spacing,
 				0.08,
-				5.0 - row_index * 4.0,
+				1.0 - row_index * 0.9,
 			)
 			bot.look_at(game.player.global_position, Vector3.UP)
 	for frame in range(8):
@@ -81,8 +81,10 @@ func _run() -> void:
 	for bot in game._all_bots():
 		bot.character_model.visible = false
 	var closeup: TargetActor = game.allied_bots[0]
-	game.player.global_position = Vector3(0, 0.08, 11)
+	game.player.global_position = Vector3(0, 0.08, 9.1)
 	game.player.face_toward(Vector3(0, 0.08, 8))
+	game.player._pitch = 0.05
+	game.player._sync_view_angles()
 	closeup.character_model.visible = true
 	closeup.global_position = Vector3(0, 0.08, 8)
 	closeup.look_at(game.player.global_position, Vector3.UP)

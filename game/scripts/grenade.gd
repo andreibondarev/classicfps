@@ -1,28 +1,42 @@
 class_name HEGrenade
 extends RigidBody3D
 
-const FUSE_SECONDS := 1.7
-const BLAST_RADIUS := 5.8
-const MAX_DAMAGE := 95.0
+const Ballistics := preload("res://scripts/cs16_ballistics.gd")
+const FUSE_SECONDS := Ballistics.HE_FUSE_SECONDS
+const BLAST_RADIUS := Ballistics.HE_RADIUS_METERS
+const MAX_DAMAGE := Ballistics.HE_BASE_DAMAGE
 const BOUNCE_SOUND := preload("res://assets/sounds/he_bounce-1.wav")
 const EXPLOSION_SOUND := preload("res://assets/sounds/explode3.wav")
 
 var _exploded := false
 var _bounce_audio: AudioStreamPlayer3D
 var thrower: Combatant
+var _ground_slowdown_armed := true
 
 
 func _ready() -> void:
 	name = "HEGrenade"
 	collision_layer = 8
-	collision_mask = 1 | 2
+	collision_mask = 1 | 2 | 4
 	continuous_cd = true
 	contact_monitor = true
-	max_contacts_reported = 3
+	max_contacts_reported = 6
+	linear_damp = 0.0
+	angular_damp = 0.0
+	var world_gravity := float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
+	gravity_scale = Ballistics.HE_GRAVITY_METERS_PER_SECOND_SQUARED / world_gravity
+	var physics_material := PhysicsMaterial.new()
+	# GoldSrc uses pev->friction as inverse elasticity, not as tangential
+	# friction. Godot's equivalent bounce is therefore 1 - 0.7.
+	physics_material.friction = 0.0
+	physics_material.bounce = 1.0 - Ballistics.HE_FRICTION
+	physics_material_override = physics_material
 
 	var collider := CollisionShape3D.new()
 	var shape := SphereShape3D.new()
-	shape.radius = 0.09
+	# GoldSrc gives grenades a point-sized bbox. One converted unit is the
+	# smallest robust Godot approximation.
+	shape.radius = Ballistics.METERS_PER_GOLDSRC_UNIT
 	collider.shape = shape
 	add_child(collider)
 	var model := MeshInstance3D.new()
@@ -47,6 +61,23 @@ func _ready() -> void:
 	get_tree().create_timer(FUSE_SECONDS).timeout.connect(explode)
 
 
+func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
+	var grounded := false
+	for contact_index in range(state.get_contact_count()):
+		if state.get_contact_local_normal(contact_index).y > 0.7:
+			grounded = true
+			break
+	if grounded and _ground_slowdown_armed:
+		if Ballistics.he_should_stop_after_ground_bounce(linear_velocity, Vector3.UP):
+			linear_velocity = Vector3.ZERO
+			angular_velocity = Vector3.ZERO
+		else:
+			linear_velocity *= Ballistics.HE_GROUND_VELOCITY_RETENTION
+		_ground_slowdown_armed = false
+	elif not grounded:
+		_ground_slowdown_armed = true
+
+
 func launch(
 	origin: Vector3,
 	impulse: Vector3,
@@ -55,7 +86,7 @@ func launch(
 	thrower = thrower_combatant
 	global_position = origin
 	linear_velocity = impulse
-	angular_velocity = Vector3(8.0, 12.0, 5.0)
+	angular_velocity = Vector3.ZERO
 
 
 func explode() -> void:
@@ -64,18 +95,27 @@ func explode() -> void:
 	_exploded = true
 	freeze = true
 	visible = false
+	var damage_origin := Ballistics.he_damage_origin(global_position)
 	for actor in get_tree().get_nodes_in_group("damageable"):
-		if not actor is Node3D or not actor.has_method("apply_damage"):
+		if not actor is Combatant or not actor.has_method("receive_explosion_damage"):
 			continue
-		var distance: float = global_position.distance_to(actor.global_position)
+		var distance: float = damage_origin.distance_to(actor.global_position)
 		if distance >= BLAST_RADIUS:
 			continue
-		var exposure := 1.0 - distance / BLAST_RADIUS
+		var damage_target: Vector3 = actor.aim_point()
+		var query := PhysicsRayQueryParameters3D.create(
+			damage_origin,
+			damage_target,
+			1 | 2 | 4,
+			[get_rid()],
+		)
+		var obstruction := get_world_3d().direct_space_state.intersect_ray(query)
+		if not obstruction.is_empty() and obstruction.collider != actor:
+			continue
 		actor.call(
-			"apply_damage",
-			MAX_DAMAGE * exposure * exposure,
+			"receive_explosion_damage",
+			Ballistics.he_radius_damage(distance),
 			global_position,
-			false,
 			thrower,
 		)
 	var flash := OmniLight3D.new()

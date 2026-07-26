@@ -119,14 +119,14 @@ func _build_navigation_region() -> void:
 	var navigation_mesh := NavigationMesh.new()
 	navigation_mesh.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
 	navigation_mesh.geometry_collision_mask = 1
-	navigation_mesh.agent_height = 1.75
-	navigation_mesh.agent_radius = 0.50
-	navigation_mesh.agent_max_climb = 0.50
+	navigation_mesh.agent_height = 0.72
+	navigation_mesh.agent_radius = 0.16
+	navigation_mesh.agent_max_climb = 0.18
 	navigation_mesh.agent_max_slope = 48.0
-	navigation_mesh.cell_size = 0.25
-	navigation_mesh.cell_height = 0.25
+	navigation_mesh.cell_size = 0.04
+	navigation_mesh.cell_height = 0.02
 	navigation_mesh.edge_max_length = 8.0
-	navigation_mesh.detail_sample_distance = 2.0
+	navigation_mesh.detail_sample_distance = 2.51
 	navigation_mesh.detail_sample_max_error = 0.8
 	navigation_region.navigation_mesh = navigation_mesh
 	add_child(navigation_region)

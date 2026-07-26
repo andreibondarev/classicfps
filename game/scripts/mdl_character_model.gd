@@ -1,7 +1,9 @@
 class_name MdlCharacterModel
 extends Node3D
 
-const MODEL_SCALE := 2.5
+# BSP geometry and converted MDL vertices both use 0.01 Godot units for one
+# GoldSrc unit. Keeping this at 1.0 preserves the original player-to-map ratio.
+const MODEL_SCALE := 1.0
 const MAX_VISUAL_FPS := 24.0
 
 static var _template_cache: Dictionary = {}

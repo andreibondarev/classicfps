@@ -1,7 +1,7 @@
 # Protocol 47
 
 Protocol 47 is the playable native game built alongside the CS 1.6 replay
-viewer. Godot owns the client, 128 Hz simulation, UI, audio, and rendering. The
+viewer. Godot owns the client, classic 100 Hz simulation, UI, audio, and rendering. The
 existing Rust crate converts GoldSrc BSP and WAD data into portable game
 content.
 
@@ -29,7 +29,7 @@ ammunition, `F3` buys armor, and `F4` buys an HE grenade.
 
 The current release is an offline 5v5 Dust2 bomb scenario: the human player
 and four T bots fight five CT bots. It includes GoldSrc-inspired
-acceleration, friction and air control; 128 Hz fixed-step physics; the original
+acceleration, friction and air control; 100 Hz fixed-step physics; the original
 CS weapon models and sounds; rifle, pistol, knife and grenade combat; navigating
 teammates and opponents; headshots and recoil; freeze/live/bomb/post phases; persistent score
 and economy; planting at the original map sites; and a native HUD.

@@ -33,6 +33,21 @@ func _model_feet_height(model: MdlCharacterModel) -> float:
 	return model.position.y + bounds.position.y * model.scale.y
 
 
+func _uses_goldsrc_hull(target: TargetActor) -> bool:
+	var shape_node := target.get_node_or_null("PlayerCollider") as CollisionShape3D
+	return (
+		shape_node != null
+		and shape_node.shape is BoxShape3D
+		and (shape_node.shape as BoxShape3D).size.is_equal_approx(
+			Vector3(0.32, 0.72, 0.32),
+		)
+	)
+
+
+func _uses_world_model_scale(target: TargetActor) -> bool:
+	return target.character_model.scale.is_equal_approx(Vector3.ONE)
+
+
 func _run() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_check(packed != null, "main scene loads")
@@ -104,8 +119,20 @@ func _run() -> void:
 		),
 		"all player skins render with an attached third-person weapon",
 	)
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return _uses_goldsrc_hull(target)
+		),
+		"bots use the scaled 32 by 32 by 72 GoldSrc box hull",
+	)
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return _uses_world_model_scale(target)
+		),
+		"player MDLs use the same 0.01 world scale as BSP geometry",
+	)
 	_check(game.hud != null, "HUD instantiated")
-	_check(Engine.physics_ticks_per_second == 128, "128 Hz fixed physics configured")
+	_check(Engine.physics_ticks_per_second == 100, "classic 100 Hz fixed physics configured")
 	_check(not game.using_imported_map, "procedural test arena selected")
 
 	game.start_match()
@@ -125,7 +152,7 @@ func _run() -> void:
 		"walking has a lower maximum speed than running",
 	)
 	Input.action_press("walk")
-	var walking_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	var walking_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
 	_check(walking_command.walk, "holding Shift reaches the human controller")
 	Input.action_release("walk")
 
@@ -135,7 +162,7 @@ func _run() -> void:
 	control_click.ctrl_pressed = true
 	control_click.pressed = true
 	game.player.combat_controller.ingest_input(control_click)
-	var crouch_fire_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	var crouch_fire_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
 	_check(crouch_fire_command.crouch, "holding Control requests crouch")
 	_check(crouch_fire_command.fire, "macOS Control-click still requests fire")
 	_check(crouch_fire_command.fire_pressed, "macOS Control-click preserves the fire edge")
@@ -143,7 +170,7 @@ func _run() -> void:
 	control_click.pressed = false
 	game.player.combat_controller.ingest_input(control_click)
 	Input.action_release("crouch")
-	var released_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 128.0)
+	var released_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
 	_check(not released_command.fire, "Control-click fire releases cleanly")
 
 	game.player._walking = true
@@ -191,7 +218,7 @@ func _run() -> void:
 	duel_ally.reset_target(Vector3(-6, 0.08, 6))
 	duel_enemy.reset_target(Vector3(-6, 0.08, 1))
 	await physics_frame
-	var bot_command: Dictionary = duel_ally.combat_controller.gather_command(1.0 / 128.0)
+	var bot_command: Dictionary = duel_ally.combat_controller.gather_command(1.0 / 100.0)
 	_check(bot_command.enemy == duel_enemy, "bot perception selects the nearest opposing combatant")
 	_check(bot_command.state == "engage", "visible opposing bots enter the engage state")
 	var duel_enemy_health: int = duel_enemy.health
@@ -224,6 +251,9 @@ func _run() -> void:
 
 	var first_target: TargetActor = game.targets[0]
 	first_target.reset_target(Vector3(0, 0.08, 8))
+	# At 400 GoldSrc units the AK's 36 base damage truncates to 35 after
+	# FireBullets3 range falloff. Make that exact body shot lethal.
+	first_target.health = 35
 	first_target.active = false
 	await physics_frame
 	game.player._try_fire()
