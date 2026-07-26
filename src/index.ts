@@ -1769,8 +1769,11 @@ class DemoPlayer {
       ? null
       : states.find((state) => state.name === this.followTarget) ?? null;
     const recorderHealth = exactPov ? this.hudTrackAt(1, this.currentTime)?.a ?? null : null;
+    const selectedDead = selected
+      ? this.computeDeaths(this.currentTime).has(selected.name)
+      : false;
     const health = recorderHealth ?? (
-      selected && (selected.health ?? -1) >= 0 ? selected.health! : null
+      selected && !selectedDead ? this.authoritativeLivingHealth(selected) : null
     );
     const armor = exactPov ? this.hudTrackAt(2, this.currentTime)?.a ?? null : null;
     const money = exactPov ? this.hudTrackAt(3, this.currentTime)?.a ?? null : null;
@@ -1919,7 +1922,8 @@ class DemoPlayer {
         equipment += value;
         utility += grenades;
         const dead = deaths.has(player.name);
-        const health = dead ? '—' : state?.health != null ? Math.max(0, state.health) : '?';
+        const livingHealth = this.authoritativeLivingHealth(state);
+        const health = dead ? '—' : livingHealth ?? '?';
         const weapon = activeId ? (DemoPlayer.HUD_WEAPON_NAMES[activeId] ?? '—') : '—';
         return `<article class="broadcast-card${dead ? ' dead' : ''}${this.followTarget === player.name ? ' following' : ''}">`
           + `<strong>${this.escapeHtml(player.name)}</strong><span class="broadcast-card-meta">`
@@ -5446,6 +5450,24 @@ class DemoPlayer {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
+  /// Entity health is optional in HLTV snapshots. GoldSrc uses -1 for an
+  /// unavailable field, and some reconstructed streams surface the same
+  /// absence as zero. A living roster entry must not turn either sentinel
+  /// into the authoritative claim "0 HP"; death events own that distinction.
+  private authoritativeLivingHealth(state?: PlayerState | null): number | null {
+    const health = state?.health;
+    if (typeof health !== 'number' || !Number.isFinite(health) || health <= 0) {
+      return null;
+    }
+    return Math.round(health);
+  }
+
+  private rosterHealthLabel(state: PlayerState | undefined, dead: boolean): string {
+    if (dead) return 'DEAD';
+    const health = this.authoritativeLivingHealth(state);
+    return health === null ? 'ALIVE' : `${health} HP`;
+  }
+
   /// Team-grouped live roster: CT and T sections, alive/dead state, K/D.
   /// Rebuilt only when its content signature changes.
   private renderPlayerList(deaths?: Map<string, number>, states?: PlayerState[]): void {
@@ -5555,7 +5577,7 @@ class DemoPlayer {
       const rows = members.map((player) => {
         const isDead = dead.has(player.name);
         const state = byName.get(player.name);
-        const health = isDead ? 'DEAD' : state?.health != null ? `${Math.max(0, state.health)} HP` : 'ALIVE';
+        const health = this.rosterHealthLabel(state, isDead);
         return `<button class="spectator-player${isDead ? ' dead' : ''}${this.followTarget === player.name ? ' active' : ''}"`
           + ` data-player="${this.escapeHtml(player.name)}"${isDead ? ' disabled' : ''}`
           + ` title="View ${this.escapeHtml(player.name)}"><span class="spectator-player-dot"></span>`

@@ -23,6 +23,7 @@ func gather_command(_delta: float) -> Dictionary:
 		"walk": false,
 		"fire": false,
 		"fire_pressed": false,
+		"secondary_pressed": false,
 		"reload": false,
 		"use": false,
 		"weapon": "",

@@ -1,6 +1,8 @@
 class_name CS16Ballistics
 extends RefCounted
 
+const WeaponRegistry := preload("res://scripts/cs16_weapon_registry.gd")
+
 ## Counter-Strike 1.6 ballistics constants and deterministic pure helpers.
 ##
 ## Source parity:
@@ -154,6 +156,19 @@ const _SEED_TABLE := [
 
 static func weapon_profile(weapon_name: String) -> Dictionary:
 	var normalized := weapon_name.to_lower()
+	var registry_profile := WeaponRegistry.definition(normalized)
+	if not registry_profile.is_empty() and int(registry_profile.damage) > 0:
+		return {
+			"base_damage": int(registry_profile.damage),
+			"range_modifier": float(registry_profile.range_modifier),
+			"penetrations": int(registry_profile.penetrations),
+			"range_units": float(registry_profile.range_units),
+			"range_meters": float(registry_profile.range_meters),
+			"bullet_type": str(registry_profile.bullet),
+			"armor_ratio_multiplier": float(registry_profile.armor),
+			"pellets": int(registry_profile.pellets),
+			"cone": float(registry_profile.get("cone", 0.0)),
+		}
 	if not WEAPON_PROFILES.has(normalized):
 		return {}
 	return (WEAPON_PROFILES[normalized] as Dictionary).duplicate(true)

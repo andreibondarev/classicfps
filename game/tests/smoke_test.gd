@@ -132,6 +132,13 @@ func _run() -> void:
 		"player MDLs use the same 0.01 world scale as BSP geometry",
 	)
 	_check(game.hud != null, "HUD instantiated")
+	var hud_root := game.hud.get_node("HUDRoot") as Control
+	_check(hud_root.get_node_or_null("MatchBar") == null, "modern persistent match card is absent")
+	_check(hud_root.get_node_or_null("ClassicRadar") != null, "classic upper-left radar is present")
+	_check(hud_root.get_node_or_null("ClassicVitals") != null, "classic sparse vitals are present")
+	_check(hud_root.get_node_or_null("ClassicTimer") != null, "classic lower-center timer is present")
+	_check(hud_root.get_node_or_null("ClassicAmmo") != null, "classic sparse ammo counter is present")
+	_check(game.hud.hitmarker.get_child_count() == 0, "CS 1.6 HUD has no hit-confirm marker")
 	_check(Engine.physics_ticks_per_second == 100, "classic 100 Hz fixed physics configured")
 	_check(not game.using_imported_map, "procedural test arena selected")
 
@@ -175,10 +182,14 @@ func _run() -> void:
 
 	game.player._walking = true
 	game.player._standing = true
-	game.player._step_distance = game.player._next_step_at
-	game.player.footstep_audio.stop()
+	game.player.velocity = Vector3(2.0, 0.0, 0.0)
+	game.player._next_footstep_tick = game.player.weapon_clock.tick
+	var audio_trace_size := int(game.audio_router.trace().size())
 	game.player._apply_view_bob()
-	_check(not game.player.footstep_audio.playing, "Shift walking does not emit footsteps")
+	_check(
+		game.audio_router.trace().size() == audio_trace_size,
+		"Shift walking does not emit footsteps",
+	)
 	game.player._walking = false
 	for bot in game._all_bots():
 		bot.active = false
@@ -220,7 +231,10 @@ func _run() -> void:
 	await physics_frame
 	var bot_command: Dictionary = duel_ally.combat_controller.gather_command(1.0 / 100.0)
 	_check(bot_command.enemy == duel_enemy, "bot perception selects the nearest opposing combatant")
-	_check(bot_command.state == "engage", "visible opposing bots enter the engage state")
+	_check(bot_command.state == "react", "visible opposing bots honor acquisition reaction time")
+	for reaction_tick in range(18):
+		bot_command = duel_ally.combat_controller.gather_command(1.0 / 100.0)
+	_check(bot_command.state == "engage", "visible opposing bots engage after expert reaction time")
 	var duel_enemy_health: int = duel_enemy.health
 	duel_ally._try_fire(duel_enemy)
 	_check(duel_enemy.health < duel_enemy_health, "bot fire damages an opposing combatant")
@@ -248,6 +262,15 @@ func _run() -> void:
 	_check(first_ally.health == ally_health, "friendly fire is rejected by shared combat rules")
 	for bot in game._all_bots():
 		bot.active = false
+	# The production player now starts with the team-authentic pistol + knife.
+	# Grant the legacy smoke-test loadout explicitly through the public buy API.
+	_check(game.player.grant_item("ak47"), "buy API grants a primary weapon")
+	_check(game.player.grant_item("ammo_762nato", 3), "buy API grants rifle ammo boxes")
+	_check(game.player.grant_item("deagle"), "buy API grants a secondary weapon")
+	_check(game.player.grant_item("ammo_50ae", 5), "buy API grants pistol ammo boxes")
+	_check(game.player.grant_item("hegrenade"), "buy API grants a grenade")
+	game.player.switch_weapon("ak47")
+	game.player._advance_weapon_simulation_tick(75)
 
 	var first_target: TargetActor = game.targets[0]
 	first_target.reset_target(Vector3(0, 0.08, 8))
@@ -271,6 +294,15 @@ func _run() -> void:
 	await process_frame
 	_check(game.player.health < previous_health, "incoming damage reaches the player")
 	_check(game.player.reserve == 90, "reserve ammunition initialized")
+	game.player._advance_weapon_simulation_tick(10)
+	game.player._start_reload()
+	_check(game.player.reloading, "AK reload enters authoritative timed state")
+	game.player._advance_weapon_simulation_tick(244)
+	_check(game.player.reloading, "AK reload remains active through tick 244")
+	_check(game.player.clip == 29, "AK ammunition does not transfer before reload completion")
+	game.player._advance_weapon_simulation_tick()
+	_check(not game.player.reloading, "AK reload completes exactly on tick 245")
+	_check(game.player.clip == 30 and game.player.reserve == 89, "AK reload transfers ammunition on completion")
 	_check(game.player.viewmodel.loaded_weapon == "ak47", "authentic AK-47 viewmodel loads")
 	game.player.switch_weapon("deagle")
 	_check(game.player.active_weapon == "deagle", "number-slot weapon switching works")
@@ -278,8 +310,17 @@ func _run() -> void:
 	game.player.switch_weapon("knife")
 	_check(game.player.clip == -1, "knife correctly has no ammunition")
 	game.player.switch_weapon("hegrenade")
-	game.player._next_fire_at = 0.0
+	game.player._advance_weapon_simulation_tick(75)
 	game.player._try_fire()
+	_check(
+		game.player.weapon_clock.state == game.player.WeaponClockScript.STATE_GRENADE_PINNED,
+		"HE primary enters the pin-held state",
+	)
+	_check(game.player.ammunition.hegrenade.clip == 1, "HE is not consumed while its pin is held")
+	game.player.weapon_clock.release_grenade(true)
+	game.player._advance_weapon_simulation_tick(49)
+	_check(game.player.ammunition.hegrenade.clip == 1, "early HE release waits through pin tick 49")
+	game.player._advance_weapon_simulation_tick()
 	await process_frame
 	_check(game.player.ammunition.hegrenade.clip == 0, "HE grenade is consumed on throw")
 	_check(game.get_node_or_null("HEGrenade") != null, "HE grenade projectile spawns")
@@ -299,13 +340,27 @@ func _run() -> void:
 
 	if failures.is_empty():
 		print("GAME_SMOKE_TEST_PASS")
+		game.process_mode = Node.PROCESS_MODE_DISABLED
+		game.audio_router.stop_all("test_teardown")
+		await process_frame
+		game.audio_playback.clear_pool()
 		current_scene = null
 		game.queue_free()
 		await process_frame
+		await process_frame
+		CS16CombatEffects.release_cached_resources()
+		MdlCharacterModel.release_cached_resources()
 		quit(0)
 	else:
 		print("GAME_SMOKE_TEST_FAIL: %s" % ", ".join(failures))
+		game.process_mode = Node.PROCESS_MODE_DISABLED
+		game.audio_router.stop_all("test_teardown")
+		await process_frame
+		game.audio_playback.clear_pool()
 		current_scene = null
 		game.queue_free()
 		await process_frame
+		await process_frame
+		CS16CombatEffects.release_cached_resources()
+		MdlCharacterModel.release_cached_resources()
 		quit(1)

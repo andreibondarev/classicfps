@@ -18,10 +18,18 @@ struct ExportGroup {
 }
 
 #[derive(Serialize)]
+struct ExportModelBounds<'a> {
+    model_index: u32,
+    mins: &'a cs16_demo_parser::types::Vec3,
+    maxs: &'a cs16_demo_parser::types::Vec3,
+}
+
+#[derive(Serialize)]
 struct MapExport<'a> {
     format: &'static str,
     version: u32,
     groups: Vec<ExportGroup>,
+    model_bounds: Vec<ExportModelBounds<'a>>,
     positions: &'a [f32],
     normals: &'a [f32],
     colors: &'a [f32],
@@ -157,6 +165,15 @@ fn run() -> Result<(), String> {
         format: "protocol47-bsp",
         version: 1,
         groups: export_groups,
+        model_bounds: parsed
+            .model_bounds
+            .iter()
+            .map(|bounds| ExportModelBounds {
+                model_index: bounds.model_index,
+                mins: &bounds.mins,
+                maxs: &bounds.maxs,
+            })
+            .collect(),
         positions: &parsed.positions,
         normals: &parsed.normals,
         colors: &parsed.colors,

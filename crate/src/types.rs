@@ -129,6 +129,11 @@ pub struct ParsedDemo {
     /// DemoBuffer frames containing network data (time, data)
     #[serde(skip)]
     pub demo_buffers: Vec<(f32, Vec<u8>)>,
+    /// Network buffers from the LOADING directory entry. These are parsed
+    /// before playback to install delta definitions, resources and baselines,
+    /// but must not participate in playback time normalization.
+    #[serde(skip)]
+    pub signon_buffers: Vec<Vec<u8>>,
     /// (file offset, frame time) anchors for byte-position event scans
     #[serde(skip)]
     pub buffer_anchors: Vec<(u64, f32)>,

@@ -34,16 +34,20 @@ impl<'a> BitReader<'a> {
         result
     }
 
-    /// Read bits as signed integer (two's complement)
+    /// Read GoldSrc's signed-bit encoding: one sign bit followed by magnitude.
+    ///
+    /// This mirrors `MSG_ReadSBits` and HLTV `BitBuffer::ReadSBits`; it is not
+    /// two's-complement despite the compact wire representation.
     pub fn read_signed_bits(&mut self, count: usize) -> i32 {
-        let value = self.read_bits(count);
-        // Sign extend
-        let sign_bit = 1u32 << (count - 1);
-        if value & sign_bit != 0 {
-            // Negative number - extend sign
-            (value | !((1u32 << count) - 1)) as i32
+        if count == 0 {
+            return 0;
+        }
+        let negative = self.read_bit();
+        let magnitude = self.read_bits(count - 1) as i32;
+        if negative {
+            -magnitude
         } else {
-            value as i32
+            magnitude
         }
     }
 
@@ -254,10 +258,13 @@ mod tests {
 
     #[test]
     fn test_signed_bits() {
-        let data = [0xFF]; // All 1s
-        let mut reader = BitReader::new(&data);
-        // Reading 4 bits of 1s (0b1111) as signed = -1
-        assert_eq!(reader.read_signed_bits(4), -1);
+        let negative = [0x0F]; // LSB sign=1, following magnitude bits=111
+        let mut reader = BitReader::new(&negative);
+        assert_eq!(reader.read_signed_bits(4), -7);
+
+        let positive = [0x0E]; // LSB sign=0, following magnitude bits=111
+        let mut reader = BitReader::new(&positive);
+        assert_eq!(reader.read_signed_bits(4), 7);
     }
 
     #[test]

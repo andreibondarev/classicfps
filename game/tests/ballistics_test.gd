@@ -253,6 +253,8 @@ func _test_grenade_configuration() -> void:
 	var grenade: HEGrenade = GrenadeScript.new()
 	root.add_child(grenade)
 	await process_frame
+	_check(GrenadeScript.FUSE_TICKS == 150, "HE fuse is exactly 150 authoritative ticks")
+	_check(GrenadeScript.CLEANUP_TICKS == 150, "HE cleanup is exactly 150 authoritative ticks")
 	var world_gravity := float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
 	_near(
 		grenade.gravity_scale * world_gravity,
@@ -271,6 +273,13 @@ func _test_grenade_configuration() -> void:
 		Ballistics.METERS_PER_GOLDSRC_UNIT,
 		0.0001,
 		"HE uses the smallest robust approximation of GoldSrc's point hull",
+	)
+	grenade._simulation_tick = GrenadeScript.FUSE_TICKS - 1
+	grenade._physics_process(0.5)
+	_check(grenade._exploded, "HE fuse expires on tick 150 regardless of supplied frame delta")
+	_check(
+		grenade._cleanup_tick == grenade._simulation_tick + GrenadeScript.CLEANUP_TICKS,
+		"exploded HE cleanup is scheduled on the same authoritative clock",
 	)
 	grenade.queue_free()
 	await process_frame

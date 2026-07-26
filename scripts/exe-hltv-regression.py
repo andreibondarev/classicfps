@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 PORT = 5246
+CAPTURE_ROOT = ROOT / "artifacts" / "exe-hltv"
 CASES = [
     ("exe-vs-lamers", ROOT / "demos" / "exe_vs_lamers-1.dem", "de_dust2"),
     ("exe-vs-mc", ROOT / "demos" / "exe_vs_mc-1.dem", "de_aztec"),
@@ -61,6 +62,8 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
           p.updatePlayback();
           p.renderer.render(p.scene, p.camera);
           const world = p.mapMesh?.getObjectByName('worldspawn');
+          world?.geometry?.computeBoundingBox();
+          const worldBounds = world?.geometry?.boundingBox ?? null;
           const materialList = world
             ? (Array.isArray(world.material) ? world.material : [world.material])
             : [];
@@ -107,6 +110,38 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
           const variance = luma.reduce((sum, value) => sum + (value - mean) ** 2, 0) / luma.length;
           const restoreTime = p.currentTime;
           const restoreTarget = p.followTarget;
+          const rosterDeaths = p.computeDeaths(p.currentTime);
+          p.renderPlayerList(rosterDeaths);
+          const rosterRows = () => [...document.querySelectorAll(
+            '#spectator-roster .spectator-player'
+          )].map(row => ({
+            name: row.dataset.player ?? '',
+            dead: row.classList.contains('dead'),
+            health: row.querySelector('.spectator-player-health')?.textContent?.trim() ?? '',
+          }));
+          const reconstructedRoster = rosterRows();
+          const livingName = reconstructedRoster.find(row => !row.dead)?.name ?? '';
+          let healthContract = {
+            missing: '',
+            zeroWhileLiving: '',
+            positive: '',
+            authoritativeDeath: '',
+          };
+          if (livingName) {
+            const healthFor = () => rosterRows().find(row => row.name === livingName)?.health ?? '';
+            const state = {name: livingName, health: -1, weapon: 0};
+            p.renderPlayerList(rosterDeaths, [state]);
+            healthContract.missing = healthFor();
+            p.renderPlayerList(rosterDeaths, [{...state, health: 0}]);
+            healthContract.zeroWhileLiving = healthFor();
+            p.renderPlayerList(rosterDeaths, [{...state, health: 37}]);
+            healthContract.positive = healthFor();
+            const deathFixture = new Map(rosterDeaths);
+            deathFixture.set(livingName, p.currentTime);
+            p.renderPlayerList(deathFixture, [{...state, health: 0}]);
+            healthContract.authoritativeDeath = healthFor();
+            p.renderPlayerList(rosterDeaths);
+          }
           if (!document.getElementById('stats-panel')) p.toggleStats();
           const roundResetFailures = [];
           const roundStarts = p.timeline.events.filter(event =>
@@ -157,10 +192,19 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
             visibleFallbackBodies,
             viewModelVisible: !!p.viewModel?.visible && p.viewModel.children.length > 0,
             camera: p.camera.position.toArray(),
+            cameraInWorldBounds: !!worldBounds?.containsPoint(p.camera.position),
+            worldBounds: worldBounds
+              ? {
+                  min: worldBounds.min.toArray(),
+                  max: worldBounds.max.toArray(),
+                }
+              : null,
             finiteScene,
             lumaVariance: variance,
             roundStartsChecked: roundStarts.length,
             roundResetFailures,
+            reconstructedRoster,
+            healthContract,
             missingAssets: [...p.missingAssets].sort(),
             assetPreflight: p.assetPreflight,
           };
@@ -196,16 +240,32 @@ def valid_result(result: dict[str, object], errors: list[str]) -> bool:
         and bool(result.get("viewModelVisible"))
         and len(camera) == 3
         and all(isinstance(value, (int, float)) for value in camera)
+        and bool(result.get("cameraInWorldBounds"))
         and bool(result.get("finiteScene"))
         and float(result.get("lumaVariance") or 0) > 25
         and int(result.get("roundStartsChecked") or 0) > 0
         and not result.get("roundResetFailures")
+        and not any(
+            not row.get("dead") and row.get("health") == "0 HP"
+            for row in result.get("reconstructedRoster") or []
+        )
+        and any(
+            not row.get("dead") and row.get("health") == "ALIVE"
+            for row in result.get("reconstructedRoster") or []
+        )
+        and result.get("healthContract") == {
+            "missing": "ALIVE",
+            "zeroWhileLiving": "ALIVE",
+            "positive": "37 HP",
+            "authoritativeDeath": "DEAD",
+        }
         and not result.get("missingAssets")
         and preflight.get("missing") == 0
     )
 
 
 def main() -> int:
+    CAPTURE_ROOT.mkdir(parents=True, exist_ok=True)
     server = subprocess.Popen(
         ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(PORT)],
         cwd=ROOT,
@@ -223,6 +283,9 @@ def main() -> int:
                 errors: list[str] = []
                 page.on("pageerror", lambda error, bucket=errors: bucket.append(str(error)))
                 result = audit_case(page, demo, expected_map)
+                page.locator("#canvas-container").screenshot(
+                    path=CAPTURE_ROOT / f"{name}.png",
+                )
                 results.append({
                     "case": name,
                     "ok": valid_result(result, errors),

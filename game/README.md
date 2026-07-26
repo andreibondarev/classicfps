@@ -68,15 +68,20 @@ map spawns.
 npm run game:import:dust2
 npm run game:import:players
 npm run game:import:weapons
+npm run game:import:sounds
 ```
 
 The Rust converter emits a versioned `map.json`, TGA textures, entity metadata,
 and world/submodel geometry under `game/generated/de_dust2`. The companion MDL
-converter emits first-person weapons under `game/generated/weapons`, all stock
-team models under `game/generated/players`, and bone-merged third-person
-weapons under `game/generated/player_weapons`. Compact binary vertex frames
+converter emits the complete classic first-person weapon set under
+`game/generated/weapons`, all stock team models under
+`game/generated/players`, and bone-merged third-person weapons under
+`game/generated/player_weapons`. Compact binary vertex frames
 carry the original animation poses. Godot builds render surfaces, collision,
 navigation, animated players, and viewmodels from those portable assets.
+The sound importer mirrors the complete classic WAV library under
+`game/assets/sounds/classic`, preserving its original ambient, button, debris,
+hostage, material, player, radio and weapon channel hierarchy.
 
 ## Multiplayer foundation
 
@@ -101,6 +106,8 @@ npm run game:build:mac
 ```
 
 The universal Apple Silicon/Intel release is written to
-`game/builds/Protocol47.zip`. It is intentionally unsigned; public distribution
-requires a Developer ID signature, notarization, and the appropriate rights to
-redistribute the original game assets.
+`game/builds/Protocol47.zip`. The build command also extracts that archive,
+launches the packaged main scene headlessly, and rejects missing release-only
+resources or script/load errors. It is intentionally unsigned; public
+distribution requires a Developer ID signature, notarization, and the
+appropriate rights to redistribute the original game assets.

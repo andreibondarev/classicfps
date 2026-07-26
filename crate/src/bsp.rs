@@ -900,12 +900,14 @@ impl<'a> BspParser<'a> {
                     vec![(0.85, 0.85, 0.85); face_verts.len()]
                 };
 
-                let bucket = buckets.entry((model_index, mip_idx)).or_insert_with(|| Bucket {
-                    positions: Vec::new(),
-                    normals: Vec::new(),
-                    colors: Vec::new(),
-                    uvs: Vec::new(),
-                });
+                let bucket = buckets
+                    .entry((model_index, mip_idx))
+                    .or_insert_with(|| Bucket {
+                        positions: Vec::new(),
+                        normals: Vec::new(),
+                        colors: Vec::new(),
+                        uvs: Vec::new(),
+                    });
                 let has_tex = mips.get(mip_idx).map(|m| m.3.is_some()).unwrap_or(false);
                 for j in 1..face_verts.len() - 1 {
                     for &k in &[0, j, j + 1] {
@@ -939,6 +941,23 @@ impl<'a> BspParser<'a> {
         // Flatten buckets into contiguous arrays + groups
         let mut out = TexturedBsp {
             groups: Vec::new(),
+            model_bounds: models
+                .iter()
+                .enumerate()
+                .map(|(model_index, model)| TexturedModelBounds {
+                    model_index: model_index as u32,
+                    mins: Vec3::new(
+                        model.mins.x * scale,
+                        model.mins.z * scale,
+                        -model.maxs.y * scale,
+                    ),
+                    maxs: Vec3::new(
+                        model.maxs.x * scale,
+                        model.maxs.z * scale,
+                        -model.mins.y * scale,
+                    ),
+                })
+                .collect(),
             positions: Vec::new(),
             normals: Vec::new(),
             colors: Vec::new(),
@@ -1007,8 +1026,15 @@ pub struct TexGroup {
     pub pix_offset: i64, // -1 = no pixels (flat color fallback)
 }
 
+pub struct TexturedModelBounds {
+    pub model_index: u32,
+    pub mins: Vec3,
+    pub maxs: Vec3,
+}
+
 pub struct TexturedBsp {
     pub groups: Vec<TexGroup>,
+    pub model_bounds: Vec<TexturedModelBounds>,
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
     pub colors: Vec<f32>,

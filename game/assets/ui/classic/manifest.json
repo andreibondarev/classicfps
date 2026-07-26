@@ -1,0 +1,818 @@
+{
+  "file_count": 135,
+  "files": [
+    {
+      "file": "bindings/kb_act.lst",
+      "sha256": "87ce910f29e2be24561bc467ef7a9923ea1c09daf035d89968c81d65ea2d4c30",
+      "size": 2536,
+      "source": "cstrike/gfx/shell/kb_act.lst"
+    },
+    {
+      "file": "briefings/as_oilrig.txt",
+      "sha256": "cc222464c0270c661cef3d7db5cd7ede6d1a7a90ba59c421b0f72bffb385dd36",
+      "size": 577,
+      "source": "cstrike/maps/as_oilrig.txt"
+    },
+    {
+      "file": "briefings/cs_747.txt",
+      "sha256": "e250decaeb6e495e7a99f94d8b54de1ed56deb10565679e86b8f12b83540a3f7",
+      "size": 453,
+      "source": "cstrike/maps/cs_747.txt"
+    },
+    {
+      "file": "briefings/cs_assault.txt",
+      "sha256": "22224818226c36b030dd422e4940d0e4af6c30ed75cb5c62367c417865ac05fb",
+      "size": 387,
+      "source": "cstrike/maps/cs_assault.txt"
+    },
+    {
+      "file": "briefings/cs_backalley.txt",
+      "sha256": "3e38614b32c1b2cef19d420c0005991f65789c9a2efe460252065da7e43bac9b",
+      "size": 364,
+      "source": "cstrike/maps/cs_backalley.txt"
+    },
+    {
+      "file": "briefings/cs_estate.txt",
+      "sha256": "54111ed64081d9afe85c87b9a59a6a093ee12cf59b500b4b1062504468478c97",
+      "size": 237,
+      "source": "cstrike/maps/cs_estate.txt"
+    },
+    {
+      "file": "briefings/cs_havana.txt",
+      "sha256": "081b578252de2a58b689d7a9d8d941627c2db2548d447f6fe90012ed0c8c7692",
+      "size": 413,
+      "source": "cstrike/maps/cs_havana.txt"
+    },
+    {
+      "file": "briefings/cs_italy.txt",
+      "sha256": "081e893888fc3d63de5317d2ea49d3a3a9b785f6ab5010477e49ef39462bf171",
+      "size": 377,
+      "source": "cstrike/maps/cs_italy.txt"
+    },
+    {
+      "file": "briefings/cs_militia.txt",
+      "sha256": "a05f4d7b3e21bc83122882dc37bf6a5b795dc0729a5d21fa176d937fac67d3ab",
+      "size": 347,
+      "source": "cstrike/maps/cs_militia.txt"
+    },
+    {
+      "file": "briefings/cs_office.txt",
+      "sha256": "2803b092116db9979d1b20660fedef24dbb8ba773feaf1c4188b128ca1740efb",
+      "size": 385,
+      "source": "cstrike/maps/cs_office.txt"
+    },
+    {
+      "file": "briefings/cs_siege.txt",
+      "sha256": "213e912d1fc1ba982a34d01421508fb785daa0cc2acc44ea1b47c31de959e5f3",
+      "size": 335,
+      "source": "cstrike/maps/cs_siege.txt"
+    },
+    {
+      "file": "briefings/de_airstrip.txt",
+      "sha256": "bd4713035a34569e3a72c0f9cdc4c665050bbe728a8aeecb18c978d4d53981c4",
+      "size": 377,
+      "source": "cstrike/maps/de_airstrip.txt"
+    },
+    {
+      "file": "briefings/de_aztec.txt",
+      "sha256": "6fec9a17a0a48d3c44381bc9bf1f449c74d6835d399c8a2728b98395c9af231b",
+      "size": 280,
+      "source": "cstrike/maps/de_aztec.txt"
+    },
+    {
+      "file": "briefings/de_cbble.txt",
+      "sha256": "e91e1523959a1dcd263d5a7601676c788ee54a6e59e272bc7d67bfd699d74e11",
+      "size": 454,
+      "source": "cstrike/maps/de_cbble.txt"
+    },
+    {
+      "file": "briefings/de_cbble_detail.txt",
+      "sha256": "b968de5f9b691f8525482f809b673ce68ac6a1f8134e0532b6604dce5cb1d080",
+      "size": 2693,
+      "source": "cstrike/maps/de_cbble_detail.txt"
+    },
+    {
+      "file": "briefings/de_chateau.txt",
+      "sha256": "97713648a75607827c282118c88133a542c1c3c4625366bf24a1604e737fc02d",
+      "size": 402,
+      "source": "cstrike/maps/de_chateau.txt"
+    },
+    {
+      "file": "briefings/de_dust.txt",
+      "sha256": "51e1a2d73a22c020d1833df43a12d02b317d6acdbb984dab8452d69a409fc2b2",
+      "size": 415,
+      "source": "cstrike/maps/de_dust.txt"
+    },
+    {
+      "file": "briefings/de_dust2.txt",
+      "sha256": "eb376307e8999294b0a9118156d3e874d415d046e6cffabff590d7126eff9491",
+      "size": 452,
+      "source": "cstrike/maps/de_dust2.txt"
+    },
+    {
+      "file": "briefings/de_inferno.txt",
+      "sha256": "41e575cde6a3dbcd8f9932d4482a065ac2a6c93680abcf92b070c618da4a4d44",
+      "size": 386,
+      "source": "cstrike/maps/de_inferno.txt"
+    },
+    {
+      "file": "briefings/de_nuke.txt",
+      "sha256": "7705ba14468c70fd736cc2fcfbabe1f5702a98d5c169ecd633abc55821b89d0a",
+      "size": 386,
+      "source": "cstrike/maps/de_nuke.txt"
+    },
+    {
+      "file": "briefings/de_piranesi.txt",
+      "sha256": "d7a6c35bf3f6a72343b368b3d566bc91ae1e2fc91c88f6e8ae4d6922369a539c",
+      "size": 569,
+      "source": "cstrike/maps/de_piranesi.txt"
+    },
+    {
+      "file": "briefings/de_prodigy.txt",
+      "sha256": "266bf06441c7206154e208df7f709080725759970aa45062ca22b4e784993cb2",
+      "size": 367,
+      "source": "cstrike/maps/de_prodigy.txt"
+    },
+    {
+      "file": "briefings/de_storm.txt",
+      "sha256": "e2a6f5182d95c42531ab8c22e675ce93bce391b6c74b05de868cc2621b6325eb",
+      "size": 475,
+      "source": "cstrike/maps/de_storm.txt"
+    },
+    {
+      "file": "briefings/de_survivor.txt",
+      "sha256": "b81eb65b42dce1dbf3d511ec9de7a8c987ad6a73a5d8f0225a2d3ae924e68fbe",
+      "size": 775,
+      "source": "cstrike/maps/de_survivor.txt"
+    },
+    {
+      "file": "briefings/de_torn.txt",
+      "sha256": "d8329db1a4b0f2d3d452fb03775d06fed972b6563ff7f4a988cdfa40e871b47f",
+      "size": 350,
+      "source": "cstrike/maps/de_torn.txt"
+    },
+    {
+      "file": "briefings/de_train.txt",
+      "sha256": "c009b37ec010f7f7fe961b75633f5ced21a63cc02edd52c435f7dcb354de0e3d",
+      "size": 332,
+      "source": "cstrike/maps/de_train.txt"
+    },
+    {
+      "file": "briefings/de_vertigo.txt",
+      "sha256": "bf06504e82a3f8257379b9c2d8b911d83ae48ea356b70a237a16ff5335472f5c",
+      "size": 343,
+      "source": "cstrike/maps/de_vertigo.txt"
+    },
+    {
+      "file": "resources/cstrike/ClientScheme.kv",
+      "sha256": "ece1aae091a9afe549b554f0fa81c4adeafcf73f8d242e3bd89a274ced98652b",
+      "size": 20125,
+      "source": "cstrike/resource/ClientScheme.res"
+    },
+    {
+      "file": "resources/cstrike/GameMenu.kv",
+      "sha256": "5b6c9699b9780836b851808443ddef4b243ccb28671411c70df562db81dd7597",
+      "size": 776,
+      "source": "cstrike/resource/GameMenu.res"
+    },
+    {
+      "file": "resources/cstrike/OptionsSubMultiplayer.kv",
+      "sha256": "5182b842ee25ac2058e8e81c4b510be56e53f92ded8b76a3a4ecef74dc38bb8e",
+      "size": 11206,
+      "source": "cstrike/resource/OptionsSubMultiplayer.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BackgroundPanel.kv",
+      "sha256": "031c1b79293a2dfbc08676953f70638f8a8de69e8eedbbbba2377623d49d9918",
+      "size": 2241,
+      "source": "cstrike/resource/UI/BackgroundPanel.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BottomSpectator.kv",
+      "sha256": "3eaf68934ba6b899422b6cc5677eb9eca350dd1ffe043f2ddb865611e8bf4e1a",
+      "size": 1940,
+      "source": "cstrike/resource/UI/BottomSpectator.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyEquipment.kv",
+      "sha256": "2c8e23dfcbe7b40f9d539ef419ee847e2e6f56f9f864df6f7542380af59d625e",
+      "size": 3466,
+      "source": "cstrike/resource/UI/BuyEquipment.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyEquipment_CT.kv",
+      "sha256": "0620460748d5eec984c9114568ee96a473ae6e9deaa75e1598377ca9538a1649",
+      "size": 4585,
+      "source": "cstrike/resource/UI/BuyEquipment_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyEquipment_TER.kv",
+      "sha256": "dcb17b47169f2ce93d6fc15a355f049a352220bf1722d8823602852b7476b93f",
+      "size": 3767,
+      "source": "cstrike/resource/UI/BuyEquipment_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyMachineguns_CT.kv",
+      "sha256": "78af4315256f8e419dad31a92f5604d60910e474a7a388460e446963e5f57636",
+      "size": 1733,
+      "source": "cstrike/resource/UI/BuyMachineguns_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyMachineguns_TER.kv",
+      "sha256": "5bbe84c2e01eae13f56c7f3d14efb3fd68e82716c21d7e12f0d423591a5dcca5",
+      "size": 1754,
+      "source": "cstrike/resource/UI/BuyMachineguns_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyMenu.kv",
+      "sha256": "a7fc460d2d5b41486c9e87bc70a50d39958f4d75f7071c89eeca53177440e4d7",
+      "size": 550,
+      "source": "cstrike/resource/UI/BuyMenu.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyPistols_CT.kv",
+      "sha256": "01ffafc178be796205d1167d72bf6efa4e2d62f6e99363eb9b07ae900d5ab98f",
+      "size": 3328,
+      "source": "cstrike/resource/UI/BuyPistols_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyPistols_TER.kv",
+      "sha256": "3ac16898e6c0c7f2594a0212952a6b5d453162c46b96b443286a2314e1914be9",
+      "size": 3275,
+      "source": "cstrike/resource/UI/BuyPistols_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyRifles_CT.kv",
+      "sha256": "f5b6219b496f5f07844e2e1d8f12024d785c9628c57c808219c8839381992d54",
+      "size": 3725,
+      "source": "cstrike/resource/UI/BuyRifles_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyRifles_TER.kv",
+      "sha256": "03525b3d207dbe1ba9d2284d7672986bd4aa30996c134f2118749bc8ddc50d17",
+      "size": 3734,
+      "source": "cstrike/resource/UI/BuyRifles_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyShotguns_CT.kv",
+      "sha256": "60fb0544d16f1080fe795ce9bde9074a7fcab582eba45f9bae9beef68d8c2e03",
+      "size": 2078,
+      "source": "cstrike/resource/UI/BuyShotguns_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuyShotguns_TER.kv",
+      "sha256": "f0c929de77501120999b0f3b630bb36fcda4e2b891413ebf1268785d73d965ee",
+      "size": 2135,
+      "source": "cstrike/resource/UI/BuyShotguns_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuySubMachineguns_CT.kv",
+      "sha256": "796a6a4da22f24eaee16390f0933e3c00df7e54b229a9a3429dbc32a90de3310",
+      "size": 2905,
+      "source": "cstrike/resource/UI/BuySubMachineguns_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/BuySubMachineguns_TER.kv",
+      "sha256": "5643dac0cc08e28cb166b36e1fb3e2ad976eceac62417384a1ec12e3b3641943",
+      "size": 2927,
+      "source": "cstrike/resource/UI/BuySubMachineguns_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/Classmenu_CT.kv",
+      "sha256": "004ddde8499036713cd3afb485b0e875fd3ca81a3b7f35a4ebf5e35c4cebd25c",
+      "size": 4295,
+      "source": "cstrike/resource/UI/Classmenu_CT.res"
+    },
+    {
+      "file": "resources/cstrike/UI/Classmenu_TER.kv",
+      "sha256": "f239bfb66b86db47b4066238188fbde16a982e5d695a6ab985efdce8ffb21965",
+      "size": 4319,
+      "source": "cstrike/resource/UI/Classmenu_TER.res"
+    },
+    {
+      "file": "resources/cstrike/UI/MOTD.kv",
+      "sha256": "ae995b068cde415df6b34b5629e07ca8764f24d659dd32f15f5756773a08773e",
+      "size": 1290,
+      "source": "cstrike/resource/UI/MOTD.res"
+    },
+    {
+      "file": "resources/cstrike/UI/MainBuyMenu.kv",
+      "sha256": "d22e3dfb03bf1506f0444329b7db671ed2241e9ac4a1dd50dc3ae712f9d5173b",
+      "size": 5779,
+      "source": "cstrike/resource/UI/MainBuyMenu.res"
+    },
+    {
+      "file": "resources/cstrike/UI/ScoreBoard.kv",
+      "sha256": "890c4e334cc475959823df08ea4e9903e304620c64175f499e722f7473b16fa2",
+      "size": 916,
+      "source": "cstrike/resource/UI/ScoreBoard.res"
+    },
+    {
+      "file": "resources/cstrike/UI/Spectator.kv",
+      "sha256": "51b1899b1df000895666c185bd8030237677b45ac0a378a95dc72a79f5986501",
+      "size": 3946,
+      "source": "cstrike/resource/UI/Spectator.res"
+    },
+    {
+      "file": "resources/cstrike/UI/Teammenu.kv",
+      "sha256": "d5334bc2776c34ed0abb88d0e2348ab9dda7533bde3a85b93a293c9b5168f2ee",
+      "size": 3690,
+      "source": "cstrike/resource/UI/Teammenu.res"
+    },
+    {
+      "file": "resources/cstrike/cstrike_english.kv",
+      "sha256": "b3cff0fd5f1ec2c8e5b0e10548410e4950107c723c693add2f035c14dfddb8ff",
+      "size": 176790,
+      "source": "cstrike/resource/cstrike_english.txt"
+    },
+    {
+      "file": "resources/cstrike/game_menu.tga",
+      "sha256": "18a0f55f4b1940e4ab44e2dad4999a5afaadc9642686ab55d547c36a9a0274ff",
+      "size": 26540,
+      "source": "cstrike/resource/game_menu.tga"
+    },
+    {
+      "file": "resources/cstrike/game_menu_mouseover.tga",
+      "sha256": "2e89fd1e81a94d42fed066a19f7c86a81b4b5cf033f36dc9e5e475afc5a466d1",
+      "size": 26540,
+      "source": "cstrike/resource/game_menu_mouseover.tga"
+    },
+    {
+      "file": "resources/cstrike/logo_game.tga",
+      "sha256": "1c963adf5b435b992df0409e25ede2aaecfe5494af854991df1f42a67b76fde7",
+      "size": 65580,
+      "source": "cstrike/resource/logo_game.tga"
+    },
+    {
+      "file": "resources/cstrike/menu_hl_no_icon.tga",
+      "sha256": "248adcc833a6694be3c9bdf28f8425eb90be0b60cffc8e833fb51ffbc0eec65b",
+      "size": 4148,
+      "source": "cstrike/resource/menu_hl_no_icon.tga"
+    },
+    {
+      "file": "resources/valve/ClientScheme.kv",
+      "sha256": "6a90c78621c5b2cf2c80cfc09e6870c27b8c7e4327f8f3ef75580b434306bd82",
+      "size": 14876,
+      "source": "valve/resource/ClientScheme.res"
+    },
+    {
+      "file": "resources/valve/DialogOptionsIngame.kv",
+      "sha256": "78dc56276b0cb1d07bae3075747a41409df346e9d24b4e3940c79e9d7595c83a",
+      "size": 1168,
+      "source": "valve/resource/DialogOptionsIngame.res"
+    },
+    {
+      "file": "resources/valve/MultiplayerAdvancedPage.kv",
+      "sha256": "57fa8e749f571b14896eb59565e6c5aaf07ba08e1a288541143cc1c1cdba944d",
+      "size": 582,
+      "source": "valve/resource/MultiplayerAdvancedPage.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubAdvanced.kv",
+      "sha256": "2836e159f9af31857e9e97ff64ee78ce1ea2f7bc9008d803df71c662e68cd4fc",
+      "size": 832,
+      "source": "valve/resource/OptionsSubAdvanced.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubAudio.kv",
+      "sha256": "7b5351ed0e029d9c338c66362d65ebf606d7df39ba7331ca5337a1005c2c5b1d",
+      "size": 3092,
+      "source": "valve/resource/OptionsSubAudio.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubKeyboard.kv",
+      "sha256": "f62d81476da7bd289ed98edb2f857d24fb64b4d97a685e1e0c21007bd2099e46",
+      "size": 1496,
+      "source": "valve/resource/OptionsSubKeyboard.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubMouse.kv",
+      "sha256": "91c7d9548e3ba88d40943302cbef254dae841757cde8a1da8cc1c283e6825c7b",
+      "size": 6115,
+      "source": "valve/resource/OptionsSubMouse.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubMultiplayer.kv",
+      "sha256": "788df7697ab133d8ae26c1289544e28c4bcec6a4a241beed91fc22ba06e0b8fe",
+      "size": 8835,
+      "source": "valve/resource/OptionsSubMultiplayer.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubVideo.kv",
+      "sha256": "7d21f5fd93f643d35e1273831653026f0173ce6c9e7d0f599831431b7807adb2",
+      "size": 5934,
+      "source": "valve/resource/OptionsSubVideo.res"
+    },
+    {
+      "file": "resources/valve/OptionsSubVoice.kv",
+      "sha256": "97a15bcb29528f4e20b7c94cd1b30a05a5ffdb537329902459852c90d0d90271",
+      "size": 4960,
+      "source": "valve/resource/OptionsSubVoice.res"
+    },
+    {
+      "file": "resources/valve/gameui_english.kv",
+      "sha256": "4b0259b8a8fe6dd7b6bb924e475fd993f9d3487807417eda9993b3a4bce0b824",
+      "size": 23978,
+      "source": "valve/resource/gameui_english.txt"
+    },
+    {
+      "file": "resources/valve/marlett.ttf",
+      "sha256": "3b6192eca4451835f4d634b0b6b0841da321ec65c1f3f1aa22d186da45787b9c",
+      "size": 6136,
+      "source": "valve/resource/marlett.ttf"
+    },
+    {
+      "file": "resources/valve/mic_meter_dead.tga",
+      "sha256": "95e7e68e71443e08088475a91acfb0e9c065b4b7683c5b9e9177097b203052fc",
+      "size": 20268,
+      "source": "valve/resource/mic_meter_dead.tga"
+    },
+    {
+      "file": "resources/valve/mic_meter_live.tga",
+      "sha256": "38e9b353145a885e23443275aeb5250e2533403ddca7761426c683e343ba4eae",
+      "size": 20268,
+      "source": "valve/resource/mic_meter_live.tga"
+    },
+    {
+      "file": "resources/valve/valve_english.kv",
+      "sha256": "6cb8cf4c1fcbd0b0a79683434dcfd1dda77db909072effbf690453fa162febdc",
+      "size": 14302,
+      "source": "valve/resource/valve_english.txt"
+    },
+    {
+      "file": "vgui/CS_logo.tga",
+      "sha256": "cea5cc96747909253d034be70a5db4f8b7242b23797eeaa422f677bd5cf8b068",
+      "size": 16428,
+      "source": "cstrike/gfx/vgui/CS_logo.tga"
+    },
+    {
+      "file": "vgui/ak47.tga",
+      "sha256": "b7f1c11b51cfeb7faa3b96d27a63253f1b092afaa6bc862794d8fcf680b9a80f",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/ak47.tga"
+    },
+    {
+      "file": "vgui/arctic.tga",
+      "sha256": "f118721f90aab0ace4f02af21bd80e03bca1d1c0352987dc97afe1f555f80bce",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/arctic.tga"
+    },
+    {
+      "file": "vgui/aug.tga",
+      "sha256": "07bccd9cd37bdc22a4ba1555a546905971d56a90ad30880c7d6c54b8d7bb4c1b",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/aug.tga"
+    },
+    {
+      "file": "vgui/awp.tga",
+      "sha256": "abf4504d2758bcdd4b799e633e75c84a310559f330b30db90b25afd6c5b3b0e6",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/awp.tga"
+    },
+    {
+      "file": "vgui/crosshair.tga",
+      "sha256": "b003131a512d2db1c9a320cc555172ae0bc6f40a9ff45e44204310c0072fa085",
+      "size": 11951,
+      "source": "cstrike/gfx/vgui/crosshair.tga"
+    },
+    {
+      "file": "vgui/ct_random.tga",
+      "sha256": "eddf181c27bd36d4ba1ce410c199e8b9647cea59039f8058b3b3c67236dbda38",
+      "size": 262188,
+      "source": "cstrike/gfx/vgui/ct_random.tga"
+    },
+    {
+      "file": "vgui/defuser.tga",
+      "sha256": "2c212a489b87766bac9dd2d62afcf4ebaced2363bc9c5c6233f85b14dfdc4147",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/defuser.tga"
+    },
+    {
+      "file": "vgui/deserteagle.tga",
+      "sha256": "e5bb4cd182dfa5364cab128b2223fe59f2a75c0754138afbb56a037161697758",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/deserteagle.tga"
+    },
+    {
+      "file": "vgui/elites.tga",
+      "sha256": "dcb54fbff1cdbf05b4cdfef5187ae5be789961beb1e9c1b4dfb6db446a835344",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/elites.tga"
+    },
+    {
+      "file": "vgui/famas.tga",
+      "sha256": "162f4b5b7d9e6df8329335b42e952e3990e5b6e82d9a6a38e455cd0521d11f72",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/famas.tga"
+    },
+    {
+      "file": "vgui/fiveseven.tga",
+      "sha256": "d01b98639ab97a41338ed2cde10fef3461c68bde6f5d5f8aa848bc2e0308fa9d",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/fiveseven.tga"
+    },
+    {
+      "file": "vgui/flashbang.tga",
+      "sha256": "f4c641f36d6be8599229c7b9febe057b7ec4365d4d479b973b8a6ac75873501c",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/flashbang.tga"
+    },
+    {
+      "file": "vgui/g3sg1.tga",
+      "sha256": "838ba91dd2a24542f0b8b8103aeab945b90c587983beb2ebb78c8d34a01ed932",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/g3sg1.tga"
+    },
+    {
+      "file": "vgui/galil.tga",
+      "sha256": "2daf137fe07db1c2fdf1a35f773d227b18a27016da142642cb5b9aef0c984d32",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/galil.tga"
+    },
+    {
+      "file": "vgui/gign.tga",
+      "sha256": "9e52de5fdfe0889757a6a6487b5fb9b3520e672b180ab456f6071ad54833f030",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/gign.tga"
+    },
+    {
+      "file": "vgui/glock18.tga",
+      "sha256": "01bdced91922eaeae2e614058202f609f299abb417169652030784d4ab6b4862",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/glock18.tga"
+    },
+    {
+      "file": "vgui/gsg9.tga",
+      "sha256": "92e652a52878b6397a4d3d1b14d88fe31cabaaa3a4dd123b266b0fae38a85af9",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/gsg9.tga"
+    },
+    {
+      "file": "vgui/guerilla.tga",
+      "sha256": "fd3c8f8a3a2b674008110a0325894588b15fb42535a30000a9d0aa25d5e98b30",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/guerilla.tga"
+    },
+    {
+      "file": "vgui/hegrenade.tga",
+      "sha256": "3eafa5253f75d8d875e33735aa3593defd7158f589f79fd1db3f959637727391",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/hegrenade.tga"
+    },
+    {
+      "file": "vgui/icon_!-bigger.tga",
+      "sha256": "e78b06395aa40b70c7104266824dec6e779f92683cf033e81d8177e842a0e087",
+      "size": 8880,
+      "source": "cstrike/gfx/vgui/icon_!-bigger.tga"
+    },
+    {
+      "file": "vgui/icon_!.tga",
+      "sha256": "bfbda01177026713aec34ce3f7a43fc08ed6a40cd749c304051128c04c0c5f43",
+      "size": 4400,
+      "source": "cstrike/gfx/vgui/icon_!.tga"
+    },
+    {
+      "file": "vgui/kevlar.tga",
+      "sha256": "60fe19c7f1e2929356c9d26987e2ebd9878456c0797db579e3e56d4501c0b05c",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/kevlar.tga"
+    },
+    {
+      "file": "vgui/kevlar_helmet.tga",
+      "sha256": "9965f2a662f293cdf978df9346b611c38cebb22e7612206516141d85b459b711",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/kevlar_helmet.tga"
+    },
+    {
+      "file": "vgui/leet.tga",
+      "sha256": "80d70b89707ccbedaf32d3efe0c9e4c696d03385cfd1ac8488ce053e87acabff",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/leet.tga"
+    },
+    {
+      "file": "vgui/m249.tga",
+      "sha256": "c70ffc3975e30a5b358f90b1c16acfdae520f52c2535b1493623e37b71aa5007",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/m249.tga"
+    },
+    {
+      "file": "vgui/m3.tga",
+      "sha256": "d5af3da7bd547a73ebeaf4cbf821d6a8b3b3be68b820242c8c0d26b88664158c",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/m3.tga"
+    },
+    {
+      "file": "vgui/m4a1.tga",
+      "sha256": "a694110938679255b1dcacf21b575336dd31990916cadb508bddbaed63015ab2",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/m4a1.tga"
+    },
+    {
+      "file": "vgui/mac10.tga",
+      "sha256": "8e258d096417ea7897d4a0702ee57e2c7d0c1d0613aab7fadb809a892af04a66",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/mac10.tga"
+    },
+    {
+      "file": "vgui/mp5.tga",
+      "sha256": "1c4eb081e6dee76aedf965d6e092f6d1b6ed16da2a6628d192baef9d8978eb2f",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/mp5.tga"
+    },
+    {
+      "file": "vgui/nightvision.tga",
+      "sha256": "0653a4d48f3cc69b7d1d3399b26cd32496ad26a10293d89aaa885414abedb1aa",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/nightvision.tga"
+    },
+    {
+      "file": "vgui/not_available.tga",
+      "sha256": "fea48f8e5be7644d150c6ae0852bd0eb3fdb8ce024ebddfd1eaeef2927ba3735",
+      "size": 2971,
+      "source": "cstrike/gfx/vgui/not_available.tga"
+    },
+    {
+      "file": "vgui/p228.tga",
+      "sha256": "a7d026358f15a6757675b2744a69ec195dac359cf3860fc7820e7ac9994e3e9d",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/p228.tga"
+    },
+    {
+      "file": "vgui/p90.tga",
+      "sha256": "348584b23c63388045342dc0b79bdd37a8cff904a84215c386492e33273ab725",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/p90.tga"
+    },
+    {
+      "file": "vgui/round_corner_ne.tga",
+      "sha256": "a8e1a53a89f3d4a4e92ee7b74de6470250d434732bde81bb6bfe6e6c7adae208",
+      "size": 16428,
+      "source": "cstrike/gfx/vgui/round_corner_ne.tga"
+    },
+    {
+      "file": "vgui/round_corner_nw.tga",
+      "sha256": "bc0265ef43a7bba66c05201e9bac17edb5c9be2102eb7d87684274175ba99501",
+      "size": 16428,
+      "source": "cstrike/gfx/vgui/round_corner_nw.tga"
+    },
+    {
+      "file": "vgui/round_corner_se.tga",
+      "sha256": "000f42b1cedc1aa49d498bc9c44cffd47dbc21c0cd5c51292cd324a86a27b78a",
+      "size": 16428,
+      "source": "cstrike/gfx/vgui/round_corner_se.tga"
+    },
+    {
+      "file": "vgui/round_corner_small_ne.tga",
+      "sha256": "e3fe2e666773d504dfbd74d30c0fb471d6f040e9572b41997a2b30f25eb462b3",
+      "size": 444,
+      "source": "cstrike/gfx/vgui/round_corner_small_ne.tga"
+    },
+    {
+      "file": "vgui/round_corner_small_nw.tga",
+      "sha256": "c87479a8e9c5ff3f53e4879eebf3b4e21135e3a595812f52a7b853c20ae07f48",
+      "size": 444,
+      "source": "cstrike/gfx/vgui/round_corner_small_nw.tga"
+    },
+    {
+      "file": "vgui/round_corner_small_se.tga",
+      "sha256": "8e2bf3d11e74b8d837914fbc2270a71b5367e79713ca8766ceefe51825d7fad3",
+      "size": 444,
+      "source": "cstrike/gfx/vgui/round_corner_small_se.tga"
+    },
+    {
+      "file": "vgui/round_corner_small_sw.tga",
+      "sha256": "cf1a347ac1747ddc2aa6d72c57dedcdfb62fb0ad74e3f257c47bd03917745760",
+      "size": 444,
+      "source": "cstrike/gfx/vgui/round_corner_small_sw.tga"
+    },
+    {
+      "file": "vgui/round_corner_sw.tga",
+      "sha256": "4f10fcb23fecc9b9ed0f46581aa0869ac757617ed513a593b7e0a98b4d7b145e",
+      "size": 16428,
+      "source": "cstrike/gfx/vgui/round_corner_sw.tga"
+    },
+    {
+      "file": "vgui/sas.tga",
+      "sha256": "421b766cc4f79eba7f2030013ad2a15d1a9f26047f0cc6439a0709bce3ee6632",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/sas.tga"
+    },
+    {
+      "file": "vgui/scout.tga",
+      "sha256": "b4bc1d136ed6cb08381eec0c4fc678614e054ae9682aef96c534307c8174d3dd",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/scout.tga"
+    },
+    {
+      "file": "vgui/sg550.tga",
+      "sha256": "4e25e59ed6b24bb0a29c74be218ba1290335da45f3f87e3441cbe7a335b23f50",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/sg550.tga"
+    },
+    {
+      "file": "vgui/sg552.tga",
+      "sha256": "0c9927bd22c7a781ea9ad64880f0095f9fc871c0099e6fbb618f4615d6126f2e",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/sg552.tga"
+    },
+    {
+      "file": "vgui/shield.tga",
+      "sha256": "d638cbb67420b2f9ddee408acced0a1d0ee47a342d45b6eebeea08985695ef39",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/shield.tga"
+    },
+    {
+      "file": "vgui/smokegrenade.tga",
+      "sha256": "4a2460747b60d4b5843bf22a459f6c17f16a9664305b4b4bda182041a0fdebfa",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/smokegrenade.tga"
+    },
+    {
+      "file": "vgui/t_random.tga",
+      "sha256": "6c8611739d1b3d3101fdb4c4fcb1ba0afc40873ea20d8406dc220521479be0a2",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/t_random.tga"
+    },
+    {
+      "file": "vgui/terror.tga",
+      "sha256": "3f4c5fcc31103f23fc92765b8640294d4a91bfbddeb2ede00c9c5aad32fa2b83",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/terror.tga"
+    },
+    {
+      "file": "vgui/tmp.tga",
+      "sha256": "de2b2f7bfbeeca68c0e7197eb38b3864b19f4c110ade2872350904e018db7298",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/tmp.tga"
+    },
+    {
+      "file": "vgui/ump45.tga",
+      "sha256": "ec287b51919687bba35ee4edd1b7196b4963f97bff8806c45a513b513ce54506",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/ump45.tga"
+    },
+    {
+      "file": "vgui/urban.tga",
+      "sha256": "1e1abad514a923f2528b17d1db73169efdba27a2471822c2c985a9da1efaeb5c",
+      "size": 200748,
+      "source": "cstrike/gfx/vgui/urban.tga"
+    },
+    {
+      "file": "vgui/usp45.tga",
+      "sha256": "9d8e087dd823e63f7009907ff1761e620dc5ee64db6a527e2d0ec830d4152437",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/usp45.tga"
+    },
+    {
+      "file": "vgui/vip.tga",
+      "sha256": "4d2030ce6f26748b6e1b5d44408b78c472cd293dafc58e20c188ec13ac3c6d31",
+      "size": 131116,
+      "source": "cstrike/gfx/vgui/vip.tga"
+    },
+    {
+      "file": "vgui/xm1014.tga",
+      "sha256": "c658f7016f6d3f32c47a0d6ae7bd3bef289bee6bf78b2b171abab11a75e99e00",
+      "size": 65580,
+      "source": "cstrike/gfx/vgui/xm1014.tga"
+    },
+    {
+      "file": "voice/640_speaker1.tga",
+      "sha256": "0fb408e093e9608ca37636365e87a9ea6e4709d0964794de44b2692003594378",
+      "size": 707,
+      "source": "valve/gfx/vgui/640_speaker1.tga"
+    },
+    {
+      "file": "voice/640_speaker2.tga",
+      "sha256": "08e6b32083b0344ea416e61c726029c910b9a700ca3daab538b9e952982d609d",
+      "size": 751,
+      "source": "valve/gfx/vgui/640_speaker2.tga"
+    },
+    {
+      "file": "voice/640_speaker3.tga",
+      "sha256": "d18b12f6790cfa664d701ca26091768971f87935b494ed8d2574141a5f346e9f",
+      "size": 835,
+      "source": "valve/gfx/vgui/640_speaker3.tga"
+    },
+    {
+      "file": "voice/640_speaker4.tga",
+      "sha256": "c9d6779b7395d6777d4a70da2997a4c4f13f447c059f4c9d2c2be6beecaa9d1e",
+      "size": 973,
+      "source": "valve/gfx/vgui/640_speaker4.tga"
+    },
+    {
+      "file": "voice/640_voiceblocked.tga",
+      "sha256": "26619855d0615c1f7d3ef9d358de7943d2bb41b6a1611c793b26b233c6fa34b3",
+      "size": 1068,
+      "source": "valve/gfx/vgui/640_voiceblocked.tga"
+    },
+    {
+      "file": "voice/speaker4.tga",
+      "sha256": "276fcc3dec6792071731a0e973b4507279a4703302171e765098a97fe8b64186",
+      "size": 1068,
+      "source": "valve/gfx/vgui/speaker4.tga"
+    }
+  ],
+  "format": "protocol47-app90-vgui-runtime",
+  "source_aggregate_sha256": "1a36e031123dce268f5c3c04141be7c8dd519fae98309f6dcd844f6001c54374",
+  "version": 1
+}

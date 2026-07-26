@@ -1,0 +1,10 @@
+# These are byte-exact mirrors of the App 90 distribution. Preserve Valve's
+# original CRLF/trailing-space payloads; manifests test their source hashes.
+/public/ui/classic/** -text -diff
+/game/assets/ui/classic/** -text -diff
+/public/sprites/classic/** -text -diff
+/game/assets/sounds/classic/materials.txt -text -diff
+/game/assets/sounds/classic/sentences.txt -text -diff
+
+# Generated animation streams are packed float32 payloads, not text.
+*.f32 -text -diff

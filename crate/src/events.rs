@@ -839,7 +839,10 @@ impl EventParser {
         };
 
         let team = String::from_utf8_lossy(&data[..nul]).to_string();
-        if team.is_empty() {
+        // Counter-Strike's TeamScore wire values are canonical identifiers,
+        // not arbitrary display strings. Reject control-byte payloads created
+        // by a malformed/desynchronized user-message candidate.
+        if !matches!(team.as_str(), "CT" | "TERRORIST" | "T") {
             return;
         }
 

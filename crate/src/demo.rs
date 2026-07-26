@@ -18,7 +18,7 @@ impl<'a> DemoParser<'a> {
         let header = self.parse_header()?;
 
         let directory = self.parse_directory(header.directory_offset)?;
-        let (frames, mut players, demo_buffers, buffer_anchors) =
+        let (frames, mut players, demo_buffers, signon_buffers, buffer_anchors) =
             self.parse_frames_with_players(&directory)?;
 
         // Always scan the entire file for players (frame parsing is unreliable)
@@ -34,6 +34,7 @@ impl<'a> DemoParser<'a> {
             frames,
             players,
             demo_buffers,
+            signon_buffers,
             buffer_anchors,
         })
     }
@@ -135,6 +136,7 @@ impl<'a> DemoParser<'a> {
             Vec<DemoFrame>,
             Vec<PlayerInfo>,
             Vec<(f32, Vec<u8>)>,
+            Vec<Vec<u8>>,
             Vec<(u64, f32)>,
         ),
         String,
@@ -143,6 +145,7 @@ impl<'a> DemoParser<'a> {
         let mut players: std::collections::HashMap<u8, PlayerInfo> =
             std::collections::HashMap::new();
         let mut demo_buffers: Vec<(f32, Vec<u8>)> = Vec::new();
+        let mut signon_buffers: Vec<Vec<u8>> = Vec::new();
         let mut anchors: Vec<(u64, f32)> = Vec::new();
 
         for entry in directory.iter() {
@@ -166,10 +169,14 @@ impl<'a> DemoParser<'a> {
                                     || frame.frame_type == FrameType::NetMsgStart;
                                 let is_demobuffer = frame.frame_type == FrameType::DemoBuffer;
                                 if (is_netmsg || is_demobuffer) && data.len() > 20 {
-                                    // File-offset -> frame-time anchor for the
-                                    // byte-position event scans
-                                    anchors.push((self.data.position(), frame.time));
-                                    demo_buffers.push((frame.time, data));
+                                    if entry.entry_type == 0 {
+                                        signon_buffers.push(data);
+                                    } else {
+                                        // File-offset -> frame-time anchor for the
+                                        // byte-position event scans
+                                        anchors.push((self.data.position(), frame.time));
+                                        demo_buffers.push((frame.time, data));
+                                    }
                                 }
                             }
 
@@ -189,7 +196,7 @@ impl<'a> DemoParser<'a> {
 
         let player_list: Vec<PlayerInfo> = players.into_values().collect();
         anchors.sort_by_key(|(o, _)| *o);
-        Ok((frames, player_list, demo_buffers, anchors))
+        Ok((frames, player_list, demo_buffers, signon_buffers, anchors))
     }
 
     fn extract_player_info(data: &[u8], players: &mut std::collections::HashMap<u8, PlayerInfo>) {
@@ -862,7 +869,7 @@ pub fn build_timeline_with_progress(
     let mut max_time: f32 = 0.0;
 
     // Fresh delta registry / HLTV detection state for this demo
-    netmsg::reset_parser_state();
+    netmsg::reset_parser_state(demo.header.network_protocol);
 
     // Event parser for game events (kills, rounds, etc.)
     let mut event_parser = EventParser::new();
@@ -956,7 +963,12 @@ pub fn build_timeline_with_progress(
     // LOADING segment; without this every ClientData message desyncs.
     if !demo.demo_buffers.is_empty() {
         event_parser.set_time(0.0);
-        for chunk in loading_segment_chunks(raw_data, &demo.directory) {
+        let signon_chunks = if demo.signon_buffers.is_empty() {
+            loading_segment_chunks(raw_data, &demo.directory)
+        } else {
+            demo.signon_buffers.clone()
+        };
+        for chunk in signon_chunks {
             let _ = netmsg::parse_demo_buffer_with_events(
                 &chunk,
                 &mut entity_state,

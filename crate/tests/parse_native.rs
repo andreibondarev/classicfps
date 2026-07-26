@@ -16,10 +16,7 @@ fn collect_models(directory: &std::path::Path, models: &mut Vec<std::path::PathB
 
 #[test]
 fn complete_runtime_model_bundle_parses() {
-    let root = std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../public/models"
-    ));
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../public/models"));
     let mut models = Vec::new();
     collect_models(&root.join("player"), &mut models);
     collect_models(&root.join("weapons"), &mut models);
@@ -158,6 +155,83 @@ fn parse_env_demo() {
     };
     let data = std::fs::read(&path).expect("demo file");
     cs16_demo_parser::debug_parse_demo(&data);
+}
+
+#[test]
+fn protocol46_exevsisterhood_has_real_players_without_garbage_hud_events() {
+    let data = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../demos/Exevsisterhood.dem"
+    ))
+    .expect("Exevsisterhood demo");
+    let (duration, entries, names, max_abs, team_scores, round_times) =
+        cs16_demo_parser::debug_timeline_diagnostics(&data).expect("timeline diagnostics");
+
+    assert!((duration - 1754.8774).abs() < 0.1, "duration={duration}");
+    assert!(entries > 20_000, "only {entries} player timeline entries");
+    for expected in [
+        "*sisterhood*<gandjubas>",
+        "*sisterhood*<cyrus>",
+        "exe^Hvorost",
+        "exe^sNo0p",
+    ] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}; names={names:?}"
+        );
+    }
+    assert!(max_abs < 8192.0, "position out of bounds: {max_abs}");
+    assert_eq!(
+        team_scores,
+        vec![("CT".to_string(), 5), ("TERRORIST".to_string(), 2)]
+    );
+    assert!(
+        round_times.is_empty(),
+        "protocol-46 stream produced garbage RoundTime values: {round_times:?}"
+    );
+}
+
+#[test]
+fn exe_hltv_reconstructed_camera_targets_stay_inside_stock_map_height() {
+    let cases = [
+        (
+            "/../demos/exe_vs_sisterhood-1.dem",
+            332.93,
+            "*sisterhood*<gandjubas>",
+            -768.0..=128.0,
+        ),
+        (
+            "/../demos/fs_vs_exe-1.dem",
+            817.55,
+            "exe^MaN@X` |~POSTNET",
+            -1088.0..=128.0,
+        ),
+    ];
+
+    for (relative, time, target, world_z) in cases {
+        let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), relative);
+        let data = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let (sample_time, origin, angles, _) =
+            cs16_demo_parser::debug_player_pose_at(&data, time, target)
+                .unwrap_or_else(|error| panic!("{path}: {error}"))
+                .unwrap_or_else(|| panic!("{path}: missing target {target}"));
+
+        assert!(
+            (sample_time - time).abs() < 0.1,
+            "{path}: nearest {target} sample is {sample_time}, requested {time}"
+        );
+        assert!(
+            world_z.contains(&origin.z),
+            "{path}: {target} camera origin {origin:?} is outside world Z {world_z:?}; \
+             this indicates signed GoldSrc deltas were decoded as two's-complement"
+        );
+        assert!(
+            [origin.x, origin.y, origin.z, angles.x, angles.y, angles.z]
+                .into_iter()
+                .all(f32::is_finite),
+            "{path}: non-finite pose origin={origin:?} angles={angles:?}"
+        );
+    }
 }
 
 /// Objects (grenades/C4) should appear in the WCG demo's obj track

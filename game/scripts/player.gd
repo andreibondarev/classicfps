@@ -41,36 +41,29 @@ const BUNNYJUMP_CROP_FACTOR := 0.8
 const FLOOR_NORMAL_MINIMUM := 0.7
 const FLOOR_CATEGORIZE_DISTANCE := 2.0 * WORLD_SCALE
 const STEP_HEIGHT := 18.0 * WORLD_SCALE
+const MovementKernelScript = preload("res://scripts/goldsrc_movement.gd")
+const WeaponClockScript = preload("res://scripts/cs16_weapon_clock.gd")
+const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
+const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
 const ViewModelScript = preload("res://scripts/mdl_viewmodel.gd")
 const GrenadeScript = preload("res://scripts/grenade.gd")
-const WEAPONS := {
-	"ak47": {
-		"name": "AK-47", "mode": "FULL AUTO", "magazine": 30, "reserve": 90,
-		"max_speed": 221.0,
-		"damage": 36.0, "interval": 0.0955, "reload": 2.45,
-		"shot": "res://assets/sounds/ak47-1.wav",
-		"reload_sound": "res://assets/sounds/ak47_clipin.wav",
-	},
-	"deagle": {
-		"name": "DESERT EAGLE", "mode": "SEMI AUTO", "magazine": 7, "reserve": 35,
-		"max_speed": 250.0,
-		"damage": 54.0, "interval": 0.225, "reload": 2.20,
-		"shot": "res://assets/sounds/deagle-1.wav",
-		"reload_sound": "res://assets/sounds/deagle_reload.wav",
-	},
-	"knife": {
-		"name": "KNIFE", "mode": "MELEE", "magazine": -1, "reserve": -1,
-		"max_speed": 250.0,
-		"damage": 65.0, "interval": 0.48, "reload": 0.0,
-		"shot": "res://assets/sounds/knife_slash1.wav", "reload_sound": "",
-	},
-	"hegrenade": {
-		"name": "HE GRENADE", "mode": "THROW", "magazine": 1, "reserve": 0,
-		"max_speed": 250.0,
-		"damage": 0.0, "interval": 1.0, "reload": 0.0,
-		"shot": "res://assets/sounds/hegrenade-1.wav", "reload_sound": "",
-	},
+const AudioRouterScript = preload("res://scripts/cs16_audio_event_router.gd")
+const AudioCatalogScript = preload("res://scripts/cs16_audio_catalog.gd")
+const AUDIO_ENTITY_ID := 1
+const FOOTSTEP_INTERVAL_TICKS := 30
+const FOOTSTEP_MINIMUM_SPEED := 220.0 * WORLD_SCALE
+const HE_PIN_AUDIO_TICK := 66
+const RELOAD_AUDIO_STAGES := {
+	"ak47": [
+		{"offset": 35, "event": "ak47.clip_out"},
+		{"offset": 154, "event": "ak47.clip_in"},
+	],
+	"deagle": [
+		{"offset": 47, "event": "deagle.clip_out"},
+		{"offset": 113, "event": "deagle.clip_in"},
+	],
 }
+const WEAPONS := WeaponRegistryScript.WEAPONS
 const RECOIL_PATTERN := [
 	Vector2(0.0, 0.74), Vector2(0.18, 0.82), Vector2(-0.12, 0.91),
 	Vector2(0.30, 1.02), Vector2(-0.25, 1.08), Vector2(0.38, 1.14),
@@ -83,16 +76,18 @@ var active_weapon := "ak47"
 var clip := 30
 var reserve := 90
 var reloading := false
-var ammunition := {
-	"ak47": {"clip": 30, "reserve": 90},
-	"deagle": {"clip": 7, "reserve": 35},
-	"hegrenade": {"clip": 1, "reserve": 0},
+var ammunition := {}
+var owned_weapons := {}
+var equipment := {
+	"kevlar": false, "helmet": false, "defuser": false,
+	"nvgs": false, "shield": false,
 }
+var weapon_modes := {}
+var _burst_shots_remaining := 0
+var _next_burst_tick := -1
 
 var _yaw := 0.0
 var _pitch := 0.0
-var _next_fire_at := 0.0
-var _reload_generation := 0
 var _rng := RandomNumberGenerator.new()
 var _standing := true
 var _walking := false
@@ -100,8 +95,9 @@ var _duck_elapsed := 0.0
 var _jump_was_down := false
 var _max_speed_override_ups := 0.0
 var _step_distance := 0.0
-var _next_step_at := 1.65
-var _step_index := 0
+var _next_footstep_tick := 0
+var _left_foot := false
+var _footstep_serial := 0
 var _recoil_index := 0
 var _last_shot_at := -10.0
 var _ak_accuracy := 0.2
@@ -111,15 +107,18 @@ var _deagle_last_fire := 0.0
 var _shot_sequence := 0
 var _recoil_direction := -1.0
 var _punch_degrees := Vector2.ZERO
+var _movement_grounded := false
 
 var camera: Camera3D
 var collider: CollisionShape3D
+var movement_kernel: RefCounted
+var weapon_clock: RefCounted
+var combat_effects: CS16CombatEffects
+var audio_router: CS16AudioEventRouter
+var _audio_schedule: Array[Dictionary] = []
 var weapon_anchor: Node3D
 var viewmodel: MdlViewModel
 var muzzle_light: OmniLight3D
-var shot_audio: AudioStreamPlayer
-var reload_audio: AudioStreamPlayer
-var footstep_audio: AudioStreamPlayer3D
 var settings: Node
 
 
@@ -138,14 +137,19 @@ func _ready() -> void:
 	armor = 100
 	has_helmet = true
 	_rng.seed = 0xC516
+	_initialize_starting_loadout()
 	_configure_input()
 	combat_controller = HumanCombatController.new()
 	combat_controller.name = "HumanController"
 	add_child(combat_controller)
 	combat_controller.possess(self)
 	_build_body()
+	movement_kernel = MovementKernelScript.new(self)
+	weapon_clock = WeaponClockScript.new()
+	weapon_clock.reset(active_weapon)
+	combat_effects = CombatEffectsScript.for_scene(get_tree().current_scene)
+	audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
 	_build_viewmodel()
-	_load_audio()
 	_apply_settings()
 	settings.changed.connect(_apply_settings)
 	health_changed.emit(health, armor)
@@ -225,23 +229,6 @@ func _build_viewmodel() -> void:
 	camera.add_child(muzzle_light)
 
 
-func _load_audio() -> void:
-	shot_audio = AudioStreamPlayer.new()
-	shot_audio.name = "ShotAudio"
-	shot_audio.volume_db = -5.0
-	add_child(shot_audio)
-	reload_audio = AudioStreamPlayer.new()
-	reload_audio.name = "ReloadAudio"
-	reload_audio.volume_db = -8.0
-	add_child(reload_audio)
-	footstep_audio = AudioStreamPlayer3D.new()
-	footstep_audio.name = "FootstepAudio"
-	footstep_audio.max_distance = 18.0
-	footstep_audio.volume_db = -10.0
-	add_child(footstep_audio)
-	_apply_weapon_audio()
-
-
 func _input(event: InputEvent) -> void:
 	if not controls_enabled or not alive:
 		return
@@ -289,17 +276,13 @@ func _sync_view_angles() -> void:
 		)
 
 
-func _drop_punch_angle(delta: float) -> void:
-	var length := _punch_degrees.length()
-	if length <= 0.00001:
-		_punch_degrees = Vector2.ZERO
-		return
-	var next_length := maxf(0.0, length - (10.0 + length * 0.5) * delta)
-	_punch_degrees *= next_length / length
+func _drop_punch_angle() -> void:
+	_punch_degrees = WeaponClockScript.punch_decay_tick(_punch_degrees)
 	_sync_view_angles()
 
 
 func _physics_process(delta: float) -> void:
+	_advance_weapon_simulation_tick()
 	if not controls_enabled or not alive:
 		velocity = Vector3.ZERO
 		last_command = {}
@@ -307,7 +290,8 @@ func _physics_process(delta: float) -> void:
 
 	var command := combat_controller.gather_command(delta)
 	last_command = command
-	_drop_punch_angle(delta)
+	_drop_punch_angle()
+	_movement_grounded = movement_kernel.categorize_ground(velocity)
 	var look_delta: Vector2 = command.look_delta
 	if not look_delta.is_zero_approx():
 		_apply_mouse_look(look_delta)
@@ -319,7 +303,7 @@ func _physics_process(delta: float) -> void:
 		wish_direction = wish_direction.normalized()
 	var wish_speed := _movement_speed(not _standing, _walking) * minf(1.0, input.length())
 
-	var was_on_floor := is_on_floor()
+	var was_on_floor := _movement_grounded
 	var jump_pressed := _consume_jump_press(command.jump)
 	var jumped := was_on_floor and jump_pressed
 	if was_on_floor:
@@ -339,8 +323,14 @@ func _physics_process(delta: float) -> void:
 		_air_accelerate(wish_direction, wish_speed, AIR_ACCEL, delta)
 
 	var previous := global_position
-	move_and_slide()
-	if not is_on_floor():
+	var movement_result: Dictionary = movement_kernel.move(
+		velocity,
+		delta,
+		was_on_floor and not jumped,
+	)
+	velocity = movement_result.velocity
+	_movement_grounded = movement_result.grounded
+	if not _movement_grounded:
 		velocity.y -= GRAVITY * delta * 0.5
 	else:
 		# PM_PlayerMove clears residual downward velocity after categorizing a landing.
@@ -349,19 +339,53 @@ func _physics_process(delta: float) -> void:
 		global_position.x - previous.x,
 		global_position.z - previous.z,
 	).length()
-	if is_on_floor() and horizontal_distance > 0.0:
+	if _movement_grounded and horizontal_distance > 0.0:
 		_step_distance += horizontal_distance
 		_apply_view_bob()
 
 	if not str(command.weapon).is_empty():
 		switch_weapon(command.weapon)
+	if bool(command.get("secondary_pressed", false)):
+		_try_secondary()
 
-	if command.fire and active_weapon == "ak47":
+	var active_definition: Dictionary = WEAPONS[active_weapon]
+	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
+		if command.fire_pressed:
+			_try_fire()
+		if weapon_clock.state == WeaponClockScript.STATE_GRENADE_PINNED and not command.fire:
+			weapon_clock.release_grenade(clip <= 1)
+			_consume_weapon_clock_events(weapon_clock.take_events())
+	elif command.fire and bool(active_definition.automatic):
 		_try_fire()
 	elif command.fire_pressed:
 		_try_fire()
 	if command.reload:
 		_start_reload()
+
+
+func _advance_weapon_simulation_tick(count := 1) -> void:
+	if not is_instance_valid(weapon_clock):
+		return
+	for ignored_tick in range(count):
+		var events: Array[String] = weapon_clock.advance_tick(1)
+		_consume_weapon_clock_events(events)
+		_emit_due_audio()
+		if _burst_shots_remaining > 0 and weapon_clock.tick >= _next_burst_tick:
+			_burst_shots_remaining -= 1
+			_next_burst_tick += 10
+			_try_fire(true)
+
+
+func _consume_weapon_clock_events(events: Array[String]) -> void:
+	for event in events:
+		match event:
+			WeaponClockScript.EVENT_RELOAD_COMPLETE:
+				_complete_reload()
+			WeaponClockScript.EVENT_GRENADE_THROW:
+				_spawn_thrown_grenade()
+			WeaponClockScript.EVENT_GRENADE_RETIRE:
+				if active_weapon in ["hegrenade", "flashbang", "smokegrenade"] and clip <= 0:
+					switch_weapon(_best_owned_weapon())
 
 
 func _consume_jump_press(jump_down: bool) -> bool:
@@ -371,7 +395,10 @@ func _consume_jump_press(jump_down: bool) -> bool:
 
 
 func _apply_friction(delta: float) -> void:
-	velocity = _friction_velocity(velocity, delta)
+	var edge_friction := 1.0
+	if is_instance_valid(movement_kernel):
+		edge_friction = movement_kernel.edge_friction_multiplier(velocity)
+	velocity = _friction_velocity(velocity, delta, edge_friction)
 
 
 func _friction_velocity(source: Vector3, delta: float, edge_friction := 1.0) -> Vector3:
@@ -463,7 +490,11 @@ func _movement_speed(crouching: bool, walking: bool) -> float:
 func _maximum_speed(walking: bool) -> float:
 	var client_max_speed_ups := _max_speed_override_ups
 	if client_max_speed_ups <= 0.0:
-		client_max_speed_ups = float(WEAPONS[active_weapon].max_speed)
+		client_max_speed_ups = float(
+			WEAPONS[active_weapon].zoom_speed
+			if camera.fov < 89.0
+			else WEAPONS[active_weapon].max_speed
+		)
 	var command_speed_ups := CL_FORWARD_SPEED * (CL_MOVE_SPEED_KEY if walking else 1.0)
 	var maximum_ups := minf(SV_MAX_SPEED, minf(client_max_speed_ups, command_speed_ups))
 	return maximum_ups * WORLD_SCALE
@@ -492,7 +523,11 @@ func _update_crouch(delta: float, wants_crouch: bool) -> void:
 
 	# CS completes ducking immediately in the air. On the ground it uses
 	# PM_SplineFraction over TIME_TO_DUCK, changing to hull 1 at completion.
-	_duck_elapsed = DUCK_TIME if not is_on_floor() else minf(DUCK_TIME, _duck_elapsed + delta)
+	_duck_elapsed = (
+		DUCK_TIME
+		if not _movement_grounded
+		else minf(DUCK_TIME, _duck_elapsed + delta)
+	)
 	var fraction := _spline_fraction(_duck_elapsed / DUCK_TIME)
 	camera.position.y = lerpf(STAND_EYE, CROUCH_EYE, fraction)
 	if _duck_elapsed >= DUCK_TIME:
@@ -516,6 +551,8 @@ func _apply_hull(height: float) -> void:
 
 
 func _can_use_standing_hull() -> bool:
+	if is_instance_valid(movement_kernel):
+		return movement_kernel.can_fit_box(Vector3(HULL_WIDTH, STAND_HEIGHT, HULL_WIDTH))
 	if not is_inside_tree() or get_world_3d() == null:
 		return true
 	var shape := BoxShape3D.new()
@@ -538,73 +575,309 @@ func _apply_view_bob() -> void:
 		abs(sin(_step_distance * 10.5)) * 0.006 * speed_ratio * motion_scale,
 		sin(_step_distance * 5.25) * 0.0025 * speed_ratio * motion_scale,
 	)
-	if _step_distance >= _next_step_at:
-		_next_step_at = _step_distance + (2.15 if not _standing else 1.65)
-		if _walking or not _standing:
-			return
-		_step_index = (_step_index + 1) % 4
-		footstep_audio.stream = load("res://assets/sounds/pl_step%d.wav" % (_step_index + 1))
-		footstep_audio.pitch_scale = _rng.randf_range(0.96, 1.04)
-		footstep_audio.play()
+	_update_footstep_audio()
 
 
-func _try_fire() -> void:
-	var now := Time.get_ticks_msec() / 1000.0
-	if reloading or now < _next_fire_at:
+func _update_footstep_audio() -> void:
+	if not is_instance_valid(weapon_clock):
+		return
+	var current_tick := int(weapon_clock.tick)
+	if current_tick < _next_footstep_tick:
+		return
+	_next_footstep_tick = current_tick + FOOTSTEP_INTERVAL_TICKS
+	var planar_speed := Vector2(velocity.x, velocity.z).length()
+	# ReGameDLL suppresses ordinary multiplayer steps at <= 220 ups. This
+	# naturally makes shift-walking and crouch movement silent.
+	if planar_speed <= FOOTSTEP_MINIMUM_SPEED:
+		return
+	var texture_name := _ground_texture_name()
+	var descriptor := AudioCatalogScript.footstep_descriptor(
+		texture_name,
+		_left_foot,
+		AudioCatalogScript.footstep_volume(texture_name),
+	)
+	if AudioCatalogScript.material_code(texture_name) == AudioCatalogScript.TILE:
+		# PM_PlayStepSound picks tile5 one time in five. Keep the cadence exact
+		# and deterministic while retaining ordinary alternating foot families.
+		if _footstep_serial % 5 == 0:
+			descriptor.variant_index = 2
+		else:
+			(descriptor.samples as Array).resize(2)
+	_emit_audio_descriptor(
+		"player.step.%s" % AudioCatalogScript.material_code(texture_name),
+		descriptor,
+	)
+	_left_foot = not _left_foot
+	_footstep_serial += 1
+
+
+func _ground_texture_name() -> String:
+	if not is_inside_tree() or get_world_3d() == null:
+		return ""
+	var query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3.UP * 0.08,
+		global_position - Vector3.UP * 0.28,
+		1,
+		[get_rid()],
+	)
+	query.collide_with_areas = false
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return ""
+	var face_index := int(hit.get("face_index", -1))
+	var node := hit.collider as Node
+	while is_instance_valid(node):
+		if node.has_method("texture_name_for_face"):
+			return str(node.call("texture_name_for_face", face_index))
+		node = node.get_parent()
+	return str((hit.collider as Node).name) if hit.collider is Node else ""
+
+
+func _emit_audio(
+	event_name: String,
+	channel: int,
+	overrides := {},
+) -> int:
+	if not is_instance_valid(audio_router):
+		audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
+	if not is_instance_valid(audio_router):
+		return -1
+	return audio_router.emit_catalog_event(
+		event_name,
+		AUDIO_ENTITY_ID,
+		channel,
+		AudioRouterScript.meters_to_hu(global_position),
+		overrides,
+	)
+
+
+func audio_entity_id() -> int:
+	return AUDIO_ENTITY_ID
+
+
+func _emit_audio_descriptor(event_name: String, descriptor: Dictionary) -> int:
+	if not is_instance_valid(audio_router):
+		audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
+	if not is_instance_valid(audio_router):
+		return -1
+	return audio_router.emit_descriptor(
+		event_name,
+		AUDIO_ENTITY_ID,
+		descriptor,
+		AudioRouterScript.meters_to_hu(global_position),
+	)
+
+
+func _schedule_audio(event_name: String, offset_ticks: int) -> void:
+	_audio_schedule.append({
+		"event": event_name,
+		"due_tick": weapon_clock.tick + offset_ticks,
+		"channel": AudioRouterScript.CHAN_WEAPON,
+	})
+
+
+func _emit_due_audio() -> void:
+	for index in range(_audio_schedule.size() - 1, -1, -1):
+		var scheduled := _audio_schedule[index]
+		if weapon_clock.tick < int(scheduled.due_tick):
+			continue
+		_emit_audio(str(scheduled.event), int(scheduled.channel))
+		_audio_schedule.remove_at(index)
+
+
+func _try_fire(burst_followup := false) -> void:
+	if reloading:
 		return
 	if active_weapon == "knife":
-		_fire_knife(now)
+		_fire_knife()
 		return
-	if active_weapon == "hegrenade":
-		_throw_grenade(now)
+	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
+		if clip > 0 and weapon_clock.begin_primary_attack():
+			viewmodel.play_action("pullpin")
+			_schedule_audio("he.pull_pin", HE_PIN_AUDIO_TICK)
 		return
 	if clip <= 0:
-		_start_reload()
+		if reserve > 0:
+			_start_reload()
+		else:
+			if weapon_clock.begin_empty_fire():
+				_emit_audio(
+					"weapon.empty_pistol"
+					if str(WEAPONS[active_weapon].category) == "pistol"
+					else "weapon.empty_rifle",
+					AudioRouterScript.CHAN_WEAPON,
+				)
+		return
+	if not burst_followup and not weapon_clock.begin_primary_attack():
 		return
 	var definition: Dictionary = WEAPONS[active_weapon]
-	_next_fire_at = now + float(definition.interval)
+	var burst_enabled := (
+		str(definition.secondary) == "burst"
+		and bool(weapon_modes.get(active_weapon, false))
+	)
+	if not burst_followup and burst_enabled:
+		weapon_clock.next_primary_tick = (
+			weapon_clock.tick
+			+ WeaponClockScript.ticks_from_seconds(float(definition.burst_primary))
+		)
+		_burst_shots_remaining = mini(2, clip - 1)
+		_next_burst_tick = weapon_clock.tick + 10
+	var now := WeaponClockScript.seconds_from_ticks(weapon_clock.tick)
 	clip -= 1
 	_store_active_ammunition()
 	ammo_changed.emit(clip, reserve, reloading)
-	if shot_audio.stream:
-		shot_audio.pitch_scale = _rng.randf_range(0.97, 1.025)
-		shot_audio.play()
-
-	muzzle_light.visible = true
-	get_tree().create_timer(0.035).timeout.connect(func() -> void:
-		if is_instance_valid(muzzle_light):
-			muzzle_light.visible = false
-	)
+	var fire_event := "%s.fire" % active_weapon
+	if bool(weapon_modes.get(active_weapon, false)) and active_weapon in ["usp", "m4a1"]:
+		fire_event = "%s.fire_silenced" % active_weapon
+	elif burst_enabled:
+		fire_event = "%s.fire_burst" % active_weapon
+	_emit_audio(fire_event, AudioRouterScript.CHAN_WEAPON)
 
 	var spread := _weapon_spread()
+	var effect_sequence := _shot_sequence
 	var direction := Ballistics.spread_direction(
 		-camera.global_transform.basis.z,
 		camera.global_transform.basis.x,
 		camera.global_transform.basis.y,
-		_shot_sequence,
+		effect_sequence,
 		spread,
 	)
 	_shot_sequence = (_shot_sequence + 1) & 0xff
 	var origin := camera.global_position
-	var trace_end := _fire_cs_bullet(origin, direction)
-	_spawn_tracer(origin, trace_end, Color("#ffd46b"))
+	if is_instance_valid(combat_effects):
+		combat_effects.spawn_weapon_shot(
+			active_weapon,
+			effect_sequence,
+			origin,
+			direction,
+			camera.global_transform.basis.x,
+			camera.global_transform.basis.y,
+		)
+	var pellet_count := int(WEAPONS[active_weapon].pellets)
+	if pellet_count <= 1:
+		_fire_cs_bullet(origin, direction, effect_sequence)
+	else:
+		var cone := float(WEAPONS[active_weapon].get("cone", spread))
+		for pellet_index in range(pellet_count):
+			var pellet_direction := Ballistics.spread_direction(
+				-camera.global_transform.basis.z,
+				camera.global_transform.basis.x,
+				camera.global_transform.basis.y,
+				(effect_sequence * 16 + pellet_index) & 0xff,
+				cone,
+			)
+			_fire_cs_bullet(origin, pellet_direction, effect_sequence)
 
 	_record_weapon_shot(now)
 	_apply_weapon_kickback()
 	_last_shot_at = now
 	_sync_view_angles()
-	viewmodel.play_action("fire")
+	if active_weapon in ["usp", "m4a1"]:
+		viewmodel._start_animation(
+			"shoot1" if bool(weapon_modes.get(active_weapon, false)) else "shoot1_unsil",
+			false,
+		)
+	else:
+		viewmodel.play_action("fire")
+
+
+func _try_secondary() -> void:
+	if reloading or not alive or not weapon_clock.can_primary_attack():
+		return
+	if active_weapon == "knife":
+		_fire_knife(true)
+		return
+	var definition: Dictionary = WEAPONS[active_weapon]
+	var secondary := str(definition.secondary)
+	if secondary == "none":
+		return
+	if secondary == "zoom":
+		var levels: Array = definition.zoom_levels
+		var current_index := int(weapon_modes.get(active_weapon, 0))
+		current_index = (current_index + 1) % levels.size()
+		weapon_modes[active_weapon] = current_index
+		camera.fov = float(levels[current_index])
+		_emit_audio("weapon.zoom", AudioRouterScript.CHAN_ITEM)
+		weapon_clock.next_primary_tick = weapon_clock.tick + 30
+	elif secondary in ["burst", "silencer"]:
+		weapon_modes[active_weapon] = not bool(weapon_modes.get(active_weapon, false))
+		weapon_clock.next_primary_tick = (
+			weapon_clock.tick
+			+ WeaponClockScript.ticks_from_seconds(
+				float(definition.get("secondary_seconds", 0.3))
+			)
+		)
+		weapon_changed.emit(
+			str(definition.name),
+			"BURST FIRE" if secondary == "burst" and bool(weapon_modes[active_weapon])
+			else ("SILENCED" if secondary == "silencer" and bool(weapon_modes[active_weapon]) else str(definition.mode)),
+		)
+		if secondary == "silencer":
+			var attaching := bool(weapon_modes[active_weapon])
+			viewmodel._start_animation(
+				"add_silencer" if attaching else "detach_silencer",
+				false,
+			)
+			_emit_audio(
+				"%s.silencer_on" % active_weapon
+				if attaching
+				else "%s.silencer_off" % active_weapon,
+				AudioRouterScript.CHAN_ITEM,
+			)
 
 
 func _weapon_spread() -> float:
 	var planar_speed := Vector2(velocity.x, velocity.z).length()
 	if active_weapon == "ak47":
-		if not is_on_floor():
+		if not _movement_grounded:
 			return 0.04 + 0.4 * _ak_accuracy
 		if planar_speed > 140.0 * WORLD_SCALE:
 			return 0.04 + 0.07 * _ak_accuracy
 		return 0.0275 * _ak_accuracy
-	if not is_on_floor():
+	if active_weapon == "deagle":
+		if not _movement_grounded:
+			return 1.5 * (1.0 - _deagle_accuracy)
+		if planar_speed > 0.0:
+			return 0.25 * (1.0 - _deagle_accuracy)
+		if not _standing:
+			return 0.115 * (1.0 - _deagle_accuracy)
+		return 0.13 * (1.0 - _deagle_accuracy)
+	var item: Dictionary = WEAPONS[active_weapon]
+	if int(item.pellets) > 1:
+		return float(item.cone)
+	var zoomed := camera.fov < 89.0
+	match active_weapon:
+		"awp":
+			return 0.85 if not _movement_grounded else (0.25 if planar_speed > 140.0 * WORLD_SCALE else (0.0 if zoomed else 0.001))
+		"scout":
+			return 0.2 if not _movement_grounded else (0.075 if planar_speed > 170.0 * WORLD_SCALE else (0.0 if zoomed else 0.007))
+		"g3sg1":
+			return 0.45 if not _movement_grounded else (0.15 if planar_speed > 0.0 else (0.035 if not _standing else 0.055))
+		"sg550":
+			return 0.45 if not _movement_grounded else (0.15 if planar_speed > 0.0 else (0.04 if not _standing else 0.05))
+		"aug":
+			return 0.115 if not _movement_grounded else (0.049 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
+		"sg552":
+			return 0.125 if not _movement_grounded else (0.05 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
+		"famas":
+			return 0.09 if not _movement_grounded else (0.044 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
+		"galil":
+			return 0.1 if not _movement_grounded else (0.054 if planar_speed > 140.0 * WORLD_SCALE else 0.0075)
+		"m4a1":
+			return 0.1 if not _movement_grounded else (0.045 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
+		"m249":
+			return 0.145 if not _movement_grounded else (0.064 if planar_speed > 140.0 * WORLD_SCALE else 0.006)
+		"mp5":
+			return 0.04 if _movement_grounded else 0.2
+		"mac10":
+			return 0.03 if _movement_grounded else 0.375
+		"ump45":
+			return 0.04 if _movement_grounded else 0.24
+		"tmp":
+			return 0.03 if _movement_grounded else 0.25
+		"p90":
+			return 0.3 if not _movement_grounded else (0.115 if planar_speed > 170.0 * WORLD_SCALE else 0.045)
+	if not _movement_grounded:
 		return 1.5 * (1.0 - _deagle_accuracy)
 	if planar_speed > 0.0:
 		return 0.25 * (1.0 - _deagle_accuracy)
@@ -637,11 +910,25 @@ func _apply_weapon_kickback() -> void:
 	if active_weapon == "deagle":
 		_punch_degrees.x -= 2.0
 		return
+	if active_weapon != "ak47":
+		var item: Dictionary = WEAPONS[active_weapon]
+		var category := str(item.category)
+		var kick := 0.9
+		if category == "pistol":
+			kick = 1.4
+		elif category == "sniper":
+			kick = 2.0
+		elif category == "shotgun":
+			kick = 4.0
+		elif category == "rifle" or category == "machinegun":
+			kick = 1.0
+		_punch_degrees.x = maxf(_punch_degrees.x - kick, -12.0)
+		return
 	var planar_speed := Vector2(velocity.x, velocity.z).length()
 	var parameters: Array[float]
 	if planar_speed > 0.0:
 		parameters = [1.5, 0.45, 0.225, 0.05, 6.5, 2.5, 7.0]
-	elif not is_on_floor():
+	elif not _movement_grounded:
 		parameters = [2.0, 1.0, 0.5, 0.35, 9.0, 6.0, 5.0]
 	elif not _standing:
 		parameters = [0.9, 0.35, 0.15, 0.025, 5.5, 1.5, 9.0]
@@ -660,13 +947,25 @@ func _apply_weapon_kickback() -> void:
 		_recoil_direction *= -1.0
 
 
-func _fire_cs_bullet(origin: Vector3, direction: Vector3) -> Vector3:
+func _fire_cs_bullet(
+	origin: Vector3,
+	direction: Vector3,
+	effect_sequence := 0,
+) -> Vector3:
 	var profile := Ballistics.weapon_profile(active_weapon)
 	if profile.is_empty():
 		return origin
+	if bool(weapon_modes.get(active_weapon, false)):
+		var definition: Dictionary = WEAPONS[active_weapon]
+		if str(definition.secondary) == "silencer":
+			profile.base_damage = int(definition.silenced_damage)
+			profile.range_modifier = float(definition.silenced_range_modifier)
+		elif str(definition.secondary) == "burst" and definition.has("burst_damage"):
+			profile.base_damage = int(definition.burst_damage)
 	var remaining_distance := float(profile.range_meters)
 	var current_damage := int(profile.base_damage)
-	var penetrations := int(profile.penetrations)
+	# FireBuckshots does not penetrate, but it still performs its initial trace.
+	var penetrations := maxi(int(profile.penetrations), 1)
 	var penetration_power := -1
 	var damage_modifier := 0.5
 	var trace_origin := origin
@@ -721,9 +1020,30 @@ func _fire_cs_bullet(origin: Vector3, direction: Vector3) -> Vector3:
 				hit.position,
 				self,
 			)
+			if is_instance_valid(combat_effects):
+				combat_effects.spawn_blood_impact(
+					hit.position,
+					direction,
+					effect_sequence,
+				)
+				var blood_query := PhysicsRayQueryParameters3D.create(
+					hit.position + direction * 0.03,
+					hit.position + direction * 2.0,
+					1,
+					[get_rid(), (hit_collider as CollisionObject3D).get_rid()]
+					if hit_collider is CollisionObject3D
+					else [get_rid()],
+				)
+				var blood_surface := get_world_3d().direct_space_state.intersect_ray(blood_query)
+				if not blood_surface.is_empty():
+					combat_effects.spawn_blood_decal(
+						blood_surface.position,
+						blood_surface.normal,
+						effect_sequence,
+					)
 			hit_confirmed.emit(hit_group == Ballistics.HitGroup.HEAD)
 		else:
-			_spawn_impact(hit.position, hit.normal)
+			_spawn_impact(hit.position, hit.normal, effect_sequence)
 		if not bool(step.can_continue):
 			break
 		# The imported BSP uses one StaticBody for the entire world. Excluding
@@ -745,34 +1065,52 @@ func _fire_cs_bullet(origin: Vector3, direction: Vector3) -> Vector3:
 	return trace_end
 
 
-func _fire_knife(now: float) -> void:
-	_next_fire_at = now + float(WEAPONS.knife.interval)
-	if shot_audio.stream:
-		shot_audio.play()
-	viewmodel.play_action("knife")
+func _fire_knife(stab := false) -> void:
 	var origin := camera.global_position
-	var end := origin - camera.global_transform.basis.z * 2.15
+	var range_meters := (32.0 if stab else 48.0) * WORLD_SCALE
+	var end := origin - camera.global_transform.basis.z * range_meters
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 | 2, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if not weapon_clock.begin_primary_attack(not hit.is_empty()):
+		return
+	if stab:
+		weapon_clock.next_primary_tick = (
+			weapon_clock.tick
+			+ WeaponClockScript.ticks_from_seconds(float(WEAPONS.knife.secondary_seconds))
+		)
+	_emit_audio("knife.stab" if stab else "knife.slash", AudioRouterScript.CHAN_WEAPON)
+	viewmodel.play_action("knife")
 	if hit.is_empty():
 		return
 	var hit_collider: Object = hit.collider
 	if hit_collider and hit_collider.has_method("apply_damage"):
-		hit_collider.call("apply_damage", float(WEAPONS.knife.damage), hit.position, false, self)
+		_emit_audio("knife.hit", AudioRouterScript.CHAN_ITEM)
+		hit_collider.call(
+			"apply_damage",
+			float(WEAPONS.knife.stab_damage if stab else WEAPONS.knife.damage),
+			hit.position,
+			false,
+			self,
+		)
+		if is_instance_valid(combat_effects):
+			combat_effects.spawn_blood_impact(
+				hit.position,
+				-camera.global_transform.basis.z,
+				_shot_sequence,
+			)
 		hit_confirmed.emit(false)
 	else:
-		_spawn_impact(hit.position, hit.normal)
+		_emit_audio("knife.hit_wall", AudioRouterScript.CHAN_ITEM)
+		_spawn_impact(hit.position, hit.normal, _shot_sequence)
+	_shot_sequence = (_shot_sequence + 1) & 0xff
 
 
-func _throw_grenade(now: float) -> void:
-	if clip <= 0:
+func _spawn_thrown_grenade() -> void:
+	if active_weapon not in ["hegrenade", "flashbang", "smokegrenade"] or clip <= 0:
 		return
-	_next_fire_at = now + float(WEAPONS.hegrenade.interval)
 	clip -= 1
 	_store_active_ammunition()
 	ammo_changed.emit(clip, reserve, false)
-	if shot_audio.stream:
-		shot_audio.play()
 	viewmodel.play_action("throw")
 	var grenade: HEGrenade = GrenadeScript.new()
 	get_tree().current_scene.add_child(grenade)
@@ -782,10 +1120,8 @@ func _throw_grenade(now: float) -> void:
 		Ballistics.he_throw_origin(camera.global_position, view_pitch, goldsrc_yaw),
 		Ballistics.he_throw_velocity(view_pitch, goldsrc_yaw, velocity),
 		self,
+		active_weapon,
 	)
-	await get_tree().create_timer(0.28).timeout
-	if active_weapon == "hegrenade" and clip <= 0:
-		switch_weapon("ak47")
 
 
 func _start_reload() -> void:
@@ -793,16 +1129,21 @@ func _start_reload() -> void:
 	var magazine := int(definition.magazine)
 	if reloading or magazine <= 0 or clip >= magazine or reserve <= 0 or not alive:
 		return
-	reloading = true
-	_reload_generation += 1
-	var generation := _reload_generation
-	ammo_changed.emit(clip, reserve, reloading)
-	if reload_audio.stream:
-		reload_audio.play()
-	viewmodel.play_action("reload")
-	await get_tree().create_timer(float(definition.reload)).timeout
-	if generation != _reload_generation or not alive:
+	if not weapon_clock.begin_reload():
 		return
+	reloading = true
+	ammo_changed.emit(clip, reserve, reloading)
+	_audio_schedule.clear()
+	for stage: Dictionary in RELOAD_AUDIO_STAGES.get(active_weapon, []):
+		_schedule_audio(str(stage.event), int(stage.offset))
+	viewmodel.play_action("reload")
+
+
+func _complete_reload() -> void:
+	if not reloading or not alive:
+		return
+	var definition: Dictionary = WEAPONS[active_weapon]
+	var magazine := int(definition.magazine)
 	var needed := magazine - clip
 	var loaded: int = mini(needed, reserve)
 	clip += loaded
@@ -818,12 +1159,16 @@ func _start_reload() -> void:
 
 
 func switch_weapon(weapon: String) -> void:
-	if not WEAPONS.has(weapon) or weapon == active_weapon:
+	if not WEAPONS.has(weapon) or not owns_weapon(weapon) or weapon == active_weapon:
 		return
 	_store_active_ammunition()
-	_reload_generation += 1
 	reloading = false
+	_audio_schedule.clear()
 	active_weapon = weapon
+	_burst_shots_remaining = 0
+	_next_burst_tick = -1
+	camera.fov = settings.field_of_view
+	weapon_clock.begin_deploy(active_weapon)
 	if active_weapon == "ak47":
 		_ak_accuracy = 0.2
 		_ak_shots_fired = 0
@@ -835,17 +1180,110 @@ func switch_weapon(weapon: String) -> void:
 	else:
 		clip = -1
 		reserve = -1
-	_apply_weapon_audio()
 	viewmodel.load_weapon(active_weapon)
 	viewmodel.play_action("switch")
+	if active_weapon == "deagle":
+		_schedule_audio("deagle.deploy", 3)
+	elif active_weapon == "ak47":
+		_schedule_audio("ak47.bolt", 37)
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)
 	ammo_changed.emit(clip, reserve, false)
 
 
-func _apply_weapon_audio() -> void:
-	var definition: Dictionary = WEAPONS[active_weapon]
-	shot_audio.stream = load(str(definition.shot)) if not str(definition.shot).is_empty() else null
-	reload_audio.stream = load(str(definition.reload_sound)) if not str(definition.reload_sound).is_empty() else null
+func owns_weapon(weapon: String) -> bool:
+	return bool(owned_weapons.get(weapon.to_lower(), false))
+
+
+func _best_owned_weapon() -> String:
+	for slot in [1, 2, 3]:
+		for weapon_name: String in owned_weapons.keys():
+			if (
+				bool(owned_weapons[weapon_name])
+				and WEAPONS.has(weapon_name)
+				and int(WEAPONS[weapon_name].slot) == slot
+				and str(WEAPONS[weapon_name].category) != "grenade"
+			):
+				return weapon_name
+	return active_weapon
+
+
+func grant_item(item_id: String, amount := 1) -> bool:
+	var canonical := item_id.to_lower().strip_edges()
+	if canonical.begins_with("weapon_"):
+		canonical = canonical.trim_prefix("weapon_")
+	if WEAPONS.has(canonical):
+		var definition: Dictionary = WEAPONS[canonical]
+		if str(definition.category) == "grenade":
+			owned_weapons[canonical] = true
+			if not ammunition.has(canonical):
+				ammunition[canonical] = {"clip": 0, "reserve": 0}
+			var carry_max := int(definition.get("reserve_max", 1))
+			ammunition[canonical].clip = mini(
+				carry_max,
+				int(ammunition[canonical].clip) + maxi(amount, 1),
+			)
+			return true
+		if int(definition.slot) in [1, 2]:
+			for owned_name: String in owned_weapons.keys():
+				if (
+					owned_name != canonical
+					and WEAPONS.has(owned_name)
+					and int(WEAPONS[owned_name].slot) == int(definition.slot)
+				):
+					owned_weapons.erase(owned_name)
+		owned_weapons[canonical] = true
+		if not ammunition.has(canonical):
+			ammunition[canonical] = {
+				"clip": int(definition.magazine),
+				"reserve": 0,
+			}
+		return true
+	var ammo_name := canonical.trim_prefix("ammo_")
+	if WeaponRegistryScript.AMMO.has(ammo_name):
+		var ammo_definition: Dictionary = WeaponRegistryScript.AMMO[ammo_name]
+		var granted := false
+		for weapon_name: String in owned_weapons.keys():
+			if WEAPONS.has(weapon_name) and str(WEAPONS[weapon_name].ammo) == ammo_name:
+				ammunition[weapon_name].reserve = mini(
+					int(ammo_definition.reserve_max),
+					int(ammunition[weapon_name].reserve)
+						+ int(ammo_definition.box) * maxi(amount, 1),
+				)
+				granted = true
+		return granted
+	if canonical == "assaultsuit":
+		equipment.kevlar = true
+		equipment.helmet = true
+		armor = 100
+		has_helmet = true
+		health_changed.emit(health, armor)
+		return true
+	if canonical in ["kevlar", "helmet", "defuser", "nvgs", "shield"]:
+		equipment[canonical] = true
+		if canonical == "kevlar":
+			armor = 100
+		elif canonical == "helmet":
+			has_helmet = true
+		health_changed.emit(health, armor)
+		return true
+	return false
+
+
+func _initialize_starting_loadout() -> void:
+	owned_weapons.clear()
+	ammunition.clear()
+	weapon_modes.clear()
+	owned_weapons.knife = true
+	ammunition.knife = {"clip": -1, "reserve": -1}
+	var pistol := "usp" if team == TEAM_COUNTER_TERRORIST else "glock18"
+	owned_weapons[pistol] = true
+	ammunition[pistol] = {
+		"clip": int(WEAPONS[pistol].magazine),
+		"reserve": int(WEAPONS[pistol].reserve),
+	}
+	active_weapon = pistol
+	clip = int(ammunition[pistol].clip)
+	reserve = int(ammunition[pistol].reserve)
 
 
 func _store_active_ammunition() -> void:
@@ -872,47 +1310,15 @@ func refill_armor() -> void:
 	health_changed.emit(health, armor)
 
 
-func _spawn_tracer(from: Vector3, to: Vector3, color: Color) -> void:
-	var immediate := ImmediateMesh.new()
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_color = color
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.albedo_color.a = 0.88
-	immediate.surface_begin(Mesh.PRIMITIVE_LINES, material)
-	immediate.surface_add_vertex(from)
-	immediate.surface_add_vertex(to)
-	immediate.surface_end()
-	var tracer := MeshInstance3D.new()
-	tracer.mesh = immediate
-	get_tree().current_scene.add_child(tracer)
-	get_tree().create_timer(0.055).timeout.connect(func() -> void:
-		if is_instance_valid(tracer):
-			tracer.queue_free()
-	)
+func _spawn_impact(position: Vector3, normal: Vector3, effect_sequence := 0) -> void:
+	if is_instance_valid(combat_effects):
+		combat_effects.spawn_world_impact(position, normal, effect_sequence)
 
 
-func _spawn_impact(position: Vector3, normal: Vector3) -> void:
-	var impact := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.035
-	sphere.height = 0.07
-	var material := StandardMaterial3D.new()
-	material.albedo_color = Color("#f5c46f")
-	material.emission_enabled = true
-	material.emission = Color("#b86a26")
-	sphere.material = material
-	impact.mesh = sphere
-	impact.position = position + normal * 0.012
-	get_tree().current_scene.add_child(impact)
-	get_tree().create_timer(1.4).timeout.connect(func() -> void:
-		if is_instance_valid(impact):
-			impact.queue_free()
-	)
-
-
-func spawn_incoming_tracer(from: Vector3, to: Vector3) -> void:
-	_spawn_tracer(from, to, Color("#ff625d"))
+func spawn_incoming_tracer(_from: Vector3, _to: Vector3) -> void:
+	# Compatibility API: CS rifle/pistol events do not request per-shot
+	# TE_TRACER lines. Source-requested tracer profiles can be added centrally.
+	pass
 
 
 func apply_damage(
@@ -930,29 +1336,32 @@ func _on_combatant_damaged(
 	_headshot: bool,
 ) -> void:
 	health_changed.emit(health, armor)
+	_emit_audio("player.pain", AudioRouterScript.CHAN_VOICE)
 
 
-func _on_combatant_eliminated(_attacker: Combatant, _headshot: bool) -> void:
+func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
 	controls_enabled = false
+	reloading = false
+	_audio_schedule.clear()
+	_emit_audio(
+		"player.headshot_death" if headshot else "player.death",
+		AudioRouterScript.CHAN_VOICE,
+	)
+	weapon_clock.reset(active_weapon, weapon_clock.tick)
 	died.emit()
 
 
 func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_store_active_ammunition()
-	_reload_generation += 1
 	reloading = false
 	var starting_armor := armor
 	if not keep_loadout:
 		starting_armor = 0
-		ammunition = {
-			"ak47": {"clip": 0, "reserve": 0},
-			"deagle": {"clip": 7, "reserve": 35},
-			"hegrenade": {"clip": 0, "reserve": 0},
-		}
+		_initialize_starting_loadout()
 	reset_combatant(spawn_position, starting_armor)
-	active_weapon = "ak47"
-	clip = int(ammunition.ak47.clip)
-	reserve = int(ammunition.ak47.reserve)
+	weapon_clock.reset(active_weapon)
+	clip = int(ammunition[active_weapon].clip)
+	reserve = int(ammunition[active_weapon].reserve)
 	velocity = Vector3.ZERO
 	_standing = true
 	_walking = false
@@ -965,6 +1374,18 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_ak_shots_fired = 0
 	_deagle_accuracy = 0.9
 	_deagle_last_fire = 0.0
+	_burst_shots_remaining = 0
+	_next_burst_tick = -1
+	_last_shot_at = -10.0
+	_audio_schedule.clear()
+	_next_footstep_tick = weapon_clock.tick
+	_left_foot = false
+	_footstep_serial = 0
+	muzzle_light.visible = false
+	_movement_grounded = false
+	if is_instance_valid(movement_kernel):
+		movement_kernel.grounded = false
+		movement_kernel.ground_normal = Vector3.UP
 	rotation = Vector3.ZERO
 	collider.rotation = Vector3.ZERO
 	_apply_hull(STAND_HEIGHT)
@@ -974,7 +1395,6 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	weapon_anchor.position = Vector3.ZERO
 	viewmodel.load_weapon(active_weapon)
 	viewmodel.position = viewmodel.base_position
-	_apply_weapon_audio()
 	health_changed.emit(health, armor)
 	ammo_changed.emit(clip, reserve, reloading)
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)

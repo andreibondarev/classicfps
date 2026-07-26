@@ -5,6 +5,7 @@ var _look_delta := Vector2.ZERO
 var _fire_held := false
 var _fire_pressed := false
 var _control_click_fire := false
+var _secondary_pressed := false
 
 
 func ingest_input(event: InputEvent) -> void:
@@ -23,6 +24,8 @@ func ingest_input(event: InputEvent) -> void:
 				_fire_pressed = true
 			if mouse_event.button_index == MOUSE_BUTTON_RIGHT:
 				_control_click_fire = mouse_event.pressed
+		elif mouse_event.button_index == MOUSE_BUTTON_RIGHT and mouse_event.pressed:
+			_secondary_pressed = true
 
 
 func gather_command(delta: float) -> Dictionary:
@@ -35,7 +38,9 @@ func gather_command(delta: float) -> Dictionary:
 	command.walk = Input.is_action_pressed("walk")
 	command.fire = Input.is_action_pressed("fire") or _fire_held
 	command.fire_pressed = Input.is_action_just_pressed("fire") or _fire_pressed
+	command.secondary_pressed = _secondary_pressed
 	_fire_pressed = false
+	_secondary_pressed = false
 	command.reload = Input.is_action_just_pressed("reload")
 	command.use = Input.is_action_pressed("use")
 	if Input.is_action_just_pressed("weapon_primary"):

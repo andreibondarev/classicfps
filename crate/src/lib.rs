@@ -79,6 +79,98 @@ pub fn debug_timeline_stats(data: &[u8]) -> Result<(f32, usize, Vec<String>, f32
     Ok((timeline.duration, timeline.entries.len(), names, max_abs))
 }
 
+/// Native-only focused corpus diagnostics, including the authoritative values
+/// of score/timer user messages so regressions cannot pass on plausible event
+/// counts backed by desynchronized garbage payloads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn debug_timeline_diagnostics(
+    data: &[u8],
+) -> Result<(f32, usize, Vec<String>, f32, Vec<(String, i32)>, Vec<i32>), String> {
+    let mut parser = demo::DemoParser::new(data);
+    let parsed = parser.parse()?;
+    let timeline = demo::build_timeline(&parsed, 0.05, data);
+
+    let mut names = Vec::new();
+    let mut max_abs = 0.0f32;
+    for entry in &timeline.entries {
+        for player in &entry.players {
+            if !names.contains(&player.name) {
+                names.push(player.name.clone());
+            }
+            for value in [player.origin.x, player.origin.y, player.origin.z] {
+                if value.is_finite() {
+                    max_abs = max_abs.max(value.abs());
+                }
+            }
+        }
+    }
+
+    let mut team_scores = Vec::new();
+    let mut round_times = Vec::new();
+    for event in &timeline.events {
+        match event.event_type {
+            GameEventType::TeamScore => {
+                if let (Some(team), Some(score)) = (&event.data.team, event.data.score) {
+                    team_scores.push((team.clone(), score));
+                }
+            }
+            GameEventType::RoundTime => {
+                if let Some(seconds) = event.data.round_time {
+                    round_times.push(seconds);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((
+        timeline.duration,
+        timeline.entries.len(),
+        names,
+        max_abs,
+        team_scores,
+        round_times,
+    ))
+}
+
+/// Native-only: return the closest sampled wire pose for a named player.
+/// Kept deliberately small so protocol regressions can pin raw coordinates
+/// before browser camera transforms obscure a bad signed-delta decode.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn debug_player_pose_at(
+    data: &[u8],
+    time: f32,
+    name: &str,
+) -> Result<Option<(f32, Vec3, Vec3, bool)>, String> {
+    let mut parser = demo::DemoParser::new(data);
+    let parsed = parser.parse()?;
+    let timeline = demo::build_timeline(&parsed, 0.05, data);
+
+    Ok(timeline
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .players
+                .iter()
+                .find(|player| player.name == name)
+                .map(|player| (entry, player))
+        })
+        .min_by(|(left, _), (right, _)| {
+            (left.time - time)
+                .abs()
+                .total_cmp(&(right.time - time).abs())
+        })
+        .map(|(entry, player)| {
+            (
+                entry.time,
+                player.origin.clone(),
+                player.angles.clone(),
+                player.ducking,
+            )
+        }))
+}
+
 /// Native-only: bbox of weapon merged onto player skeleton vs raw
 #[cfg(not(target_arch = "wasm32"))]
 pub fn debug_attach_bbox(

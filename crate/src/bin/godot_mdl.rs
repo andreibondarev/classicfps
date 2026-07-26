@@ -30,8 +30,15 @@ struct ModelExport<'a> {
 #[derive(Serialize)]
 struct AnimationExport {
     name: String,
+    source_label: String,
+    sequence_index: u32,
     fps: f32,
     frames: u32,
+    looping: bool,
+    blends: u32,
+    blend_type: [i32; 2],
+    blend_start: [f32; 2],
+    blend_end: [f32; 2],
     file: String,
 }
 
@@ -140,7 +147,8 @@ fn export_model(
         if animation.frames == 0 || animation.data.is_empty() {
             continue;
         }
-        let expected = parsed.positions.len() * animation.frames as usize;
+        let expected =
+            parsed.positions.len() * animation.frames as usize * animation.blends as usize;
         if animation.data.len() != expected {
             return Err(format!(
                 "animation {} has {} floats; expected {}",
@@ -157,15 +165,22 @@ fn export_model(
         fs::write(animation_path.join(&filename), bytes).map_err(|error| error.to_string())?;
         animations.push(AnimationExport {
             name: animation.name.clone(),
+            source_label: animation.source_label.clone(),
+            sequence_index: animation.sequence_index,
             fps: animation.fps,
             frames: animation.frames,
+            looping: animation.looping,
+            blends: animation.blends,
+            blend_type: animation.blend_type,
+            blend_start: animation.blend_start,
+            blend_end: animation.blend_end,
             file: format!("animations/{filename}"),
         });
     }
 
     let export = ModelExport {
         format: "protocol47-mdl",
-        version: if animations.is_empty() { 1 } else { 2 },
+        version: if animations.is_empty() { 1 } else { 3 },
         groups,
         positions: &parsed.positions,
         uvs: &parsed.uvs,

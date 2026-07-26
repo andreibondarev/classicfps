@@ -163,17 +163,19 @@ thread_local! {
     static EVENT_STATS: Cell<(u32, u32)> = Cell::new((0, 0)); // (svc_event msgs, events w/ entindex)
     static LAST_PACKET_ORDER: RefCell<Vec<u16>> = RefCell::new(Vec::new());
     static MAX_CLIENTS: Cell<u16> = Cell::new(32);
+    static NETWORK_PROTOCOL: Cell<i32> = Cell::new(48);
     static IS_HLTV: Cell<bool> = Cell::new(false);
     static DESYNC_LOGS: Cell<u32> = Cell::new(0);
 }
 
 /// Reset all per-demo parser state. Call before parsing a new demo.
-pub fn reset_parser_state() {
+pub fn reset_parser_state(network_protocol: i32) {
     DELTA_REGISTRY.with(|reg| reg.borrow_mut().clear());
     MODEL_NAMES.with(|m| m.borrow_mut().clear());
     SOUND_NAMES.with(|m| m.borrow_mut().clear());
     EVENT_NAMES.with(|m| m.borrow_mut().clear());
     MAX_CLIENTS.with(|c| c.set(32));
+    NETWORK_PROTOCOL.with(|c| c.set(network_protocol));
     IS_HLTV.with(|c| c.set(false));
     DESYNC_LOGS.with(|c| c.set(0));
 }
@@ -278,42 +280,39 @@ fn read_delta_value(reader: &mut BitReader, field: &DeltaFieldDef) -> Result<Del
         1.0
     };
 
-    if flags.intersects(DeltaFlags::BYTE | DeltaFlags::SHORT | DeltaFlags::INTEGER) {
-        let value = if signed {
-            let negative = reader.read_bit();
-            let magnitude = reader.read_bits(bits - 1) as i64;
-            let div = divisor as i64;
-            let v = if div > 1 { magnitude / div } else { magnitude };
-            if negative {
-                -v
-            } else {
-                v
-            }
+    let read_numeric_bits = |reader: &mut BitReader, count: usize, is_signed: bool| -> f64 {
+        if is_signed {
+            // GoldSrc MSG_ReadSBits / HLTV BitBuffer::ReadSBits encode a
+            // leading sign bit followed by an unsigned magnitude. This is
+            // deliberately not two's-complement.
+            reader.read_signed_bits(count) as f64
         } else {
-            let magnitude = reader.read_bits(bits) as i64;
-            let div = divisor as i64;
-            if div > 1 {
-                magnitude / div
-            } else {
-                magnitude
-            }
-        };
-        return Ok(DeltaVal::Num(value as f64));
+            reader.read_bits(count) as f64
+        }
+    };
+
+    if flags.intersects(DeltaFlags::BYTE | DeltaFlags::SHORT | DeltaFlags::INTEGER) {
+        let value = read_numeric_bits(reader, bits, signed) / divisor as f64;
+        return Ok(DeltaVal::Num(value));
     }
 
-    if flags.intersects(DeltaFlags::FLOAT | DeltaFlags::TIMEWINDOW_8 | DeltaFlags::TIMEWINDOW_BIG) {
-        let (negative, magnitude_bits) = if signed {
-            (reader.read_bit(), bits - 1)
-        } else {
-            (false, bits)
-        };
-        let magnitude = if magnitude_bits > 0 {
-            reader.read_bits(magnitude_bits) as f64
-        } else {
-            0.0
-        };
-        let value = magnitude / divisor as f64;
-        return Ok(DeltaVal::Num(if negative { -value } else { value }));
+    if flags.contains(DeltaFlags::TIMEWINDOW_8) {
+        // Normal demo playback uses the compact form: an unconditional
+        // signed eight-bit time delta.  Absolute 32-bit time is used only by
+        // the engine's special "large time buffer" rewrite path.
+        return Ok(DeltaVal::Num(read_numeric_bits(reader, 8, true) / 100.0));
+    }
+
+    if flags.contains(DeltaFlags::TIMEWINDOW_BIG) {
+        return Ok(DeltaVal::Num(
+            read_numeric_bits(reader, bits, true) / divisor as f64,
+        ));
+    }
+
+    if flags.contains(DeltaFlags::FLOAT) {
+        return Ok(DeltaVal::Num(
+            read_numeric_bits(reader, bits, signed) / divisor as f64,
+        ));
     }
 
     if flags.contains(DeltaFlags::ANGLE) {
@@ -1171,7 +1170,9 @@ fn parse_client_data(reader: &mut BitReader) -> Result<(), String> {
 
     let weapon_data = get_def("weapon_data_t")?;
     while reader.bits_remaining() > 6 && reader.read_bit() {
-        reader.skip_bits(6); // weapon index (protocol >= 47)
+        let weapon_index_bits =
+            NETWORK_PROTOCOL.with(|protocol| if protocol.get() <= 46 { 5 } else { 6 });
+        reader.skip_bits(weapon_index_bits);
         skip_delta(reader, &weapon_data)?;
     }
 
@@ -1194,15 +1195,19 @@ fn parse_event(reader: &mut BitReader, event_parser: &mut EventParser) -> Result
         let mut packet_index: Option<usize> = None;
         if reader.read_bit() {
             packet_index = Some(reader.read_bits(11) as usize);
-            if reader.read_bit() {
-                read_delta(reader, &event_def, |field, value| {
-                    if field.name == "entindex" {
-                        if let DeltaVal::Num(v) = value {
-                            entindex = v as i64;
-                        }
+        }
+        // The event-argument presence bit is independent of the packet-index
+        // presence bit (Server::ParseEvent / SV_WriteEvents).  Treating it as
+        // nested consumed the delay bit as an argument bit for events without
+        // a packet index, shifting every following SVC message in the frame.
+        if reader.read_bit() {
+            read_delta(reader, &event_def, |field, value| {
+                if field.name == "entindex" {
+                    if let DeltaVal::Num(v) = value {
+                        entindex = v as i64;
                     }
-                })?;
-            }
+                }
+            })?;
         }
         if reader.read_bit() {
             reader.skip_bits(16); // fire time
@@ -1272,7 +1277,11 @@ fn parse_spawn_baseline(reader: &mut BitReader, state: &mut EntityState) -> Resu
         }
 
         let entity_type = reader.read_bits(2);
-        let def_name = if entity_type & 1 != 0 {
+        // entity_state.h: ENTITY_NORMAL = 1 << 0, ENTITY_BEAM = 1 << 1.
+        // Only beams use custom_entity_state_t.  Testing bit 0 here inverted
+        // every ordinary baseline into the custom schema and desynchronized
+        // the remainder of Protocol 47 POV signon streams.
+        let def_name = if entity_type & (1 << 1) == 0 {
             if index >= 1 && index <= max_clients() {
                 "entity_state_player_t"
             } else {
@@ -1304,10 +1313,15 @@ fn parse_spawn_baseline(reader: &mut BitReader, state: &mut EntityState) -> Resu
 
     // Instanced baselines (extra entity_state_t deltas)
     let n_extra = reader.read_bits(6);
+    state.instance_baselines.clear();
     if n_extra > 0 {
         let def = get_def("entity_state_t")?;
-        for _ in 0..n_extra {
-            skip_delta(reader, &def)?;
+        for baseline_index in 0..n_extra {
+            let delta = read_entity_delta(reader, &def)?;
+            let mut entity = Entity::new(baseline_index as u16);
+            entity.active = true;
+            delta.apply_to(&mut entity);
+            state.set_instance_baseline(baseline_index as u16, entity);
         }
     }
 
@@ -1386,9 +1400,23 @@ fn parse_packet_entities_inner(
         } else {
             let custom = reader.read_bit();
             if !is_delta {
-                // Full update may reference an instanced baseline
-                if reader.read_bit() {
-                    reader.skip_bits(6); // baseline index
+                // ParseDeltaHeader has two distinct baseline selectors:
+                // an optional instanced baseline (only when any were sent at
+                // signon), followed by the always-present "offset from an
+                // earlier entity in this packet" selector when no instance
+                // was chosen.  Collapsing these into one bit shifts every
+                // svc_packetentities payload.
+                let uses_instance = if state.instance_baselines.is_empty() {
+                    false
+                } else {
+                    let selected = reader.read_bit();
+                    if selected {
+                        reader.skip_bits(6); // instanced baseline index
+                    }
+                    selected
+                };
+                if !uses_instance && reader.read_bit() {
+                    reader.skip_bits(6); // packet-entity baseline offset
                 }
             }
 
