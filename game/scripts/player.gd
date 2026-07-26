@@ -1,5 +1,5 @@
 class_name PlayerController
-extends CharacterBody3D
+extends Combatant
 
 signal health_changed(health: int, armor: int)
 signal ammo_changed(clip: int, reserve: int, reloading: bool)
@@ -55,8 +55,6 @@ const RECOIL_PATTERN := [
 ]
 
 var controls_enabled := false
-var health := 100
-var armor := 100
 var active_weapon := "ak47"
 var clip := 30
 var reserve := 90
@@ -73,7 +71,6 @@ var _next_fire_at := 0.0
 var _reload_generation := 0
 var _rng := RandomNumberGenerator.new()
 var _standing := true
-var _dead := false
 var _step_distance := 0.0
 var _next_step_at := 1.65
 var _step_index := 0
@@ -92,8 +89,10 @@ var settings: Node
 
 
 func _ready() -> void:
+	if team == TEAM_UNASSIGNED:
+		configure_identity(TEAM_TERRORIST, "Player")
+	super._ready()
 	add_to_group("player")
-	add_to_group("damageable")
 	Input.use_accumulated_input = false
 	settings = get_node("/root/GameSettings")
 	collision_layer = 4
@@ -101,8 +100,13 @@ func _ready() -> void:
 	floor_max_angle = deg_to_rad(48.0)
 	floor_snap_length = 0.22
 	floor_stop_on_slope = true
+	armor = 100
 	_rng.seed = 0xC516
 	_configure_input()
+	combat_controller = HumanCombatController.new()
+	combat_controller.name = "HumanController"
+	add_child(combat_controller)
+	combat_controller.possess(self)
 	_build_body()
 	_build_viewmodel()
 	_load_audio()
@@ -203,10 +207,9 @@ func _load_audio() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not controls_enabled or _dead:
+	if not controls_enabled or not alive:
 		return
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		_apply_mouse_look(event.relative)
+	combat_controller.ingest_input(event)
 
 
 func _apply_mouse_look(relative: Vector2) -> void:
@@ -239,22 +242,28 @@ func face_toward(world_position: Vector3) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if not controls_enabled or _dead:
+	if not controls_enabled or not alive:
 		velocity = Vector3.ZERO
+		last_command = {}
 		return
 
-	_update_crouch(delta)
-	var input: Vector2 = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	var command := combat_controller.gather_command(delta)
+	last_command = command
+	var look_delta: Vector2 = command.look_delta
+	if not look_delta.is_zero_approx():
+		_apply_mouse_look(look_delta)
+	_update_crouch(delta, command.crouch)
+	var input: Vector2 = command.movement
 	var wish_direction: Vector3 = Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, _yaw)
 	if wish_direction.length_squared() > 1.0:
 		wish_direction = wish_direction.normalized()
 	var wish_speed: float = (CROUCH_SPEED if not _standing else WALK_SPEED) * minf(1.0, input.length())
 
 	if is_on_floor():
-		if not Input.is_action_pressed("jump"):
+		if not command.jump:
 			_apply_friction(delta)
 		_accelerate(wish_direction, wish_speed, GROUND_ACCEL, delta)
-		if Input.is_action_just_pressed("jump") and _standing:
+		if command.jump and _standing:
 			velocity.y = JUMP_SPEED
 	else:
 		velocity.y -= GRAVITY * delta
@@ -270,20 +279,14 @@ func _physics_process(delta: float) -> void:
 		_step_distance += horizontal_distance
 		_apply_view_bob()
 
-	if Input.is_action_just_pressed("weapon_primary"):
-		switch_weapon("ak47")
-	elif Input.is_action_just_pressed("weapon_secondary"):
-		switch_weapon("deagle")
-	elif Input.is_action_just_pressed("weapon_melee"):
-		switch_weapon("knife")
-	elif Input.is_action_just_pressed("weapon_grenade"):
-		switch_weapon("hegrenade")
+	if not str(command.weapon).is_empty():
+		switch_weapon(command.weapon)
 
-	if Input.is_action_pressed("fire") and active_weapon == "ak47":
+	if command.fire and active_weapon == "ak47":
 		_try_fire()
-	elif Input.is_action_just_pressed("fire"):
+	elif command.fire_pressed:
 		_try_fire()
-	if Input.is_action_just_pressed("reload"):
+	if command.reload:
 		_start_reload()
 
 
@@ -314,8 +317,7 @@ func _accelerate(wish_direction: Vector3, wish_speed: float, acceleration: float
 	velocity.z += wish_direction.z * acceleration_speed
 
 
-func _update_crouch(delta: float) -> void:
-	var wants_crouch := Input.is_action_pressed("crouch")
+func _update_crouch(delta: float, wants_crouch: bool) -> void:
 	if not wants_crouch and not _standing:
 		var probe := Transform3D(Basis.IDENTITY, Vector3(0, (STAND_HEIGHT - CROUCH_HEIGHT) * 0.5, 0))
 		if test_move(global_transform, probe.origin):
@@ -393,7 +395,13 @@ func _try_fire() -> void:
 		if hit_collider and hit_collider.has_method("head_height"):
 			headshot = hit.position.y >= float(hit_collider.call("head_height"))
 		if hit_collider and hit_collider.has_method("apply_damage"):
-			hit_collider.call("apply_damage", float(definition.damage) * (4.0 if headshot else 1.0), hit.position, headshot)
+			hit_collider.call(
+				"apply_damage",
+				float(definition.damage) * (4.0 if headshot else 1.0),
+				hit.position,
+				headshot,
+				self,
+			)
 			hit_confirmed.emit(headshot)
 		else:
 			_spawn_impact(hit.position, hit.normal)
@@ -425,7 +433,7 @@ func _fire_knife(now: float) -> void:
 		return
 	var hit_collider: Object = hit.collider
 	if hit_collider and hit_collider.has_method("apply_damage"):
-		hit_collider.call("apply_damage", float(WEAPONS.knife.damage), hit.position, false)
+		hit_collider.call("apply_damage", float(WEAPONS.knife.damage), hit.position, false, self)
 		hit_confirmed.emit(false)
 	else:
 		_spawn_impact(hit.position, hit.normal)
@@ -444,7 +452,11 @@ func _throw_grenade(now: float) -> void:
 	var grenade: HEGrenade = GrenadeScript.new()
 	get_tree().current_scene.add_child(grenade)
 	var direction := -camera.global_transform.basis.z
-	grenade.launch(camera.global_position + direction * 0.55, direction * 14.5 + Vector3.UP * 2.7 + velocity * 0.35)
+	grenade.launch(
+		camera.global_position + direction * 0.55,
+		direction * 14.5 + Vector3.UP * 2.7 + velocity * 0.35,
+		self,
+	)
 	await get_tree().create_timer(0.28).timeout
 	if active_weapon == "hegrenade" and clip <= 0:
 		switch_weapon("ak47")
@@ -453,7 +465,7 @@ func _throw_grenade(now: float) -> void:
 func _start_reload() -> void:
 	var definition: Dictionary = WEAPONS[active_weapon]
 	var magazine := int(definition.magazine)
-	if reloading or magazine <= 0 or clip >= magazine or reserve <= 0 or _dead:
+	if reloading or magazine <= 0 or clip >= magazine or reserve <= 0 or not alive:
 		return
 	reloading = true
 	_reload_generation += 1
@@ -463,7 +475,7 @@ func _start_reload() -> void:
 		reload_audio.play()
 	viewmodel.play_action("reload")
 	await get_tree().create_timer(float(definition.reload)).timeout
-	if generation != _reload_generation or _dead:
+	if generation != _reload_generation or not alive:
 		return
 	var needed := magazine - clip
 	var loaded: int = mini(needed, reserve)
@@ -566,40 +578,45 @@ func spawn_incoming_tracer(from: Vector3, to: Vector3) -> void:
 	_spawn_tracer(from, to, Color("#ff625d"))
 
 
-func apply_damage(amount: float, _hit_position := Vector3.ZERO, _headshot := false) -> void:
-	if _dead:
-		return
-	var remaining := int(round(amount))
-	if armor > 0:
-		var absorbed: int = mini(armor, int(round(remaining * 0.55)))
-		armor -= absorbed
-		remaining -= absorbed
-	health = max(0, health - remaining)
+func apply_damage(
+	amount: float,
+	hit_position := Vector3.ZERO,
+	headshot := false,
+	attacker: Combatant = null,
+) -> void:
+	receive_damage(amount, hit_position, headshot, attacker)
+
+
+func _on_combatant_damaged(
+	_attacker: Combatant,
+	_hit_position: Vector3,
+	_headshot: bool,
+) -> void:
 	health_changed.emit(health, armor)
-	if health <= 0:
-		_dead = true
-		controls_enabled = false
-		died.emit()
+
+
+func _on_combatant_eliminated(_attacker: Combatant, _headshot: bool) -> void:
+	controls_enabled = false
+	died.emit()
 
 
 func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_store_active_ammunition()
 	_reload_generation += 1
-	_dead = false
 	reloading = false
-	health = 100
+	var starting_armor := armor
 	if not keep_loadout:
-		armor = 0
+		starting_armor = 0
 		ammunition = {
 			"ak47": {"clip": 0, "reserve": 0},
 			"deagle": {"clip": 7, "reserve": 35},
 			"hegrenade": {"clip": 0, "reserve": 0},
 		}
+	reset_combatant(spawn_position, starting_armor)
 	active_weapon = "ak47"
 	clip = int(ammunition.ak47.clip)
 	reserve = int(ammunition.ak47.reserve)
 	velocity = Vector3.ZERO
-	global_position = spawn_position
 	_yaw = 0.0
 	_pitch = 0.0
 	rotation = Vector3.ZERO
@@ -612,7 +629,3 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	health_changed.emit(health, armor)
 	ammo_changed.emit(clip, reserve, reloading)
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)
-
-
-func is_dead() -> bool:
-	return _dead

@@ -9,6 +9,7 @@ const EXPLOSION_SOUND := preload("res://assets/sounds/explode3.wav")
 
 var _exploded := false
 var _bounce_audio: AudioStreamPlayer3D
+var thrower: Combatant
 
 
 func _ready() -> void:
@@ -46,7 +47,12 @@ func _ready() -> void:
 	get_tree().create_timer(FUSE_SECONDS).timeout.connect(explode)
 
 
-func launch(origin: Vector3, impulse: Vector3) -> void:
+func launch(
+	origin: Vector3,
+	impulse: Vector3,
+	thrower_combatant: Combatant = null,
+) -> void:
+	thrower = thrower_combatant
 	global_position = origin
 	linear_velocity = impulse
 	angular_velocity = Vector3(8.0, 12.0, 5.0)
@@ -65,7 +71,13 @@ func explode() -> void:
 		if distance >= BLAST_RADIUS:
 			continue
 		var exposure := 1.0 - distance / BLAST_RADIUS
-		actor.call("apply_damage", MAX_DAMAGE * exposure * exposure, global_position, false)
+		actor.call(
+			"apply_damage",
+			MAX_DAMAGE * exposure * exposure,
+			global_position,
+			false,
+			thrower,
+		)
 	var flash := OmniLight3D.new()
 	flash.light_color = Color("#ff9b3f")
 	flash.light_energy = 8.0

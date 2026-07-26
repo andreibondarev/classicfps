@@ -27,7 +27,35 @@ func _run() -> void:
 
 	_check(game.player != null, "player spawned")
 	_check(game.player.camera != null, "first-person camera exists")
+	_check(game.player.armor == 100, "player starts with the original armor loadout")
 	_check(game.targets.size() == 5, "five hostile targets spawned")
+	_check(game.allied_bots.size() == 4, "four allied bots spawned")
+	_check(
+		game.get_tree().get_nodes_in_group("combatants").size() == 10,
+		"offline match has ten shared combatants",
+	)
+	_check(
+		game.player.combat_controller is HumanCombatController,
+		"human pawn is driven by HumanCombatController",
+	)
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return target.combat_controller is BotCombatController
+		),
+		"all nine bot pawns are driven by BotCombatController",
+	)
+	_check(
+		game.allied_bots.all(
+			func(target: TargetActor) -> bool: return target.team == Combatant.TEAM_TERRORIST
+		),
+		"allied bots have terrorist team identity",
+	)
+	_check(
+		game.targets.all(
+			func(target: TargetActor) -> bool: return target.team == Combatant.TEAM_COUNTER_TERRORIST
+		),
+		"hostile bots have counter-terrorist team identity",
+	)
 	_check(game.hud != null, "HUD instantiated")
 	_check(Engine.physics_ticks_per_second == 128, "128 Hz fixed physics configured")
 	_check(not game.using_imported_map, "procedural test arena selected")
@@ -41,7 +69,23 @@ func _run() -> void:
 	await physics_frame
 	_check(game.player.controls_enabled, "player controls enable when live")
 	_check(game.targets.all(func(target: TargetActor) -> bool: return target.active), "targets activate when live")
+	_check(game.allied_bots.all(func(target: TargetActor) -> bool: return target.active), "allies activate when live")
 	_check(not Input.use_accumulated_input, "raw mouse input is not frame-accumulated")
+	for bot in game._all_bots():
+		bot.active = false
+	var duel_ally: TargetActor = game.allied_bots[0]
+	var duel_enemy: TargetActor = game.targets[0]
+	duel_ally.reset_target(Vector3(-6, 0.08, 6))
+	duel_enemy.reset_target(Vector3(-6, 0.08, 1))
+	await physics_frame
+	var bot_command: Dictionary = duel_ally.combat_controller.gather_command(1.0 / 128.0)
+	_check(bot_command.enemy == duel_enemy, "bot perception selects the nearest opposing combatant")
+	_check(bot_command.state == "engage", "visible opposing bots enter the engage state")
+	var duel_enemy_health: int = duel_enemy.health
+	duel_ally._try_fire(duel_enemy)
+	_check(duel_enemy.health < duel_enemy_health, "bot fire damages an opposing combatant")
+	duel_ally.active = false
+	duel_enemy.active = false
 	var network := root.get_node("NetworkSession")
 	var sanitized_input: Dictionary = network.sanitize_input({
 		"movement": Vector2(3, 4), "pitch": 99.0, "buttons": 255,
@@ -57,6 +101,13 @@ func _run() -> void:
 	_check(game.player.camera.rotation.x > initial_pitch, "vertical mouse motion changes pitch")
 	_check(game.hud.hitmarker.mouse_filter == Control.MOUSE_FILTER_IGNORE, "center HUD cannot intercept aiming")
 	game.player.face_toward(Vector3(0, 0.08, 8))
+
+	var first_ally: TargetActor = game.allied_bots[0]
+	var ally_health: int = first_ally.health
+	first_ally.apply_damage(80.0, first_ally.aim_point(), true, game.player)
+	_check(first_ally.health == ally_health, "friendly fire is rejected by shared combat rules")
+	for bot in game._all_bots():
+		bot.active = false
 
 	var first_target: TargetActor = game.targets[0]
 	first_target.reset_target(Vector3(0, 0.08, 8))
@@ -91,7 +142,12 @@ func _run() -> void:
 	_check(game.bomb_planted, "planted bomb state is authoritative")
 
 	for target in game.targets:
-		target.active = false
+		if target.alive:
+			target.apply_damage(1000.0, target.aim_point(), false, game.player)
+	_check(game.round_ending, "eliminating the CT team ends the round")
+	_check(game.terrorist_score == 1, "team elimination awards the terrorist round")
+	for bot in game._all_bots():
+		bot.active = false
 	await create_timer(1.65).timeout
 
 	if failures.is_empty():

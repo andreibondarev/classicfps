@@ -1,23 +1,17 @@
 class_name TargetActor
-extends CharacterBody3D
+extends Combatant
 
 signal died(actor: TargetActor, headshot: bool)
 signal damaged(actor: TargetActor, health: int, headshot: bool)
 signal fired
 
-var player: PlayerController
 var active := false
-var health := 100
-var alive := true
 var index := 0
 var combat_state := "idle"
 var navigation_agent: NavigationAgent3D
 
 var _anchor := Vector3.ZERO
-var _phase := 0.0
 var _next_shot := 0.0
-var _next_path_refresh := 0.0
-var _last_seen_position := Vector3.ZERO
 var _rng := RandomNumberGenerator.new()
 var _body_material: StandardMaterial3D
 var _body_mesh: MeshInstance3D
@@ -25,16 +19,22 @@ var _muzzle: OmniLight3D
 
 
 func _ready() -> void:
+	if team == TEAM_UNASSIGNED:
+		configure_identity(TEAM_COUNTER_TERRORIST, "CT Bot %02d" % (index + 1))
+	super._ready()
+	add_to_group("bots")
 	add_to_group("targets")
-	add_to_group("damageable")
 	collision_layer = 2
 	collision_mask = 1
 	_anchor = global_position
-	_phase = float(index) * 1.13
-	_rng.seed = 9701 + index * 181
+	_rng.seed = 9701 + index * 181 + (50000 if team == TEAM_TERRORIST else 0)
 	_next_shot = _rng.randf_range(0.8, 1.8)
 	_build_actor()
 	_build_navigation_agent()
+	combat_controller = BotCombatController.new()
+	combat_controller.name = "BotController"
+	add_child(combat_controller)
+	(combat_controller as BotCombatController).configure(self, navigation_agent, index)
 
 
 func _build_navigation_agent() -> void:
@@ -59,7 +59,7 @@ func _build_actor() -> void:
 	add_child(shape_node)
 
 	_body_material = StandardMaterial3D.new()
-	_body_material.albedo_color = Color("#416f9d")
+	_body_material.albedo_color = _team_color()
 	_body_material.roughness = 0.64
 	_body_mesh = MeshInstance3D.new()
 	_body_mesh.name = "Body"
@@ -93,141 +93,106 @@ func _build_actor() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if not active or not alive or not is_instance_valid(player) or player.is_dead():
+	if not active or not alive:
 		velocity = Vector3.ZERO
+		last_command = {}
 		combat_state = "idle"
 		return
-	_phase += delta * (0.72 + index * 0.035)
-	var distance := global_position.distance_to(player.global_position)
-	var sees_player := _has_line_of_sight()
-	if sees_player:
-		_last_seen_position = player.global_position
-
-	if sees_player and distance <= 22.0:
-		combat_state = "engage"
-		_strafe_in_combat()
-	else:
-		combat_state = "hunt"
-		_follow_navigation(delta)
-
+	var command := combat_controller.gather_command(delta)
+	last_command = command
+	combat_state = command.state
+	var desired_velocity: Vector3 = command.world_velocity
+	velocity.x = desired_velocity.x
+	velocity.z = desired_velocity.z
 	if not is_on_floor():
 		velocity.y -= 20.0 * delta
 	else:
 		velocity.y = -0.1
 	move_and_slide()
 
-	var look_target := player.global_position if sees_player else global_position + Vector3(velocity.x, 0, velocity.z)
-	look_target.y = global_position.y
-	if global_position.distance_squared_to(look_target) > 0.01:
-		look_at(look_target, Vector3.UP)
+	var look_target: Vector3 = command.look_target
+	if look_target != Vector3.INF:
+		look_target.y = global_position.y
+		if global_position.distance_squared_to(look_target) > 0.01:
+			look_at(look_target, Vector3.UP)
 
 	_next_shot -= delta
-	if sees_player and _next_shot <= 0.0:
+	var enemy := command.enemy as Combatant
+	if command.fire and is_instance_valid(enemy) and _next_shot <= 0.0:
 		_next_shot = _rng.randf_range(0.72, 1.18)
-		_try_fire()
+		_try_fire(enemy)
 
 
-func _strafe_in_combat() -> void:
-	var to_player := player.global_position - global_position
-	to_player.y = 0
-	var tangent := Vector3(-to_player.z, 0, to_player.x).normalized()
-	var direction_sign := -1.0 if index % 2 == 0 else 1.0
-	var desired_velocity := tangent * direction_sign * cos(_phase) * 1.9
-	if to_player.length() > 16.0:
-		desired_velocity += to_player.normalized() * 1.4
-	elif to_player.length() < 8.0:
-		desired_velocity -= to_player.normalized() * 1.4
-	velocity.x = desired_velocity.x
-	velocity.z = desired_velocity.z
-
-
-func _follow_navigation(delta: float) -> void:
-	_next_path_refresh -= delta
-	if _next_path_refresh <= 0.0:
-		_next_path_refresh = 0.28 + float(index) * 0.015
-		navigation_agent.target_position = player.global_position
-	if navigation_agent.is_navigation_finished():
-		_fallback_strafe()
-		return
-	var next_position := navigation_agent.get_next_path_position()
-	var planar := next_position - global_position
-	planar.y = 0
-	if planar.length_squared() <= 0.0025:
-		_fallback_strafe()
-		return
-	var direction := planar.normalized()
-	velocity.x = direction.x * navigation_agent.max_speed
-	velocity.z = direction.z * navigation_agent.max_speed
-
-
-func _fallback_strafe() -> void:
-	var strafe_axis := Vector3.RIGHT if index % 2 == 0 else Vector3.FORWARD
-	var desired := _anchor + strafe_axis * sin(_phase) * (1.2 + (index % 3) * 0.35)
-	var planar := desired - global_position
-	planar.y = 0
-	var fallback: Vector3 = (
-		planar.normalized() * min(1.9, planar.length() * 2.2)
-		if planar.length() > 0.03
-		else Vector3.ZERO
-	)
-	velocity.x = fallback.x
-	velocity.z = fallback.z
-
-
-func _has_line_of_sight() -> bool:
-	if not is_instance_valid(player):
-		return false
-	var origin := global_position + Vector3(0, 1.45, 0)
-	var target := player.camera.global_position
-	if origin.distance_squared_to(target) > 48.0 * 48.0:
-		return false
-	var query := PhysicsRayQueryParameters3D.create(origin, target, 1 | 4, [get_rid()])
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	return not hit.is_empty() and hit.collider == player
-
-
-func _try_fire() -> void:
-	if not is_instance_valid(player):
+func _try_fire(enemy: Combatant) -> void:
+	if not is_instance_valid(enemy) or not enemy.alive:
 		return
 	var origin := global_position + Vector3(0, 1.25, 0)
-	var target := player.camera.global_position
-	var distance := origin.distance_to(target)
-	if distance > 38.0:
+	var target := enemy.aim_point()
+	if origin.distance_to(target) > 38.0:
 		return
-	var query := PhysicsRayQueryParameters3D.create(origin, target, 1 | 4, [get_rid()])
+	var query := PhysicsRayQueryParameters3D.create(origin, target, 1 | 2 | 4, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty() or hit.collider != player:
+	if hit.is_empty() or hit.collider != enemy:
 		return
 	_muzzle.visible = true
 	get_tree().create_timer(0.04).timeout.connect(func() -> void:
 		if is_instance_valid(_muzzle):
 			_muzzle.visible = false
 	)
-	player.spawn_incoming_tracer(origin, target)
-	player.apply_damage(_rng.randf_range(6.0, 10.0))
+	_spawn_tracer(origin, target)
+	enemy.receive_damage(_rng.randf_range(6.0, 10.0), hit.position, false, self)
 	fired.emit()
 
 
-func apply_damage(amount: float, _hit_position: Vector3, headshot: bool) -> void:
-	if not alive:
-		return
-	health = max(0, health - int(round(amount)))
+func _spawn_tracer(from: Vector3, to: Vector3) -> void:
+	var immediate := ImmediateMesh.new()
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = Color(1.0, 0.38, 0.36, 0.88)
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	immediate.surface_begin(Mesh.PRIMITIVE_LINES, material)
+	immediate.surface_add_vertex(from)
+	immediate.surface_add_vertex(to)
+	immediate.surface_end()
+	var tracer := MeshInstance3D.new()
+	tracer.mesh = immediate
+	get_tree().current_scene.add_child(tracer)
+	get_tree().create_timer(0.055).timeout.connect(func() -> void:
+		if is_instance_valid(tracer):
+			tracer.queue_free()
+	)
+
+
+func apply_damage(
+	amount: float,
+	hit_position: Vector3,
+	headshot: bool,
+	attacker: Combatant = null,
+) -> void:
+	receive_damage(amount, hit_position, headshot, attacker)
+
+
+func _on_combatant_damaged(
+	_attacker: Combatant,
+	_hit_position: Vector3,
+	headshot: bool,
+) -> void:
 	_flash_hit(headshot)
 	damaged.emit(self, health, headshot)
-	if health <= 0:
-		alive = false
-		active = false
-		collision_layer = 0
-		velocity = Vector3.ZERO
-		var tween := create_tween()
-		tween.set_parallel(true)
-		tween.tween_property(self, "rotation:z", deg_to_rad(82.0), 0.24)
-		tween.tween_property(self, "position:y", global_position.y - 0.32, 0.24)
-		died.emit(self, headshot)
+
+
+func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
+	active = false
+	collision_layer = 0
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(self, "rotation:z", deg_to_rad(82.0), 0.24)
+	tween.tween_property(self, "position:y", global_position.y - 0.32, 0.24)
+	died.emit(self, headshot)
 
 
 func _flash_hit(headshot: bool) -> void:
-	var normal_color := Color("#416f9d")
+	var normal_color := _team_color()
 	_body_material.albedo_color = Color.WHITE if headshot else Color("#ffb087")
 	get_tree().create_timer(0.07).timeout.connect(func() -> void:
 		if is_instance_valid(_body_material):
@@ -236,22 +201,24 @@ func _flash_hit(headshot: bool) -> void:
 
 
 func reset_target(spawn_position: Vector3) -> void:
-	health = 100
-	alive = true
+	reset_combatant(spawn_position)
 	active = true
 	collision_layer = 2
-	global_position = spawn_position
 	_anchor = spawn_position
 	rotation = Vector3.ZERO
-	velocity = Vector3.ZERO
 	_next_shot = _rng.randf_range(0.8, 1.8)
-	_next_path_refresh = 0.0
 	combat_state = "idle"
 	if is_instance_valid(navigation_agent):
 		navigation_agent.target_position = spawn_position
+	if is_instance_valid(combat_controller):
+		(combat_controller as BotCombatController).current_enemy = null
 	if is_instance_valid(_body_material):
-		_body_material.albedo_color = Color("#d85b3f")
+		_body_material.albedo_color = _team_color()
 
 
-func head_height() -> float:
-	return global_position.y + 1.43
+func _team_color() -> Color:
+	return (
+		Color("#d85b3f")
+		if team == TEAM_TERRORIST
+		else Color("#416f9d")
+	)

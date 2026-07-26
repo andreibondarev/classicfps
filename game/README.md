@@ -26,14 +26,21 @@ Click **Deploy**, then use:
 During freeze time, `F1` buys AK ammunition, `F2` buys Desert Eagle
 ammunition, `F3` buys armor, and `F4` buys an HE grenade.
 
-The current release is a Dust2 bomb scenario with GoldSrc-inspired
+The current release is an offline 5v5 Dust2 bomb scenario: the human player
+and four T bots fight five CT bots. It includes GoldSrc-inspired
 acceleration, friction and air control; 128 Hz fixed-step physics; the original
 CS weapon models and sounds; rifle, pistol, knife and grenade combat; navigating
-opponents; headshots and recoil; freeze/live/bomb/post phases; persistent score
+teammates and opponents; headshots and recoil; freeze/live/bomb/post phases; persistent score
 and economy; planting at the original map sites; and a native HUD.
 
 Pause exposes sensitivity, inverted aim, field of view, VSync, render quality,
 master volume, high-contrast/scalable crosshair, and reduced camera motion.
+
+All human and bot actors share the same `Combatant` health, armor, team, damage,
+and elimination rules. A `HumanCombatController` translates local input into
+commands while each `BotCombatController` supplies perception, navigation,
+targeting, and fire commands to the same pawn boundary. This is also the seam
+for future remote-player and replay controllers.
 
 ## Validate
 
@@ -44,10 +51,11 @@ npm run game:capture
 ```
 
 The test suite separates deterministic combat checks from the real-map check.
-It verifies the player, camera, HUD, fixed tick rate, firing ray, damage,
-weapon slots, grenade and bomb state, network input validation, all Dust2
-surfaces, solid-only collision, navigation mesh/pathing, and both teams' map
-spawns.
+It verifies the ten-combatant team roster, human/bot controller assignment,
+friendly-fire rules, team elimination, camera, HUD, fixed tick rate, firing ray,
+damage, weapon slots, grenade and bomb state, network input validation, all
+Dust2 surfaces, solid-only collision, navigation mesh/pathing, and both teams'
+map spawns.
 
 ## Rebuild the map
 

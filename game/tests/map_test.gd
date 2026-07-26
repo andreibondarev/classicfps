@@ -52,14 +52,21 @@ func _run() -> void:
 			"all terrorist spawn entities imported",
 		)
 	_check(game.targets.size() == 5, "combat encounter populated from map spawns")
+	_check(game.allied_bots.size() == 4, "four allied bots populated from T spawns")
 	_check(game.player.global_position.distance_to(game.player_spawn) < 0.1, "player uses a map spawn")
 	game.start_match()
 	game._begin_live()
 	for frame in range(4):
 		await physics_frame
 	_check(game.targets.all(func(target: TargetActor) -> bool: return target.navigation_agent != null), "all bots have navigation agents")
+	_check(
+		game._all_bots().all(
+			func(target: TargetActor) -> bool: return target.combat_controller is BotCombatController
+		),
+		"both teams use the shared bot controller",
+	)
 	_check(game.targets.all(func(target: TargetActor) -> bool: return target.combat_state == "hunt"), "distant bots enter hunt state")
-	_check(_has_bot_path(game.targets), "Dust2 produces at least one bot path")
+	_check(_has_bot_path(game._all_bots()), "Dust2 produces at least one team bot path")
 
 	if failures.is_empty():
 		print("GAME_MAP_TEST_PASS")

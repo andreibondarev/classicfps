@@ -189,7 +189,7 @@ func _build_deploy_overlay(root: Control) -> void:
 	var rule := HSeparator.new()
 	column.add_child(rule)
 	var description := _label(
-		"Clear five hostile operators before the round clock expires.\n"
+		"Lead your five-player squad and clear the CT team before time expires.\n"
 		+ "Movement uses acceleration, friction and air control—not a stock controller.",
 		15,
 		Color("#aebdca"),

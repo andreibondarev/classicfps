@@ -11,6 +11,12 @@ const BOMB_SECONDS := 35.0
 const PLANT_SECONDS := 3.2
 const IMPORTED_MAP_PATH := "res://generated/de_dust2/map.json"
 const FALLBACK_PLAYER_SPAWN := Vector3(0, 0.08, 12)
+const FALLBACK_ALLIED_SPAWNS := [
+	Vector3(-4, 0.08, 12),
+	Vector3(-2, 0.08, 10),
+	Vector3(2, 0.08, 10),
+	Vector3(4, 0.08, 12),
+]
 const FALLBACK_TARGET_SPAWNS := [
 	Vector3(-8, 0.08, -10),
 	Vector3(0, 0.08, -15),
@@ -22,6 +28,7 @@ const FALLBACK_TARGET_SPAWNS := [
 var player: PlayerController
 var hud: GameHUD
 var targets: Array[TargetActor] = []
+var allied_bots: Array[TargetActor] = []
 var round_number := 1
 var kills := 0
 var seconds_left := ROUND_SECONDS
@@ -37,6 +44,7 @@ var bomb: Node3D
 var bomb_sites: Array[Vector3] = []
 var imported_map: BspMap
 var player_spawn := FALLBACK_PLAYER_SPAWN
+var allied_spawns: Array[Vector3] = []
 var target_spawns: Array[Vector3] = []
 var using_imported_map := false
 
@@ -47,6 +55,7 @@ func _ready() -> void:
 	get_node("/root/GameSettings").changed.connect(_apply_performance_settings)
 	if not _build_imported_map():
 		_build_arena()
+		allied_spawns.assign(FALLBACK_ALLIED_SPAWNS)
 		target_spawns.assign(FALLBACK_TARGET_SPAWNS)
 	_spawn_player()
 	_spawn_targets()
@@ -74,7 +83,7 @@ func _build_imported_map() -> bool:
 
 	var ct_spawns := imported_map.spawn_points("info_player_start")
 	var terrorist_spawns := imported_map.spawn_points("info_player_deathmatch")
-	if ct_spawns.is_empty() or terrorist_spawns.size() < 5:
+	if ct_spawns.size() < 5 or terrorist_spawns.size() < 5:
 		push_error("Dust2 is missing the player spawns needed by the combat scenario.")
 		imported_map.queue_free()
 		imported_map = null
@@ -82,6 +91,8 @@ func _build_imported_map() -> bool:
 	player_spawn = terrorist_spawns[0]
 	for spawn_index in range(5):
 		target_spawns.append(ct_spawns[spawn_index])
+	for spawn_index in range(1, 5):
+		allied_spawns.append(terrorist_spawns[spawn_index])
 	using_imported_map = true
 	return true
 
@@ -108,16 +119,18 @@ func _physics_process(delta: float) -> void:
 	var network := get_node("/root/NetworkSession")
 	if not match_started or not is_instance_valid(player):
 		return
+	var command := player.last_command
+	var movement: Vector2 = command.get("movement", Vector2.ZERO)
 	network.submit_local_input({
-		"movement": Input.get_vector("move_left", "move_right", "move_forward", "move_back"),
+		"movement": movement,
 		"yaw": player.rotation.y,
 		"pitch": player.camera.rotation.x,
 		"buttons": (
-			(1 if Input.is_action_pressed("fire") else 0)
-			| (2 if Input.is_action_pressed("jump") else 0)
-			| (4 if Input.is_action_pressed("crouch") else 0)
-			| (8 if Input.is_action_pressed("reload") else 0)
-			| (16 if Input.is_action_pressed("use") else 0)
+			(1 if command.get("fire", false) else 0)
+			| (2 if command.get("jump", false) else 0)
+			| (4 if command.get("crouch", false) else 0)
+			| (8 if command.get("reload", false) else 0)
+			| (16 if command.get("use", false) else 0)
 		),
 	})
 	network.tick_snapshot(delta, {
@@ -279,23 +292,54 @@ func _make_box(
 func _spawn_player() -> void:
 	player = PlayerScript.new()
 	player.name = "Player"
+	player.configure_identity(Combatant.TEAM_TERRORIST, "Player")
+	player.position = player_spawn
 	add_child(player)
-	player.global_position = player_spawn
 	if using_imported_map and not target_spawns.is_empty():
 		player.face_toward(target_spawns[0])
 
 
 func _spawn_targets() -> void:
+	for ally_index in range(allied_spawns.size()):
+		var ally := _make_bot(
+			"T_Bot_%02d" % (ally_index + 1),
+			Combatant.TEAM_TERRORIST,
+			ally_index,
+			allied_spawns[ally_index],
+		)
+		allied_bots.append(ally)
 	for target_index in range(target_spawns.size()):
-		var target: TargetActor = TargetScript.new()
-		target.name = "Hostile_%02d" % (target_index + 1)
-		target.index = target_index
-		target.player = player
-		add_child(target)
-		target.global_position = target_spawns[target_index]
-		target.died.connect(_on_target_died)
+		var target := _make_bot(
+			"CT_Bot_%02d" % (target_index + 1),
+			Combatant.TEAM_COUNTER_TERRORIST,
+			target_index,
+			target_spawns[target_index],
+		)
 		target.damaged.connect(_on_target_damaged)
 		targets.append(target)
+
+
+func _make_bot(
+	bot_name: String,
+	bot_team: String,
+	bot_index: int,
+	spawn_position: Vector3,
+) -> TargetActor:
+	var bot: TargetActor = TargetScript.new()
+	bot.name = bot_name
+	bot.index = bot_index
+	bot.configure_identity(bot_team, bot_name.replace("_", " "))
+	bot.position = spawn_position
+	add_child(bot)
+	bot.died.connect(_on_target_died)
+	return bot
+
+
+func _all_bots() -> Array[TargetActor]:
+	var bots: Array[TargetActor] = []
+	bots.append_array(allied_bots)
+	bots.append_array(targets)
+	return bots
 
 
 func _build_bomb_sites() -> void:
@@ -363,7 +407,7 @@ func _begin_freeze() -> void:
 	seconds_left = FREEZE_SECONDS
 	plant_progress = 0.0
 	player.controls_enabled = false
-	for target in targets:
+	for target in _all_bots():
 		target.active = false
 	hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
 	hud.show_banner("FREEZE TIME  •  PREPARE TO MOVE", Color("#77d9ff"), 1.4)
@@ -372,8 +416,8 @@ func _begin_freeze() -> void:
 func _begin_live() -> void:
 	phase = "live"
 	seconds_left = ROUND_SECONDS
-	player.controls_enabled = true
-	for target in targets:
+	player.controls_enabled = player.alive
+	for target in _all_bots():
 		if target.alive:
 			target.active = true
 	hud.show_banner("LIVE  •  ELIMINATE OR PLANT", Color("#77e3ae"), 1.25)
@@ -384,15 +428,19 @@ func _on_target_damaged(_target: TargetActor, _health: int, headshot: bool) -> v
 		hud.show_banner("HEADSHOT", Color("#ffca66"), 0.55)
 
 
-func _on_target_died(_target: TargetActor, headshot: bool) -> void:
+func _on_target_died(target: TargetActor, headshot: bool) -> void:
 	if round_ending:
 		return
-	kills += 1
-	money = mini(16000, money + 300)
-	hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
-	hud.show_banner("HOSTILE DOWN%s" % ("  •  HEADSHOT" if headshot else ""), Color("#ffca66"), 0.7)
-	if kills >= targets.size():
-		_end_round(true, "TERRORISTS WIN")
+	if target.team == Combatant.TEAM_COUNTER_TERRORIST:
+		kills += 1
+		money = mini(16000, money + 300)
+		hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
+		hud.show_banner(
+			"HOSTILE DOWN%s" % ("  •  HEADSHOT" if headshot else ""),
+			Color("#ffca66"),
+			0.7,
+		)
+	_check_team_elimination()
 
 
 func _on_player_health_changed(health: int, armor: int) -> void:
@@ -409,8 +457,28 @@ func _on_player_ammo_changed(clip: int, reserve: int, reloading: bool) -> void:
 
 
 func _on_player_died() -> void:
-	if not round_ending:
+	_check_team_elimination()
+
+
+func _check_team_elimination() -> void:
+	if round_ending:
+		return
+	if not _team_has_survivors(Combatant.TEAM_COUNTER_TERRORIST):
+		_end_round(true, "TERRORISTS WIN")
+	elif not bomb_planted and not _team_has_survivors(Combatant.TEAM_TERRORIST):
 		_end_round(false, "COUNTER-TERRORISTS WIN")
+
+
+func _team_has_survivors(team_name: String) -> bool:
+	for combatant_node in get_tree().get_nodes_in_group("combatants"):
+		var combatant := combatant_node as Combatant
+		if (
+			is_instance_valid(combatant)
+			and combatant.team == team_name
+			and combatant.alive
+		):
+			return true
+	return false
 
 
 func _end_round(won: bool, reason: String) -> void:
@@ -420,7 +488,7 @@ func _end_round(won: bool, reason: String) -> void:
 	phase = "post"
 	match_started = false
 	player.controls_enabled = false
-	for target in targets:
+	for target in _all_bots():
 		target.active = false
 	if won:
 		terrorist_score += 1
@@ -449,14 +517,19 @@ func _reset_round() -> void:
 		player.face_toward(target_spawns[0])
 	for target_index in range(targets.size()):
 		targets[target_index].reset_target(target_spawns[target_index])
+	for ally_index in range(allied_bots.size()):
+		allied_bots[ally_index].reset_target(allied_spawns[ally_index])
 	hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
 	start_match()
 
 
 func _update_planting(delta: float) -> void:
+	if not player.alive:
+		hud.update_objective("TEAMMATES STILL FIGHTING")
+		return
 	var site := _nearest_bomb_site()
 	var can_plant := site != Vector3.INF and player.global_position.distance_to(site) <= 2.35
-	if can_plant and Input.is_action_pressed("use"):
+	if can_plant and player.last_command.get("use", false):
 		plant_progress = minf(PLANT_SECONDS, plant_progress + delta)
 		hud.update_objective("PLANTING  %d%%" % int(plant_progress / PLANT_SECONDS * 100.0))
 		if plant_progress >= PLANT_SECONDS:
