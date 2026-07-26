@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 
@@ -29,6 +31,7 @@ def main() -> int:
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     try:
         time.sleep(1)
@@ -119,8 +122,15 @@ def main() -> int:
             )
             browser.close()
     finally:
-        server.terminate()
-        server.wait(timeout=10)
+        try:
+            os.killpg(server.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(server.pid, signal.SIGKILL)
+            server.wait(timeout=10)
 
     frames = result.pop("frameIntervals")
     updates = result.pop("updateDurations")

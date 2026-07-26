@@ -2896,6 +2896,10 @@ class DemoPlayer {
     const panel = document.getElementById('stats-panel');
     const demo = this.timeline;
     if (!panel || !demo) return;
+    this.updateRoundTimer(this.currentTime);
+    const roundClock = this.roundTimerBaseSeconds === null
+      ? null
+      : this.roundTimerValueEl.textContent?.trim() || null;
     type Row = { kills: number; deaths: number; hs: number; team: string; flags: number };
     const stats = new Map<string, Row>();
     const roundStart = this.rounds[this.roundIndexAt(this.currentTime)] ?? 0;
@@ -2964,7 +2968,9 @@ class DemoPlayer {
         <tbody>${rows}</tbody></table></section>`;
     };
     panel.innerHTML = `<div class="score-panel-head">
-      <div><small>LIVE SCOREBOARD</small><strong>${this.formatTime(this.currentTime)}</strong></div>
+      <div><small>${roundClock ? 'ROUND TIME' : 'SCOREBOARD'}</small>${roundClock
+        ? `<strong id="stats-round-clock" data-clock-source="round-timer">${this.escapeHtml(roundClock)}</strong>`
+        : ''}</div>
       <span>ROUND ${this.roundIndexAt(this.currentTime) + 1} · TAB TO CLOSE</span>
     </div>${renderTeam('CT', 'COUNTER-TERRORISTS')}${renderTeam('T', 'TERRORISTS')}`;
   }

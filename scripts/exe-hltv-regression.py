@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 
@@ -143,7 +145,17 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
             p.renderPlayerList(rosterDeaths);
           }
           if (!document.getElementById('stats-panel')) p.toggleStats();
+          p.renderStatsPanel();
+          const scoreboardClockContract = {
+            label: document.querySelector(
+              '#stats-panel .score-panel-head small'
+            )?.textContent?.trim() ?? '',
+            scoreboard: document.getElementById('stats-round-clock')?.textContent?.trim() ?? '',
+            hud: document.getElementById('round-timer-value')?.textContent?.trim() ?? '',
+            source: document.getElementById('stats-round-clock')?.dataset.clockSource ?? '',
+          };
           const roundResetFailures = [];
+          const roundClockFailures = [];
           const roundStarts = p.timeline.events.filter(event =>
             event.event_type === 'RoundStart' && event.time > 1);
           for (const event of roundStarts) {
@@ -156,6 +168,19 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
               .map(element => element.dataset.name ?? element.textContent?.trim() ?? '');
             const scoreboardDead = [...document.querySelectorAll('#stats-panel tr.score-dead')]
               .map(element => element.querySelector('td')?.textContent?.trim() ?? '');
+            const scoreboardClock = document.getElementById(
+              'stats-round-clock'
+            )?.textContent?.trim() ?? '';
+            const hudClock = document.getElementById(
+              'round-timer-value'
+            )?.textContent?.trim() ?? '';
+            if (!scoreboardClock || scoreboardClock !== hudClock) {
+              roundClockFailures.push({
+                time: event.time,
+                scoreboardClock,
+                hudClock,
+              });
+            }
             if (deaths.size || rosterDead.length || scoreboardDead.length) {
               roundResetFailures.push({
                 time: event.time,
@@ -203,6 +228,8 @@ def audit_case(page, demo: Path, expected_map: str) -> dict[str, object]:
             lumaVariance: variance,
             roundStartsChecked: roundStarts.length,
             roundResetFailures,
+            roundClockFailures,
+            scoreboardClockContract,
             reconstructedRoster,
             healthContract,
             missingAssets: [...p.missingAssets].sort(),
@@ -245,6 +272,12 @@ def valid_result(result: dict[str, object], errors: list[str]) -> bool:
         and float(result.get("lumaVariance") or 0) > 25
         and int(result.get("roundStartsChecked") or 0) > 0
         and not result.get("roundResetFailures")
+        and not result.get("roundClockFailures")
+        and result.get("scoreboardClockContract", {}).get("label") == "ROUND TIME"
+        and result.get("scoreboardClockContract", {}).get("source") == "round-timer"
+        and bool(result.get("scoreboardClockContract", {}).get("scoreboard"))
+        and result.get("scoreboardClockContract", {}).get("scoreboard")
+        == result.get("scoreboardClockContract", {}).get("hud")
         and not any(
             not row.get("dead") and row.get("health") == "0 HP"
             for row in result.get("reconstructedRoster") or []
@@ -271,6 +304,7 @@ def main() -> int:
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     results = []
     try:
@@ -295,8 +329,15 @@ def main() -> int:
                 page.reload(wait_until="networkidle")
             browser.close()
     finally:
-        server.terminate()
-        server.wait(timeout=10)
+        try:
+            os.killpg(server.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(server.pid, signal.SIGKILL)
+            server.wait(timeout=10)
 
     print(json.dumps(results, indent=2))
     passed = sum(bool(result["ok"]) for result in results)
