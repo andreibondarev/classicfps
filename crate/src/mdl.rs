@@ -214,23 +214,30 @@ pub struct MdlAnim {
     pub data: Vec<f32>,
 }
 
-/// Find a sequence whose label contains `needle` (case-insensitive)
-fn find_sequence(d: &[u8], needle: &str) -> Option<(usize, f32, usize)> {
+/// Find the first exact sequence label from a preference-ordered list.
+///
+/// Player models contain labels such as `run`, `crouchrun`, `ref_shoot_ak47`,
+/// and `crouch_shoot_ak47`. Substring matching is unsafe here: asking for
+/// `shoot` would select a crouched carbine pose, while asking for `die` would
+/// select `crouch_die`.
+fn find_sequence(d: &[u8], labels: &[&str]) -> Option<(usize, f32, usize)> {
     let numseq = i32_at(d, 164) as usize;
     let seqindex = i32_at(d, 168) as usize;
-    for s in 0..numseq.min(256) {
-        let o = seqindex + s * 176;
-        if o + 176 > d.len() {
-            break;
-        }
-        let label = String::from_utf8_lossy(&d[o..o + 32])
-            .trim_end_matches('\0')
-            .to_lowercase();
-        if label.contains(needle) {
-            let fps = f32_at(d, o + 32);
-            let numframes = i32_at(d, o + 56) as usize;
-            if numframes > 0 {
-                return Some((s, fps, numframes));
+    for wanted in labels {
+        for s in 0..numseq.min(256) {
+            let o = seqindex + s * 176;
+            if o + 176 > d.len() {
+                break;
+            }
+            let label = String::from_utf8_lossy(&d[o..o + 32])
+                .trim_end_matches('\0')
+                .to_lowercase();
+            if label == *wanted {
+                let fps = f32_at(d, o + 32);
+                let numframes = i32_at(d, o + 56) as usize;
+                if numframes > 0 {
+                    return Some((s, fps, numframes));
+                }
             }
         }
     }
@@ -545,25 +552,18 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
         return Ok((base, anims));
     }
 
-    for needle in [
-        "idle1",
-        "idle",
-        "run",
-        "walk",
-        "crouch_idle",
-        "crouchidle",
-        "crouch_run",
-        "crouchrun",
-        "shoot",
-        "die",
+    for (name, labels) in [
+        ("idle", &["idle1", "idle"][..]),
+        ("run", &["run", "walk"][..]),
+        ("crouchidle", &["crouch_idle", "crouchidle"][..]),
+        ("crouchrun", &["crouchrun", "crouch_run"][..]),
+        (
+            "shoot",
+            &["ref_shoot_ak47", "ref_shoot_rifle", "ref_shoot_carbine"][..],
+        ),
+        ("die", &["death1", "death2", "death3"][..]),
     ] {
-        if anims
-            .iter()
-            .any(|a: &MdlAnim| a.name == needle_kind(needle))
-        {
-            continue;
-        }
-        let Some((seq, fps, numframes)) = find_sequence(d, needle) else {
+        let Some((seq, fps, numframes)) = find_sequence(d, labels) else {
             continue;
         };
         let frames = numframes.min(30);
@@ -593,7 +593,7 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
         }
         if ok && !data.is_empty() {
             anims.push(MdlAnim {
-                name: needle_kind(needle).to_string(),
+                name: name.to_string(),
                 fps: if fps > 0.0 { fps } else { 15.0 },
                 frames: frames as u32,
                 data,
@@ -601,18 +601,6 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
         }
     }
     Ok((base, anims))
-}
-
-/// Collapse sequence-label needles into anim kinds the renderer understands
-fn needle_kind(needle: &str) -> &'static str {
-    match needle {
-        "idle1" | "idle" => "idle",
-        "run" | "walk" => "run",
-        "crouch_idle" | "crouchidle" => "crouchidle",
-        "crouch_run" | "crouchrun" => "crouchrun",
-        "shoot" => "shoot",
-        _ => "die",
-    }
 }
 
 /// Bone names of a model, in bone order
@@ -718,24 +706,17 @@ pub fn parse_mdl_attached(
 
     // Bake weapon frames driven by the player's idle/run sequences
     let mut anims = Vec::new();
-    for needle in [
-        "idle1",
-        "idle",
-        "run",
-        "walk",
-        "crouch_idle",
-        "crouchidle",
-        "crouch_run",
-        "crouchrun",
-        "shoot",
+    for (name, labels) in [
+        ("idle", &["idle1", "idle"][..]),
+        ("run", &["run", "walk"][..]),
+        ("crouchidle", &["crouch_idle", "crouchidle"][..]),
+        ("crouchrun", &["crouchrun", "crouch_run"][..]),
+        (
+            "shoot",
+            &["ref_shoot_ak47", "ref_shoot_rifle", "ref_shoot_carbine"][..],
+        ),
     ] {
-        if anims
-            .iter()
-            .any(|a: &MdlAnim| a.name == needle_kind(needle))
-        {
-            continue;
-        }
-        let Some((seq, fps, numframes)) = find_sequence(player, needle) else {
+        let Some((seq, fps, numframes)) = find_sequence(player, labels) else {
             continue;
         };
         let frames = numframes.min(30);
@@ -771,7 +752,7 @@ pub fn parse_mdl_attached(
         }
         if ok && !data.is_empty() {
             anims.push(MdlAnim {
-                name: needle_kind(needle).to_string(),
+                name: name.to_string(),
                 fps: if fps > 0.0 { fps } else { 15.0 },
                 frames: frames as u32,
                 data,
@@ -787,4 +768,44 @@ pub fn parse_mdl_attached(
         seq_labels: base.seq_labels,
     };
     Ok((out, anims))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TERROR_MODEL: &[u8] = include_bytes!("../../public/models/player/terror/terror.mdl");
+
+    #[test]
+    fn player_pose_lookup_prefers_standing_ak_and_death_sequences() {
+        let (shoot, _, shoot_frames) =
+            find_sequence(TERROR_MODEL, &["ref_shoot_ak47"]).expect("AK firing sequence");
+        let (death, _, death_frames) =
+            find_sequence(TERROR_MODEL, &["death1"]).expect("standing death sequence");
+
+        assert_eq!(sequence_labels(TERROR_MODEL)[shoot], "ref_shoot_ak47");
+        assert_eq!(sequence_labels(TERROR_MODEL)[death], "death1");
+        assert_eq!(shoot_frames, 6);
+        assert!(death_frames >= 30);
+    }
+
+    #[test]
+    fn exported_shoot_and_death_poses_begin_at_standing_height() {
+        let (model, animations) = parse_mdl_animated(TERROR_MODEL).expect("animated player model");
+        for name in ["shoot", "die"] {
+            let animation = animations
+                .iter()
+                .find(|animation| animation.name == name)
+                .unwrap_or_else(|| panic!("missing {name} animation"));
+            let first_frame = &animation.data[..model.positions.len()];
+            let minimum_y = first_frame
+                .chunks_exact(3)
+                .map(|position| position[1])
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                minimum_y < -0.3,
+                "{name} selected a crouched pose with minimum y {minimum_y}"
+            );
+        }
+    }
 }

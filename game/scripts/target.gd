@@ -23,6 +23,8 @@ var _body_material: StandardMaterial3D
 var _body_mesh: MeshInstance3D
 var _muzzle: OmniLight3D
 var _fallback_visual: Node3D
+var _safe_navigation_velocity := Vector3.ZERO
+var _navigation_velocity_ready := false
 
 
 func _ready() -> void:
@@ -47,12 +49,20 @@ func _ready() -> void:
 func _build_navigation_agent() -> void:
 	navigation_agent = NavigationAgent3D.new()
 	navigation_agent.name = "NavigationAgent"
+	# CharacterBody3D uses a feet-level origin while Godot returns navmesh path
+	# points about one agent radius above it. Remove that vertical discrepancy
+	# so the agent can actually consume its first waypoint.
+	navigation_agent.path_height_offset = 0.36
 	navigation_agent.radius = 0.34
 	navigation_agent.height = 1.78
 	navigation_agent.path_desired_distance = 0.35
 	navigation_agent.target_desired_distance = 5.5
 	navigation_agent.max_speed = 3.4
-	navigation_agent.avoidance_enabled = false
+	navigation_agent.neighbor_distance = 2.2
+	navigation_agent.max_neighbors = 8
+	navigation_agent.time_horizon_agents = 0.65
+	navigation_agent.avoidance_enabled = true
+	navigation_agent.velocity_computed.connect(_on_safe_velocity_computed)
 	add_child(navigation_agent)
 
 
@@ -113,6 +123,10 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 		last_command = {}
 		combat_state = "idle"
+		_safe_navigation_velocity = Vector3.ZERO
+		_navigation_velocity_ready = false
+		if is_instance_valid(navigation_agent):
+			navigation_agent.velocity = Vector3.ZERO
 		if is_instance_valid(character_model):
 			character_model.set_locomotion(false)
 		return
@@ -120,8 +134,14 @@ func _physics_process(delta: float) -> void:
 	last_command = command
 	combat_state = command.state
 	var desired_velocity: Vector3 = command.world_velocity
-	velocity.x = desired_velocity.x
-	velocity.z = desired_velocity.z
+	navigation_agent.velocity = desired_velocity
+	var movement_velocity := (
+		_safe_navigation_velocity
+		if _navigation_velocity_ready
+		else desired_velocity
+	)
+	velocity.x = movement_velocity.x
+	velocity.z = movement_velocity.z
 	if not is_on_floor():
 		velocity.y -= 20.0 * delta
 	else:
@@ -141,6 +161,15 @@ func _physics_process(delta: float) -> void:
 	if command.fire and is_instance_valid(enemy) and _next_shot <= 0.0:
 		_next_shot = _rng.randf_range(0.72, 1.18)
 		_try_fire(enemy)
+
+
+func _on_safe_velocity_computed(safe_velocity: Vector3) -> void:
+	if active and alive:
+		_safe_navigation_velocity = safe_velocity
+		_navigation_velocity_ready = true
+	else:
+		_safe_navigation_velocity = Vector3.ZERO
+		_navigation_velocity_ready = false
 
 
 func _try_fire(enemy: Combatant) -> void:
@@ -233,6 +262,9 @@ func reset_target(spawn_position: Vector3) -> void:
 	combat_state = "idle"
 	if is_instance_valid(navigation_agent):
 		navigation_agent.target_position = spawn_position
+		navigation_agent.velocity = Vector3.ZERO
+	_safe_navigation_velocity = Vector3.ZERO
+	_navigation_velocity_ready = false
 	if is_instance_valid(combat_controller):
 		(combat_controller as BotCombatController).current_enemy = null
 	if is_instance_valid(character_model):

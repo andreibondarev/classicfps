@@ -34,6 +34,26 @@ func _run() -> void:
 		await process_frame
 	var game_ok := _capture(output_root.path_join("protocol47-gameplay.png"))
 
+	var allied_center := Vector3.ZERO
+	for ally in game.allied_bots:
+		allied_center += ally.global_position
+		ally.character_model.play_action("shoot")
+		ally.character_model._process(0.02)
+	allied_center /= game.allied_bots.size()
+	game.player.face_toward(allied_center)
+	game.player._pitch = -0.28
+	game.player.camera.rotation.x = game.player._pitch
+	for frame in range(2):
+		await process_frame
+	var spawn_pose_ok := _capture(output_root.path_join("protocol47-bot-spawn-pose.png"))
+	for ally in game.allied_bots:
+		ally.character_model.reset_animation()
+
+	game._begin_live()
+	for frame in range(360):
+		await physics_frame
+	var mobility_ok := _capture(output_root.path_join("protocol47-bot-mobility.png"))
+
 	game.player.global_position = Vector3(0, 0.08, 13)
 	game.player.face_toward(Vector3(0, 0.08, 0))
 	if is_instance_valid(game.imported_map):
@@ -72,7 +92,7 @@ func _run() -> void:
 		await process_frame
 	var closeup_ok := _capture(output_root.path_join("protocol47-player-model-closeup.png"))
 
-	if menu_ok and game_ok and models_ok and closeup_ok:
+	if menu_ok and game_ok and spawn_pose_ok and mobility_ok and models_ok and closeup_ok:
 		print("GAME_PREVIEW_CAPTURE_PASS")
 		quit(0)
 	else:

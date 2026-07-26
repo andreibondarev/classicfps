@@ -50,6 +50,9 @@ func load_character(requested_skin: String, requested_weapon := "ak47") -> bool:
 	available_animations.assign(_body_template.animations.keys())
 	model_loaded = true
 	reset_animation()
+	# Animated GoldSrc player vertices are centered around the entity origin,
+	# while the CharacterBody3D origin is at the bottom of its standing hull.
+	position.y = -body_instance.mesh.get_aabb().position.y * MODEL_SCALE
 	return true
 
 

@@ -28,6 +28,11 @@ func _has_body_and_weapon(target: TargetActor) -> bool:
 	)
 
 
+func _model_feet_height(model: MdlCharacterModel) -> float:
+	var bounds := model.body_instance.mesh.get_aabb()
+	return model.position.y + bounds.position.y * model.scale.y
+
+
 func _run() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_check(packed != null, "main scene loads")
@@ -151,12 +156,35 @@ func _run() -> void:
 	for bot in game._all_bots():
 		bot.active = false
 	var animated_model: MdlCharacterModel = game.allied_bots[0].character_model
+	var idle_feet_height := _model_feet_height(animated_model)
+	_check(
+		absf(idle_feet_height) < 0.05,
+		(
+			"standing player-model feet align with the collision-body floor "
+			+ "(feet=%.3f m, offset=%.3f m, bounds=%.3f m)"
+		)
+		% [
+			idle_feet_height,
+			animated_model.position.y,
+			animated_model.body_instance.mesh.get_aabb().position.y,
+		],
+	)
 	animated_model.set_locomotion(true)
 	animated_model._process(0.1)
 	_check(animated_model.animation_state == "run", "moving bots select the run animation")
 	animated_model.play_action("shoot")
 	animated_model._process(0.02)
 	_check(animated_model.animation_state == "shoot", "bot firing selects the shoot animation")
+	_check(
+		absf(_model_feet_height(animated_model) - idle_feet_height) < 0.08,
+		"standing AK fire does not select a half-buried crouch pose",
+	)
+	animated_model.play_death()
+	animated_model._process(0.02)
+	_check(
+		absf(_model_feet_height(animated_model) - idle_feet_height) < 0.08,
+		"death animation begins from a grounded standing pose",
+	)
 	animated_model.reset_animation()
 	var duel_ally: TargetActor = game.allied_bots[0]
 	var duel_enemy: TargetActor = game.targets[0]
