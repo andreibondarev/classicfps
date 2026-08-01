@@ -1818,6 +1818,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		hud.set_scoreboard_held(key_event.pressed)
 		get_viewport().set_input_as_handled()
 		return
+	if (
+		key_event.pressed
+		and not key_event.echo
+		and _match_concluded
+		and key_event.keycode in [KEY_ENTER, KEY_KP_ENTER]
+	):
+		_restart_match()
+		get_viewport().set_input_as_handled()
+		return
 	if key_event.pressed and not key_event.echo and _handle_radio_key(key_event.keycode):
 		get_viewport().set_input_as_handled()
 		return
@@ -2652,6 +2661,25 @@ func _set_paused(paused: bool) -> void:
 	get_tree().paused = paused
 	hud.set_paused_visible(paused)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED
+
+
+var _match_concluded := false
+
+
+func _restart_match() -> void:
+	## A concluded MR15 match restarts with fresh scores and accounts, but the
+	## roster keeps its current sides (halftime may have swapped them).
+	_match_concluded = false
+	round_ending = false
+	_build_round_state()
+	if is_instance_valid(player) and round_state.players.has("player"):
+		var player_row: Dictionary = round_state.players.player
+		player_row.team = player.team
+		round_state.players.player = player_row
+	_consume_new_round_trace()
+	_sync_round_public_state()
+	hud.update_objective("")
+	start_match()
 
 
 func start_match() -> void:
@@ -3635,6 +3663,7 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				hud.show_banner("HALFTIME  •  SWITCHING SIDES", Color("#ffca66"), 2.5)
 			"match_end":
 				match_started = false
+				_match_concluded = true
 				player.controls_enabled = false
 				player.look_enabled = false
 				hud.show_banner(
@@ -3643,6 +3672,7 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 					Color("#ffca66"),
 					4.0,
 				)
+				hud.update_objective("PRESS ENTER FOR A NEW MATCH")
 
 
 func _round_actor_positions() -> Dictionary:
