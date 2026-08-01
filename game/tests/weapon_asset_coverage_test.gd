@@ -63,7 +63,10 @@ func _validate_model(weapon: String, family: String) -> void:
 	if manifest.is_empty():
 		return
 	_check(manifest.get("format") == "protocol47-mdl", "%s uses the MDL format" % root)
-	var expected_version := 3 if family == "player_weapons" else 2
+	# The animated exporter emits version 3 for every animated model.json;
+	# version 2 was the pre-seq-label format and no generated asset ships it
+	# anymore (assets and converter are re-synced in the same commit).
+	var expected_version := 3
 	_check(
 		int(manifest.get("version", 0)) == expected_version,
 		"%s uses supported version %d" % [root, expected_version],
