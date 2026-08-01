@@ -252,9 +252,10 @@ func _input(event: InputEvent) -> void:
 		return
 	if radio_menu_open and event is InputEventKey:
 		return
-	if controls_enabled:
-		combat_controller.ingest_input(event)
-	elif look_enabled and event is InputEventMouseMotion:
+	if controls_enabled or look_enabled:
+		# Freeze time still feeds the controller: CS 1.6 locks movement and
+		# firing there, but looking, switching weapons, and reloading all
+		# work. The physics tick decides which command fields are honored.
 		combat_controller.ingest_input(event)
 
 
@@ -314,6 +315,13 @@ func _physics_process(delta: float) -> void:
 			var idle_look: Vector2 = idle_command.get("look_delta", Vector2.ZERO)
 			if not idle_look.is_zero_approx():
 				_apply_mouse_look(idle_look)
+			# CS 1.6 freeze time: weapon handling stays live even though the
+			# feet are frozen — only movement and attacks are withheld.
+			var idle_weapon := str(idle_command.get("weapon", ""))
+			if not idle_weapon.is_empty():
+				switch_weapon(idle_weapon)
+			if bool(idle_command.get("reload", false)):
+				_start_reload()
 		return
 
 	var command := combat_controller.gather_command(delta)

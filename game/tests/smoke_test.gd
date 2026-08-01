@@ -147,6 +147,32 @@ func _run() -> void:
 	_check(game.match_started, "match deploys")
 	_check(game.phase == "freeze", "round starts in freeze time")
 	_check(not game.player.controls_enabled, "movement is locked during freeze time")
+	# CS 1.6 freeze time keeps weapon handling live: switching works, firing
+	# does not.
+	var freeze_weapon_before: String = game.player.active_weapon
+	var freeze_clip_before: int = game.player.clip
+	game.player.combat_controller._slot_request = 3
+	game.player.combat_controller._fire_pressed = true
+	await physics_frame
+	await physics_frame
+	_check(
+		game.player.active_weapon == "knife",
+		"freeze time allows switching to the knife",
+	)
+	_check(
+		game.player.clip == -1 or game.player.clip == freeze_clip_before,
+		"freeze time never discharges the weapon",
+	)
+	game.player.combat_controller._slot_request = int(
+		game.player.WEAPONS[freeze_weapon_before].slot
+	)
+	await physics_frame
+	await physics_frame
+	_check(
+		game.player.active_weapon == freeze_weapon_before
+		and game.player.clip == freeze_clip_before,
+		"freeze-time switch back restores the original loadout state",
+	)
 	game._begin_live()
 	await physics_frame
 	_check(game.player.controls_enabled, "player controls enable when live")
