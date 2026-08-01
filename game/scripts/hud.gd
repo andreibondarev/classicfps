@@ -16,18 +16,41 @@ signal options_apply_requested(values: Dictionary)
 signal options_defaults_requested(page: String)
 signal options_cancel_requested
 
-const CLASSIC_ORANGE := Color("#f3a51b")
+# CS 1.6's one fixed HUD colour (RGB 255,160,0) shared by every element —
+# health, armor, ammo, timer, money — in every state.
+const CLASSIC_ORANGE := Color(1.0, 160.0 / 255.0, 0.0, 1.0)
+# Brief brightening used when the account value changes; same hue, more light.
+const CLASSIC_ORANGE_BRIGHT := Color(1.0, 208.0 / 255.0, 96.0 / 255.0, 1.0)
 const CLASSIC_GREEN := Color("#56c75b")
 const CLASSIC_RED := Color("#fa250f")
 const CLASSIC_SHADOW := Color(0.0, 0.0, 0.0, 0.92)
+# GoldSrc rests HUD sprites near MIN_ALPHA rather than full brightness; drawing
+# the additive glyphs at partial intensity keeps them orange over bright
+# surfaces instead of saturating to yellow-white.
+const CLASSIC_SPRITE_INTENSITY := 0.45
 const CLASSIC_HUD_ROOT := "res://assets/hud/classic/"
+const RadarDisplayScript := preload("res://scripts/cs16_radar_display.gd")
 const VGUI_AMBER_FALLBACK := Color(1.0, 176.0 / 255.0, 0.0, 1.0)
 const VGUI_AMBER_DIM_FALLBACK := Color(188.0 / 255.0, 112.0 / 255.0, 0.0, 1.0)
 const VGUI_BLUE_FALLBACK := Color(153.0 / 255.0, 204.0 / 255.0, 1.0, 1.0)
 const VGUI_RED_FALLBACK := Color(1.0, 64.0 / 255.0, 64.0 / 255.0, 1.0)
+# GameUI (escape) menu text: pale tan resting color that brightens toward
+# white, matching the in-game Half-Life GameUI scheme rather than the amber
+# cstrike ClientScheme used by gameplay dialogs.
+const GAMEUI_MENU_TEXT := Color(216.0 / 255.0, 207.0 / 255.0, 180.0 / 255.0, 1.0)
+const GAMEUI_MENU_TEXT_BRIGHT := Color(1.0, 1.0, 1.0, 1.0)
+const GAMEUI_MENU_TEXT_DIM := Color(178.0 / 255.0, 166.0 / 255.0, 140.0 / 255.0, 1.0)
+# Steam-era GameUI (TrackerScheme) dialog surface: dark olive/grey-green.
+const GAMEUI_PANEL := Color(76.0 / 255.0, 88.0 / 255.0, 68.0 / 255.0, 0.94)
+const GAMEUI_PANEL_BORDER := Color(56.0 / 255.0, 64.0 / 255.0, 50.0 / 255.0, 1.0)
 const VGUI_BASE_SIZE := Vector2(640.0, 480.0)
 const VGUI_MENU_ORIGIN := Vector2(76.0, 0.0)
 const VGUI_MENU_SIZE := Vector2(552.0, 448.0)
+# One uniform row metric for every buy list: CS 1.6 keeps a single font and a
+# fixed right-aligned price column instead of shrinking long rows.
+const BUY_ROW_WIDTH := 202.0
+const BUY_PRICE_COLUMN_WIDTH := 40.0
+const BUY_ROW_FONT_SIZE := 10
 
 const TEAM_MENU_ITEMS := [
 	["1", "TERRORIST FORCES", 1, "terbutton"],
@@ -91,9 +114,47 @@ const BUY_DEFINITIONS := {
 	"sgren": ["SMOKE GRENADE", 300, "smokegrenade"],
 	"nvgs": ["NIGHTVISION", 1250, "nightvision"],
 	"defuser": ["DEFUSAL KIT", 200, "defuser"],
-	"shield": ["TACTICAL SHIELD", 2200, "shield"],
+	# The Tactical Shield is intentionally not offered. A faithful shield needs a
+	# world/view model, directional damage blocking, the 180 ups carry speed cap
+	# and its primary-weapon restrictions; none of that exists yet, so listing it
+	# would only take $2200 for nothing. It is also absent from the competitive
+	# 1.6 play this project targets. Source rows whose command is missing here are
+	# skipped by _source_buy_items, so the equipment page simply omits it.
 	"primammo": ["PRIMARY AMMO", 60, ""],
 	"secammo": ["SECONDARY AMMO", 40, ""],
+}
+# CS 1.6 draws the active weapon's caliber sprite (each weapon_*.txt "ammo"
+# atlas region) to the right of the reserve counter. Keys are the classic
+# HUD-facing weapon display names emitted by the weapon registry.
+const AMMO_ICONS := {
+	"228 COMPACT": "ammo_p228",
+	"SCHMIDT SCOUT": "ammo_scout",
+	"HE GRENADE": "ammo_hegrenade",
+	"LEONE YG1265 AUTO SHOTGUN": "ammo_xm1014",
+	"C4 EXPLOSIVE": "ammo_c4",
+	"INGRAM MAC-10": "ammo_mac10",
+	"BULLPUP": "ammo_aug",
+	"SMOKE GRENADE": "ammo_smokegrenade",
+	"ELITE": "ammo_elite",
+	"ES FIVE-SEVEN": "ammo_fiveseven",
+	"KM UMP45": "ammo_ump45",
+	"KRIEG 550 COMMANDO": "ammo_sg550",
+	"IDF DEFENDER": "ammo_galil",
+	"CLARION 5.56": "ammo_famas",
+	"KM .45 TACTICAL": "ammo_usp",
+	"9X19MM SIDEARM": "ammo_glock18",
+	"MAGNUM SNIPER RIFLE": "ammo_awp",
+	"KM SUB-MACHINE GUN": "ammo_mp5navy",
+	"ES M249 PARA": "ammo_m249",
+	"LEONE 12 GAUGE SUPER": "ammo_m3",
+	"MAVERICK M4A1 CARBINE": "ammo_m4a1",
+	"SCHMIDT MACHINE PISTOL": "ammo_tmp",
+	"D3/AU-1": "ammo_g3sg1",
+	"FLASHBANG": "ammo_flashbang",
+	"DESERT EAGLE": "ammo_deagle",
+	"KRIEG 552": "ammo_sg552",
+	"AK-47": "ammo_ak47",
+	"ES C90": "ammo_p90",
 }
 
 var health_label: Label
@@ -104,6 +165,7 @@ var timer_label: Label
 var round_label: Label
 var objective_label: Label
 var status_label: Label
+var spectate_label: Label
 var money_label: Label
 var banner_label: Label
 var deploy_overlay: Control
@@ -131,8 +193,14 @@ var options_tab_bar: HBoxContainer
 var options_pages: Control
 var accessibility_overlay: Control
 var damage_flash: ColorRect
+var nightvision_overlay: ColorRect
+var flash_blind_overlay: ColorRect
+var _flash_blind_tween: Tween
 var hitmarker: Control
 var crosshair: Control
+var radar_display: CS16RadarDisplay
+var kill_feed_box: VBoxContainer
+var hostage_status_group: HBoxContainer
 var _banner_generation := 0
 var settings: Node
 var _weapon_name := "AK-47"
@@ -163,9 +231,30 @@ var _vgui_fonts: Dictionary = {}
 var _options_snapshot: Dictionary = {}
 var _options_pending: Dictionary = {}
 var _options_page_key := "multiplayer"
+var _hud_additive_material: CanvasItemMaterial
+var _money_sign: TextureRect
+var _armor_icon: TextureRect
+var _ammo_icon: TextureRect
+var _buyzone_icon: TextureRect
+var _has_helmet := false
+var _in_buy_zone := false
+var _last_money := -2147483648
+var _money_flash_generation := 0
+var _objective_text := ""
+var _objective_generation := 0
+var _crosshair_spread_px := 0
 
 
-func _classic_sprite(sprite_name: String, color: Color) -> TextureRect:
+func _classic_additive_material() -> CanvasItemMaterial:
+	# GoldSrc renders every 640hud7 glyph additively (SPR_DrawAdditive);
+	# reproducing that blend keeps the sprites' dim fills/bright edges correct.
+	if _hud_additive_material == null:
+		_hud_additive_material = CanvasItemMaterial.new()
+		_hud_additive_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	return _hud_additive_material
+
+
+func _classic_sprite(sprite_name: String, color: Color, additive := true) -> TextureRect:
 	var sprite := TextureRect.new()
 	sprite.name = "Sprite_%s" % sprite_name
 	var texture := load(CLASSIC_HUD_ROOT.path_join("%s.png" % sprite_name)) as Texture2D
@@ -176,11 +265,27 @@ func _classic_sprite(sprite_name: String, color: Color) -> TextureRect:
 		sprite.custom_minimum_size = texture.get_size()
 	sprite.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	sprite.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
-	sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	sprite.modulate = color
+	# GoldSrc's GL renderer samples HUD sprites with GL_LINEAR; nearest-neighbor
+	# at the non-integer 1024/1280 HUD scales chews ragged notches into the
+	# digit edges that the original never shows.
+	sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	if additive:
+		sprite.material = _classic_additive_material()
+		# Rest additive glyphs below full brightness (GoldSrc FadeThink decays
+		# toward MIN_ALPHA); modulate alpha scales the additive contribution.
+		sprite.modulate = _classic_sprite_modulate(color)
+	else:
+		sprite.modulate = color
 	sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	sprite.set_meta("classic_sprite", sprite_name)
 	return sprite
+
+
+func _classic_sprite_modulate(color: Color) -> Color:
+	# Every classic sprite in one HUD element must carry the same additive
+	# intensity; writing a raw full-alpha modulate onto one glyph (for example
+	# the dollar sign) renders it visibly brighter than its sibling digits.
+	return Color(color.r, color.g, color.b, color.a * CLASSIC_SPRITE_INTENSITY)
 
 
 func _digit_row() -> HBoxContainer:
@@ -194,15 +299,17 @@ func _digit_row() -> HBoxContainer:
 func _colon(color: Color) -> VBoxContainer:
 	var colon := VBoxContainer.new()
 	colon.name = "TimerColon"
-	colon.custom_minimum_size = Vector2(8, 25)
+	colon.custom_minimum_size = Vector2(9, 25)
 	colon.alignment = BoxContainer.ALIGNMENT_CENTER
-	colon.add_theme_constant_override("separation", 5)
+	colon.add_theme_constant_override("separation", 7)
 	colon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	for index in range(2):
 		var dot := ColorRect.new()
-		dot.custom_minimum_size = Vector2(3, 3)
-		dot.color = color
+		dot.custom_minimum_size = Vector2(4, 4)
+		dot.color = Color(color.r, color.g, color.b, color.a * CLASSIC_SPRITE_INTENSITY)
+		dot.material = _classic_additive_material()
 		dot.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		colon.add_child(dot)
 	return colon
@@ -259,25 +366,75 @@ func _build_hud() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
-	var radar := _classic_sprite("radar", Color(0.35, 1.0, 0.24, 0.72))
+	# Nightvision tints and brightens the world beneath every HUD element, so
+	# it is built first and stays the bottom-most child of the HUD root.
+	nightvision_overlay = ColorRect.new()
+	nightvision_overlay.name = "NightvisionOverlay"
+	nightvision_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Additive green: CS 1.6's NVG amplifies light rather than veiling the
+	# screen, so dark corners become readable instead of merely greener.
+	nightvision_overlay.color = Color(0.04, 0.26, 0.05, 1.0)
+	var nightvision_material := CanvasItemMaterial.new()
+	nightvision_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	nightvision_overlay.material = nightvision_material
+	nightvision_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	nightvision_overlay.visible = false
+	root.add_child(nightvision_overlay)
+
+	# The CS 1.6 radar is a square translucent dark green-blue panel the world
+	# stays visible through — GoldSrc draws it dim, with plain blips and a small
+	# center mark drawn live by the contact layer above.
+	var radar := _classic_sprite("radar", Color.WHITE, false)
+	radar.texture = _classic_radar_texture(radar.texture)
 	radar.name = "ClassicRadar"
 	radar.position = Vector2(18, 18)
 	radar.size = Vector2(128, 128)
 	root.add_child(radar)
 
-	money_label = _label("$800", 1, CLASSIC_GREEN)
+	radar_display = RadarDisplayScript.new()
+	radar_display.name = "ClassicRadarContacts"
+	radar_display.position = Vector2(18, 18)
+	radar_display.size = Vector2(128, 128)
+	root.add_child(radar_display)
+
+	# CS 1.6 death notices: top-right rows of "Killer (weapon) Victim" with
+	# team-colored names, newest at the bottom, fading out after a few seconds.
+	kill_feed_box = VBoxContainer.new()
+	kill_feed_box.name = "ClassicKillFeed"
+	kill_feed_box.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	kill_feed_box.offset_left = -460.0
+	kill_feed_box.offset_right = -14.0
+	kill_feed_box.offset_top = 12.0
+	kill_feed_box.offset_bottom = 160.0
+	kill_feed_box.alignment = BoxContainer.ALIGNMENT_BEGIN
+	kill_feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(kill_feed_box)
+
+	hostage_status_group = HBoxContainer.new()
+	hostage_status_group.name = "ClassicHostageStatus"
+	hostage_status_group.position = Vector2(18, 148)
+	hostage_status_group.size = Vector2(128, 32)
+	hostage_status_group.add_theme_constant_override("separation", 0)
+	hostage_status_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(hostage_status_group)
+
+	# CS 1.6 draws the account on the right side above the ammo counter in
+	# resting HUD orange; it only flashes green on gain and red on loss.
+	money_label = _label("$800", 1, CLASSIC_ORANGE)
 	var money_group := HBoxContainer.new()
 	money_group.name = "ClassicMoney"
-	money_group.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	money_group.position = Vector2(24, -112)
+	money_group.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	money_group.position = Vector2(-204, -112)
 	money_group.size = Vector2(180, 34)
+	money_group.alignment = BoxContainer.ALIGNMENT_END
 	money_group.add_theme_constant_override("separation", 2)
 	money_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(money_group)
-	money_group.add_child(_classic_sprite("dollar", CLASSIC_GREEN))
+	_money_sign = _classic_sprite("dollar", CLASSIC_ORANGE)
+	money_group.add_child(_money_sign)
 	money_digits = _digit_row()
 	money_group.add_child(money_digits)
-	_set_digit_row(money_digits, "800", CLASSIC_GREEN)
+	_set_digit_row(money_digits, "800", CLASSIC_ORANGE)
 	money_label.name = "Money"
 	money_label.visible = false
 	root.add_child(money_label)
@@ -301,7 +458,10 @@ func _build_hud() -> void:
 	var spacer := Control.new()
 	spacer.custom_minimum_size.x = 12
 	health_group.add_child(spacer)
-	health_group.add_child(_classic_sprite("suit_full", CLASSIC_ORANGE))
+	# CS 1.6 swaps this vest sprite for the vest+helmet variant while a
+	# helmet is owned (see update_health).
+	_armor_icon = _classic_sprite("suit_full", CLASSIC_ORANGE)
+	health_group.add_child(_armor_icon)
 	armor_label = _label("100", 1, CLASSIC_ORANGE)
 	armor_label.name = "Armor"
 	armor_label.visible = false
@@ -313,8 +473,8 @@ func _build_hud() -> void:
 	var ammo_group := HBoxContainer.new()
 	ammo_group.name = "ClassicAmmo"
 	ammo_group.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	ammo_group.position = Vector2(-244, -67)
-	ammo_group.size = Vector2(220, 48)
+	ammo_group.position = Vector2(-277, -67)
+	ammo_group.size = Vector2(253, 48)
 	ammo_group.alignment = BoxContainer.ALIGNMENT_END
 	ammo_group.add_theme_constant_override("separation", 9)
 	ammo_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -334,6 +494,10 @@ func _build_hud() -> void:
 	reserve_digits = _digit_row()
 	ammo_group.add_child(reserve_digits)
 	_set_digit_row(reserve_digits, "90", CLASSIC_ORANGE, 3)
+	# The caliber-specific ammo sprite always follows the reserve count.
+	_ammo_icon = _classic_sprite("ammo_ak47", CLASSIC_ORANGE)
+	_ammo_icon.name = "AmmoTypeIcon"
+	ammo_group.add_child(_ammo_icon)
 
 	var timer_group := HBoxContainer.new()
 	timer_group.name = "ClassicTimer"
@@ -353,6 +517,17 @@ func _build_hud() -> void:
 	timer_group.add_child(timer_digits)
 	_set_digit_row(timer_digits, "1:30", CLASSIC_ORANGE)
 
+	# CS 1.6 pins the buyzone sprite (640hud7's cart glyph) against the left
+	# screen edge, vertically centered, whenever the player can open the buy
+	# menu (in a buy zone during buy time).
+	_buyzone_icon = _classic_sprite("buyzone", CLASSIC_ORANGE)
+	_buyzone_icon.name = "ClassicBuyZone"
+	_buyzone_icon.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	_buyzone_icon.position = Vector2(2, -16)
+	_buyzone_icon.size = Vector2(32, 32)
+	_buyzone_icon.visible = false
+	root.add_child(_buyzone_icon)
+
 	status_label = _classic_label("", 17, CLASSIC_ORANGE)
 	status_label.name = "ObjectiveStatus"
 	status_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
@@ -360,6 +535,15 @@ func _build_hud() -> void:
 	status_label.size = Vector2(520, 30)
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(status_label)
+
+	spectate_label = _classic_label("", 17, CLASSIC_ORANGE)
+	spectate_label.name = "ClassicSpectate"
+	spectate_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	spectate_label.position = Vector2(-260, -72)
+	spectate_label.size = Vector2(520, 26)
+	spectate_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	spectate_label.visible = false
+	root.add_child(spectate_label)
 
 	# CS 1.6 exposes round and team scores on the scoreboard rather than in a
 	# persistent top-center match card. Keep state labels for the existing API,
@@ -386,11 +570,14 @@ func _build_hud() -> void:
 	_build_damage_flash(root)
 	for control_name in [
 		"ClassicRadar",
+		"ClassicRadarContacts",
+		"ClassicHostageStatus",
 		"ClassicMoney",
 		"ClassicVitals",
 		"ClassicTimer",
 		"ClassicAmmo",
 		"ObjectiveStatus",
+		"ClassicSpectate",
 		"ClassicAnnouncement",
 		"Crosshair",
 		"DamageVignette",
@@ -408,31 +595,14 @@ func _build_hud() -> void:
 
 
 func _build_crosshair(root: Control) -> void:
+	# CS 1.6 draws 1px crosshair segments pixel-symmetric around the center
+	# pixel: equal 9px arms with a 3px gap on every side, no drop shadows.
 	crosshair = Control.new()
 	crosshair.name = "Crosshair"
 	crosshair.set_anchors_preset(Control.PRESET_CENTER)
-	crosshair.position = Vector2(-14, -14)
-	crosshair.size = Vector2(28, 28)
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(crosshair)
-	for rect in [
-		Rect2(13, 1, 2, 9),
-		Rect2(13, 18, 2, 9),
-		Rect2(1, 13, 9, 2),
-		Rect2(18, 13, 9, 2),
-	]:
-		var shadow := ColorRect.new()
-		shadow.position = rect.position - Vector2.ONE
-		shadow.size = rect.size + Vector2.ONE * 2.0
-		shadow.color = Color(0, 0, 0, 0.62)
-		shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		crosshair.add_child(shadow)
-		var line := ColorRect.new()
-		line.position = rect.position
-		line.size = rect.size
-		line.color = Color(0.1, 1.0, 0.1, 0.76)
-		line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		crosshair.add_child(line)
+	_update_crosshair_scale()
 
 	# A hit-confirm X was added by this project, but CS 1.6 never draws one.
 	# Preserve the node/API for gameplay callers and tests while rendering none.
@@ -453,6 +623,31 @@ func _build_damage_flash(root: Control) -> void:
 	damage_flash.color = Color(0.72, 0.03, 0.02, 0.0)
 	damage_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(damage_flash)
+	flash_blind_overlay = ColorRect.new()
+	flash_blind_overlay.name = "FlashBlindOverlay"
+	flash_blind_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	flash_blind_overlay.color = Color(1.0, 1.0, 1.0, 0.0)
+	flash_blind_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(flash_blind_overlay)
+
+
+func set_nightvision(active: bool) -> void:
+	if is_instance_valid(nightvision_overlay):
+		nightvision_overlay.visible = active
+
+
+func show_flash_blind(seconds: float) -> void:
+	# CS 1.6 flashbang: solid white hold, then a long linear fade.
+	if not is_instance_valid(flash_blind_overlay):
+		return
+	if _flash_blind_tween != null and _flash_blind_tween.is_valid():
+		_flash_blind_tween.kill()
+	flash_blind_overlay.color.a = 1.0
+	_flash_blind_tween = create_tween()
+	_flash_blind_tween.tween_interval(seconds * 0.45)
+	_flash_blind_tween.tween_property(
+		flash_blind_overlay, "color:a", 0.0, seconds * 0.55,
+	)
 
 
 func _build_deploy_overlay(root: Control) -> void:
@@ -480,11 +675,13 @@ func _build_team_menu() -> void:
 	_vgui_label(
 		team_menu,
 		"JoinTeamTitle",
-		vgui_source.localize("#Cstrike_Join_Team", "SELECT A TEAM"),
+		vgui_source.localize("#Cstrike_Join_Team", "SELECT TEAM"),
 		title_rect.position,
 		title_rect.size,
 		_source_font_size("Title", 22),
 		vgui_amber,
+		false,
+		"Title",
 	)
 	var map_rect := _relative_source_rect(
 		source_path,
@@ -507,13 +704,9 @@ func _build_team_menu() -> void:
 		Rect2(168, 116, 316, 286),
 		team_menu.position,
 	)
-	var map_panel := ColorRect.new()
-	map_panel.name = "MapInfo"
-	map_panel.position = map_info_rect.position
-	map_panel.size = map_info_rect.size
-	map_panel.color = vgui_source.scheme_color("WindowBG", Color(0.0, 0.0, 0.0, 0.78))
-	map_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	map_panel.clip_contents = true
+	var map_panel := _vgui_dialog_panel(
+		"MapInfo", map_info_rect.position, map_info_rect.size
+	)
 	team_menu.add_child(map_panel)
 	_vgui_label(
 		map_panel,
@@ -531,6 +724,7 @@ func _build_team_menu() -> void:
 	team_briefing_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	team_briefing_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	team_briefing_scroll.set_meta("contains_full_source_briefing", true)
+	_style_vgui_scrollbar(team_briefing_scroll)
 	map_panel.add_child(team_briefing_scroll)
 	var briefing_label := _vgui_label(
 		team_briefing_scroll,
@@ -564,6 +758,8 @@ func _build_team_menu() -> void:
 			button_rect.position,
 			button_rect.size,
 			func() -> void: _select_team(team_id),
+			12,
+			true,
 		)
 	var cancel_rect := _relative_source_rect(
 		source_path,
@@ -581,6 +777,8 @@ func _build_team_menu() -> void:
 		cancel_rect.position,
 		cancel_rect.size,
 		func() -> void: show_team_menu(),
+		12,
+		true,
 	)
 	update_deploy_briefing("de_dust2")
 
@@ -603,6 +801,8 @@ func _build_class_menu() -> void:
 		title_rect.size,
 		_source_font_size("Title", 22),
 		vgui_amber,
+		false,
+		"Title",
 	)
 	var info_rect := _relative_source_rect(
 		source_path,
@@ -610,13 +810,9 @@ func _build_class_menu() -> void:
 		Rect2(168, 116, 316, 286),
 		class_menu.position,
 	)
-	var info_panel := ColorRect.new()
-	info_panel.name = "ClassInfo"
-	info_panel.position = info_rect.position
-	info_panel.size = info_rect.size
-	info_panel.color = vgui_source.scheme_color("WindowBG", Color(0.0, 0.0, 0.0, 0.78))
-	info_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	info_panel.clip_contents = true
+	var info_panel := _vgui_dialog_panel(
+		"ClassInfo", info_rect.position, info_rect.size
+	)
 	class_menu.add_child(info_panel)
 	class_portrait = TextureRect.new()
 	class_portrait.name = "ClassPortrait"
@@ -666,6 +862,8 @@ func _populate_class_buttons() -> void:
 			rect.position,
 			rect.size,
 			func() -> void: _select_class(class_id),
+			12,
+			true,
 		)
 		var portrait_name := str(item[2])
 		var portrait_label := str(item[1])
@@ -691,6 +889,8 @@ func _populate_class_buttons() -> void:
 		cancel_rect.position,
 		cancel_rect.size,
 		func() -> void: show_team_menu(),
+		12,
+		true,
 	)
 	if not classes.is_empty():
 		_show_class_portrait(str(classes[0][2]), str(classes[0][1]))
@@ -766,22 +966,24 @@ func _build_buy_overlay(root: Control) -> void:
 	root.add_child(buy_overlay)
 	buy_canvas = _make_flow_canvas(buy_overlay, "BuyFlowCanvas")
 	var source_path := CS16VGuiSource.CSTRIKE_UI + "MainBuyMenu.kv"
-	buy_menu_frame = _vgui_frame(buy_canvas, "BuyMenu")
+	buy_menu_frame = _vgui_frame(buy_canvas, "BuyMenu", "", "", 214.0)
 	buy_menu_frame.set_meta("app90_source", source_path)
 	var frame := buy_menu_frame
 	_vgui_label(
 		frame,
 		"BuyTitle",
-		vgui_source.localize("#Cstrike_Buy_Menu", "BUY MENU"),
+		vgui_source.localize("#Cstrike_Buy_Menu", "Buy Menu"),
 		Vector2(0, 22),
 		Vector2(500, 48),
 		_source_font_size("Title", 22),
 		vgui_amber,
+		false,
+		"Title",
 	)
 	_vgui_label(
 		frame,
 		"SelectCategory",
-		vgui_source.localize("#Cstrike_Select_Category", "SELECT CATEGORY"),
+		vgui_source.localize("#Cstrike_Select_Category", "SHOP BY CATEGORY"),
 		Vector2(8, 87),
 		Vector2(160, 24),
 		_source_font_size("Default", 12),
@@ -792,45 +994,13 @@ func _build_buy_overlay(root: Control) -> void:
 	buy_list_panel.position = Vector2.ZERO
 	buy_list_panel.size = frame.size
 	frame.add_child(buy_list_panel)
-	for index in BUY_CATEGORIES.size():
-		var category: Array = BUY_CATEGORIES[index]
-		var category_id := str(category[2])
-		var source_control: String = str({
-			"smg": "submachineguns",
-			"primary_ammo": "primaryammo",
-			"secondary_ammo": "secammo",
-			"equipment": "equipment",
-		}.get(category_id, category_id))
-		var source_rect := vgui_source.control_rect(
-			source_path,
-			source_control,
-			Rect2(76, 116 + index * 32, 148, 20),
-			VGUI_BASE_SIZE,
-		)
-		_vgui_button(
-			buy_list_panel,
-			"BuyCategory_%s" % category_id,
-			"%s  %s" % [category[0], category[1]],
-			source_rect.position - VGUI_MENU_ORIGIN,
-			source_rect.size,
-			func() -> void: _show_buy_category(category_id),
-			10 if str(category[1]).length() > 18 else 12,
-		)
-	_vgui_button(
-		buy_list_panel,
-		"BuyCancel",
-		"0  CANCEL",
-		Vector2(0, 380),
-		Vector2(148, 20),
-		func() -> void: set_buy_menu_visible(false),
+	# The detail panel shares the option column's exact vertical extents and
+	# ends flush with the 552-wide frame: one dialog, no overhang or seams.
+	buy_item_panel = _vgui_dialog_panel(
+		"ItemInfo",
+		Vector2(202, 12),
+		Vector2(frame.size.x - 202.0, frame.size.y - 24.0),
 	)
-	buy_item_panel = ColorRect.new()
-	buy_item_panel.name = "ItemInfo"
-	buy_item_panel.position = Vector2(168, 116)
-	buy_item_panel.size = Vector2(400, 286)
-	buy_item_panel.color = vgui_source.scheme_color("WindowBG", Color(0.0, 0.0, 0.0, 0.78))
-	buy_item_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	buy_item_panel.clip_contents = true
 	frame.add_child(buy_item_panel)
 	_show_buy_category("rifles")
 
@@ -852,9 +1022,10 @@ func _show_buy_category(category_id: String) -> void:
 	_buy_category = category_id
 	_buy_navigation_level = "item"
 	_set_menu_state("buy_item")
+	buy_item_panel.visible = true
 	_buy_items = _source_buy_items(category_id)
 	var source_path := _buy_source_path(category_id)
-	var title := category_id.replace("_", " ").to_upper()
+	var title := category_id.replace("_", " ").capitalize()
 	if not source_path.is_empty():
 		var source_title := vgui_source.control(source_path, "Title")
 		title = vgui_source.localize(str(source_title.get("labelText", title)), title)
@@ -866,6 +1037,8 @@ func _show_buy_category(category_id: String) -> void:
 		Vector2(500, 48),
 		_source_font_size("Title", 22),
 		vgui_amber,
+		false,
+		"Title",
 	)
 	for index in _buy_items.size():
 		var item: Dictionary = _buy_items[index]
@@ -873,18 +1046,40 @@ func _show_buy_category(category_id: String) -> void:
 		var price := int(item.price)
 		# The App 90 localized label is already the authoritative accelerator
 		# string (for example "&1 9X19MM SIDEARM"). Never synthesize a second
-		# number in front of it.
+		# number in front of it. Every row shares one uniform VGUI font size;
+		# classic 1.6 never auto-shrinks long rows.
 		var text := str(item.label)
 		var button := _vgui_button(
 			buy_list_panel,
 			"BuyItem_%s" % item_id,
 			text,
 			Vector2(0, 116 + index * 32),
-			Vector2(148, 20),
+			Vector2(BUY_ROW_WIDTH, 20),
 			func() -> void: buy_item_requested.emit(item_id),
+			BUY_ROW_FONT_SIZE,
+			true,
 		)
 		button.set_meta("app90_source", source_path)
 		button.set_meta("app90_control", item.source_control)
+		var row_label := button.get_node_or_null("AcceleratorText") as RichTextLabel
+		if row_label != null:
+			# Reserve the fixed price column so no label ever runs beneath it.
+			row_label.offset_right = -(BUY_PRICE_COLUMN_WIDTH + 12.0)
+		# The classic list shows every cost in one fixed right-aligned column;
+		# each price shares the row's font and vertical centerline.
+		var price_label := _vgui_text(
+			"$%d" % price,
+			BUY_ROW_FONT_SIZE,
+			vgui_amber_dim,
+		)
+		price_label.name = "PriceText"
+		price_label.position = Vector2(BUY_ROW_WIDTH - BUY_PRICE_COLUMN_WIDTH - 8.0, 0.0)
+		price_label.size = Vector2(BUY_PRICE_COLUMN_WIDTH, 20.0)
+		price_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		# The accelerator RichTextLabel draws from the row top; anchor the
+		# price to the same top edge so name and price share one baseline.
+		price_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		button.add_child(price_label)
 		button.mouse_entered.connect(func() -> void: _show_buy_portrait(item))
 		button.focus_entered.connect(func() -> void: _show_buy_portrait(item))
 		button.disabled = price > _buy_money
@@ -900,41 +1095,52 @@ func _show_buy_category(category_id: String) -> void:
 					Color(0.31, 0.19, 0.0, 1.0),
 				)
 				disabled_accelerator.modulate = Color(0.70, 0.70, 0.70, 1.0)
+			price_label.add_theme_color_override(
+				"font_color",
+				Color(0.31, 0.19, 0.0, 1.0),
+			)
 	_vgui_button(
 		buy_list_panel,
 		"BuyBack",
-		"0  CANCEL",
+		vgui_source.localize("#Cstrike_Cancel", "&0 CANCEL"),
 		Vector2(0, 380),
-		Vector2(148, 20),
+		Vector2(BUY_ROW_WIDTH, 20),
 		_show_buy_categories,
+		BUY_ROW_FONT_SIZE,
+		true,
 	)
 	buy_portrait = TextureRect.new()
 	buy_portrait.name = "WeaponPortrait"
-	buy_portrait.position = Vector2(8, 18)
-	buy_portrait.size = Vector2(384, 150)
+	buy_portrait.position = Vector2(14, 96)
+	buy_portrait.size = Vector2(322, 150)
 	buy_portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	buy_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	buy_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	# The staged App 90 buy pictures are already the finished VGUI photos
+	# (black polymer pistols, olive kevlar); present their diffuse colors
+	# untouched — any brightness "lift" turns them into chrome clay renders.
 	buy_portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	buy_item_panel.add_child(buy_portrait)
 	buy_description = _vgui_label(
 		buy_item_panel,
 		"WeaponDescription",
 		"",
-		Vector2(12, 174),
-		Vector2(376, 42),
+		Vector2(16, 258),
+		Vector2(318, 42),
 		_source_font_size("Default", 12),
 		vgui_amber,
 		true,
 	)
+	# CS 1.6 keeps account text in the shared HUD orange scheme; it never
+	# turns green inside the buy menu.
 	_vgui_label(
 		buy_item_panel,
 		"BuyMoney",
 		"ACCOUNT: $%d" % _buy_money,
-		Vector2(12, 252),
+		Vector2(16, 330),
 		Vector2(292, 24),
 		12,
-		CLASSIC_GREEN,
+		vgui_amber,
 	)
 	if not _buy_items.is_empty():
 		_show_buy_portrait(_buy_items[0])
@@ -950,6 +1156,9 @@ func _show_buy_categories() -> void:
 		child.free()
 	_buy_navigation_level = "category"
 	_set_menu_state("buy_category")
+	# The submenu replaces the parent menu in CS 1.6; the item detail panel
+	# must not linger behind the category list.
+	buy_item_panel.visible = false
 	var source_path := CS16VGuiSource.CSTRIKE_UI + "MainBuyMenu.kv"
 	var item_title := buy_menu_frame.get_node_or_null("ItemTitle")
 	if item_title != null:
@@ -974,22 +1183,32 @@ func _show_buy_categories() -> void:
 			Rect2(76, 116 + index * 32, 148, 20),
 			VGUI_BASE_SIZE,
 		)
+		# Use the authoritative App 90 label (for example "&6 PRIMARY AMMO"):
+		# it carries the underlined accelerator and the source wording, and it
+		# is short enough that every row keeps one uniform font size.
+		var source_label := vgui_source.localize(
+			str(vgui_source.control(source_path, source_control).get("labelText", "")),
+			"&%s %s" % [category[0], category[1]],
+		)
 		_vgui_button(
 			buy_list_panel,
 			"BuyCategory_%s" % category_id,
-			"%s  %s" % [category[0], category[1]],
+			source_label,
 			source_rect.position - VGUI_MENU_ORIGIN,
-			source_rect.size,
+			Vector2(BUY_ROW_WIDTH, source_rect.size.y),
 			func() -> void: _show_buy_category(category_id),
-			10 if str(category[1]).length() > 18 else 12,
+			12,
+			true,
 		)
 	_vgui_button(
 		buy_list_panel,
 		"BuyCancel",
-		"0  CANCEL",
+		vgui_source.localize("#Cstrike_Cancel", "&0 CANCEL"),
 		Vector2(0, 380),
-		Vector2(148, 20),
+		Vector2(BUY_ROW_WIDTH, 20),
 		func() -> void: set_buy_menu_visible(false),
+		12,
+		true,
 	)
 	var first := buy_list_panel.get_child(0) as Control if buy_list_panel.get_child_count() > 0 else null
 	if first != null:
@@ -1046,6 +1265,7 @@ func _source_buy_items(category_id: String) -> Array:
 		command = {
 			"glock": "glock18",
 			"mp5navy": "mp5",
+			"fn57": "fiveseven",
 			"hegrenade": "hegren",
 			"flashbang": "flash",
 			"smokegrenade": "sgren",
@@ -1093,6 +1313,14 @@ func _strip_accelerator(text: String) -> String:
 func show_buy_menu(team_id: int, money: int, context: Dictionary = {}) -> void:
 	_buy_team = clampi(team_id, 1, 2)
 	_buy_money = maxi(0, money)
+	# The buy menu's ACCOUNT line and the HUD account counter are the same
+	# value by definition in CS 1.6; opening the menu re-asserts the HUD digits
+	# so the two can never disagree in one frame.
+	money_label.text = "$%d" % _buy_money
+	_last_money = _buy_money
+	if is_instance_valid(_money_sign):
+		_money_sign.modulate = _classic_sprite_modulate(CLASSIC_ORANGE)
+	_set_digit_row(money_digits, str(_buy_money), CLASSIC_ORANGE)
 	_buy_context = context.duplicate(true)
 	_show_buy_categories()
 	buy_overlay.visible = true
@@ -1128,13 +1356,11 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	panel.clip_contents = true
 	panel.set_meta("app90_source", source_path)
 	panel.set_meta("app90_control", "ClientScoreBoard")
+	# CS 1.6's scoreboard is a translucent black VGUI panel with no bright
+	# frame around it.
 	panel.add_theme_stylebox_override(
 		"panel",
-		_panel_style(
-			vgui_source.scheme_color("ListBG", Color(0.0, 0.0, 0.0, 0.72)),
-			vgui_source.scheme_color("BorderBright", vgui_amber_dim),
-			0
-		),
+		_panel_style(Color(0.0, 0.0, 0.0, 0.74), Color(0.0, 0.0, 0.0, 0.0), 0),
 	)
 	scoreboard_canvas.add_child(panel)
 	var column := VBoxContainer.new()
@@ -1155,6 +1381,7 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_style_vgui_scrollbar(scroll)
 	column.add_child(scroll)
 	scoreboard_rows = VBoxContainer.new()
 	scoreboard_rows.name = "PlayerList"
@@ -1181,22 +1408,21 @@ func _scoreboard_row(values: Array, color: Color) -> HBoxContainer:
 	return row
 
 
-func _scoreboard_player_row(player: Dictionary) -> HBoxContainer:
+func _scoreboard_player_row(player: Dictionary, team_color := Color.WHITE) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.custom_minimum_size.y = 18
 	row.add_theme_constant_override("separation", 0)
 	var identity := HBoxContainer.new()
 	identity.custom_minimum_size = Vector2(302, 18)
 	identity.add_theme_constant_override("separation", 4)
-	var name_label := _vgui_text(str(player.get("name", "Player")), 11, vgui_amber)
+	# CS 1.6 draws every player's name (and row values) in the team color:
+	# pale blue for CTs, red for Terrorists, white for spectators.
+	var name_label := _vgui_text(str(player.get("name", "Player")), 11, team_color)
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.add_child(name_label)
-	if not bool(player.get("alive", true)):
-		identity.add_child(_scoreboard_status_icon("smallskull", "dead"))
-	if bool(player.get("vip", false)):
-		identity.add_child(_scoreboard_status_icon("smallvip", "vip"))
-	if bool(player.get("bomb", false)):
-		identity.add_child(_scoreboard_status_icon("smallc4", "bomb carrier"))
+	# CS 1.6's scoreboard rows carry no dead/VIP/bomb glyphs — dead players
+	# simply keep an unadorned row and the bomb carrier is never revealed.
+	# Only the voice speaker/muted icon is drawn beside the name.
 	if bool(player.get("voice_muted", false)):
 		identity.add_child(_scoreboard_voice_icon(true, 0))
 	elif bool(player.get("voice_active", false)):
@@ -1207,9 +1433,10 @@ func _scoreboard_player_row(player: Dictionary) -> HBoxContainer:
 	for value in [
 		player.get("score", 0),
 		player.get("deaths", 0),
-		player.get("latency", 0),
+		# CS 1.6 marks dead players by printing DEAD in the ping column.
+		"DEAD" if not bool(player.get("alive", true)) else player.get("latency", 0),
 	]:
-		var label := _vgui_text(str(value), 11, vgui_amber)
+		var label := _vgui_text(str(value), 11, team_color)
 		var widths := [66, 76, 68]
 		label.custom_minimum_size = Vector2(widths[label.get_index() if label.get_index() >= 0 else 0], 18)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1283,7 +1510,11 @@ func update_scoreboard(
 				team_players.append(player)
 		var section := _scoreboard_row(
 			[
-				"%s  —  %d players" % [team_entry[1], team_players.size()],
+				"%s  —  %d %s" % [
+					team_entry[1],
+					team_players.size(),
+					"player" if team_players.size() == 1 else "players",
+				],
 				str(team_entry[2]),
 				"",
 				"",
@@ -1293,7 +1524,7 @@ func update_scoreboard(
 		section.name = "Team%dSection" % team_id
 		scoreboard_rows.add_child(section)
 		for player in team_players:
-			var row := _scoreboard_player_row(player)
+			var row := _scoreboard_player_row(player, team_entry[3])
 			row.name = "Player_%s" % str(player.get("name", "Player")).validate_node_name()
 			scoreboard_rows.add_child(row)
 
@@ -1353,7 +1584,11 @@ func _build_pause_main_menu() -> void:
 	for index in entries.size():
 		var entry: Dictionary = entries[index]
 		var source_command := str(entry.get("command", ""))
-		var label: String = vgui_source.localize(str(entry.get("label", "")), source_command)
+		# GameUI title-cases every menu entry ("Resume Game", "Player List"),
+		# never the sentence case some localization strings carry.
+		var label: String = _title_case(
+			vgui_source.localize(str(entry.get("label", "")), source_command)
+		)
 		var command: String = str({
 			"ResumeGame": "resume",
 			"Disconnect": "disconnect",
@@ -1363,15 +1598,21 @@ func _build_pause_main_menu() -> void:
 			"OpenOptionsDialog": "options",
 			"Quit": "quit",
 		}.get(source_command, source_command))
-		_vgui_button(
+		var entry_button := _vgui_button(
 			pause_main_menu,
 			"GameMenu_%s" % command,
-			label.to_upper(),
+			label,
 			Vector2(0, 52 + index * 32),
 			Vector2(238, 26),
 			func() -> void: _activate_pause_command(command),
-			_source_font_size("Default", 12),
+			_source_font_size("MenuButton", 14),
 		)
+		# GameUI menu entries are title-case pale tan that brightens to white,
+		# unlike the amber ClientScheme rows used by gameplay dialogs.
+		entry_button.add_theme_color_override("font_color", GAMEUI_MENU_TEXT)
+		entry_button.add_theme_color_override("font_hover_color", GAMEUI_MENU_TEXT_BRIGHT)
+		entry_button.add_theme_color_override("font_focus_color", GAMEUI_MENU_TEXT_BRIGHT)
+		entry_button.add_theme_color_override("font_pressed_color", GAMEUI_MENU_TEXT_BRIGHT)
 	for child in pause_main_menu.get_children():
 		if child is Button:
 			var button := child as Button
@@ -1381,6 +1622,15 @@ func _build_pause_main_menu() -> void:
 			button.mouse_exited.connect(
 				func() -> void: art.texture = vgui_source.menu_texture(false)
 			)
+
+
+func _title_case(text: String) -> String:
+	var words := text.split(" ")
+	for index in words.size():
+		var word := str(words[index])
+		if word.length() > 0:
+			words[index] = word[0].to_upper() + word.substr(1)
+	return " ".join(words)
 
 
 func _activate_pause_command(command: String) -> void:
@@ -1416,13 +1666,11 @@ func _build_pause_options_menu() -> void:
 		Rect2(0, 0, 824, 736),
 	))
 	pause_options_menu.set_meta("app90_dialog_data", dialog_source)
+	# The in-game options dialog is Steam GameUI (TrackerScheme): dark olive
+	# grey-green panel with warm tan text, not the amber cstrike ClientScheme.
 	pause_options_menu.add_theme_stylebox_override(
 		"panel",
-		_panel_style(
-			vgui_source.scheme_color("WindowBG", Color(0.0, 0.0, 0.0, 0.92)),
-			vgui_source.scheme_color("BorderBright", vgui_amber_dim),
-			0
-		),
+		_panel_style(GAMEUI_PANEL, GAMEUI_PANEL_BORDER, 0),
 	)
 	pause_options_menu.visible = false
 	pause_canvas.add_child(pause_options_menu)
@@ -1436,7 +1684,7 @@ func _build_pause_options_menu() -> void:
 		Vector2(10, 0),
 		Vector2(480, 30),
 		_source_font_size("Title", 18),
-		vgui_amber,
+		GAMEUI_MENU_TEXT,
 	)
 	options_tab_bar = HBoxContainer.new()
 	options_tab_bar.name = "OptionsTabs"
@@ -1449,7 +1697,8 @@ func _build_pause_options_menu() -> void:
 	options_pages.position = Vector2(4, 62)
 	options_pages.size = Vector2(512, 346)
 	content.add_child(options_pages)
-	var tabs := ["MULTIPLAYER", "KEYBOARD", "MOUSE", "AUDIO", "VIDEO", "VOICE"]
+	# VGUI tab captions are mixed case ("Multiplayer"), never shouted caps.
+	var tabs := ["Multiplayer", "Keyboard", "Mouse", "Audio", "Video", "Voice"]
 	for tab_name in tabs:
 		var tab_key: String = str(tab_name).to_lower()
 		var button := _vgui_button(
@@ -1462,6 +1711,13 @@ func _build_pause_options_menu() -> void:
 			9,
 		)
 		button.custom_minimum_size = Vector2(78, 24)
+		button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		# GameUI tabs use the dialog's tan text scheme, not the amber
+		# cstrike client scheme.
+		button.add_theme_color_override("font_color", GAMEUI_MENU_TEXT_DIM)
+		button.add_theme_color_override("font_hover_color", GAMEUI_MENU_TEXT_BRIGHT)
+		button.add_theme_color_override("font_focus_color", GAMEUI_MENU_TEXT_BRIGHT)
+		button.add_theme_color_override("font_pressed_color", GAMEUI_MENU_TEXT_BRIGHT)
 		_build_source_options_page(tab_key)
 	var commit_source := CS16VGuiSource.CSTRIKE_RESOURCE + "OptionsSubMultiplayer.kv"
 	for button_spec in [
@@ -1490,9 +1746,37 @@ func _build_pause_options_menu() -> void:
 		button.set_meta("tab_position", int(data.get("tabPosition", 0)))
 		button.set_meta("default", int(data.get("default", 0)) != 0)
 		button.set_meta("command", source_name)
-	_vgui_button(content, "OptionsAccessibility", "ACCESSIBILITY…", Vector2(140, 384), Vector2(126, 20), _show_accessibility, 9)
+		_style_gameui_command_button(button)
+	var accessibility_button := _vgui_button(content, "OptionsAccessibility", "Accessibility…", Vector2(140, 384), Vector2(126, 20), _show_accessibility, 9)
+	_style_gameui_command_button(accessibility_button)
 	_build_accessibility_overlay()
 	_show_options_tab("multiplayer")
+
+
+func _style_gameui_command_button(button: Button) -> void:
+	# GoldSrc GameUI command buttons (OK/Cancel/Apply) are flat rectangular
+	# plates with a plain 1px border and centered tan text — never bare labels.
+	button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.add_theme_color_override("font_color", GAMEUI_MENU_TEXT)
+	button.add_theme_color_override("font_hover_color", GAMEUI_MENU_TEXT_BRIGHT)
+	button.add_theme_color_override("font_focus_color", GAMEUI_MENU_TEXT_BRIGHT)
+	button.add_theme_color_override("font_pressed_color", GAMEUI_MENU_TEXT_BRIGHT)
+	button.add_theme_stylebox_override(
+		"normal",
+		_panel_style(Color(0.34, 0.39, 0.30, 1.0), Color(0.20, 0.23, 0.18, 1.0), 0),
+	)
+	button.add_theme_stylebox_override(
+		"hover",
+		_panel_style(Color(0.40, 0.45, 0.36, 1.0), Color(0.62, 0.66, 0.56, 1.0), 0),
+	)
+	button.add_theme_stylebox_override(
+		"focus",
+		_panel_style(Color(0.38, 0.43, 0.34, 1.0), Color(0.62, 0.66, 0.56, 1.0), 0),
+	)
+	button.add_theme_stylebox_override(
+		"pressed",
+		_panel_style(Color(0.28, 0.32, 0.25, 1.0), Color(0.20, 0.23, 0.18, 1.0), 0),
+	)
 
 
 func _source_options_path(tab_key: String) -> String:
@@ -1528,6 +1812,15 @@ func _build_source_options_page(tab_key: String) -> void:
 			continue
 		var control_type := str(data.get("ControlName", "Panel"))
 		var rect := vgui_source.control_rect(source_path, source_name, Rect2())
+		# The source video page authors LowVideoDetail as a 44-tall two-line
+		# checkbox at y=152 while DetailTextures sits at y=184, inside the
+		# wrapped second line. Clear the two-line row and shift the
+		# brightness/gamma cluster down to keep every row separated.
+		if tab_key == "video":
+			if source_name == "DetailTextures":
+				rect.position.y = 200.0
+			elif rect.position.y >= 205.0 and rect.position.y <= 280.0:
+				rect.position.y += 24.0
 		var label_text := vgui_source.localize(
 			str(data.get("labelText", "")),
 			str(data.get("labelText", "")),
@@ -1538,7 +1831,7 @@ func _build_source_options_page(tab_key: String) -> void:
 				control = _vgui_text(
 					label_text,
 					_source_font_size("DefaultSmall", 12),
-					vgui_amber_dim if int(data.get("dulltext", 0)) != 0 else vgui_amber,
+					GAMEUI_MENU_TEXT_DIM if int(data.get("dulltext", 0)) != 0 else GAMEUI_MENU_TEXT,
 					"DefaultSmall" if int(data.get("dulltext", 0)) != 0 else "Default",
 				)
 			"Button":
@@ -1715,6 +2008,7 @@ func _build_source_key_list(rect: Rect2) -> ScrollContainer:
 	scroll.position = rect.position
 	scroll.size = rect.size
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_style_vgui_scrollbar(scroll)
 	scroll.set_meta("app90_source", CS16VGuiSource.BINDING_LIST)
 	var rows := VBoxContainer.new()
 	rows.name = "Bindings"
@@ -1757,14 +2051,14 @@ func _build_source_key_list(rect: Rect2) -> ScrollContainer:
 		var command := str(item.command)
 		var label := str(item.label)
 		var row_text := (
-			label.to_upper()
+			label
 			if bool(item.is_heading)
 			else "%-36s %s" % [label, str(defaults.get(command, ""))]
 		)
 		var row := _vgui_text(
 			row_text,
 			_source_font_size("DefaultSmall", 12),
-			vgui_blue if bool(item.is_heading) else vgui_amber,
+			vgui_blue if bool(item.is_heading) else GAMEUI_MENU_TEXT,
 			"DefaultSmall",
 		)
 		row.name = (
@@ -1786,16 +2080,16 @@ func _source_option_choices(source_name: String) -> Array[String]:
 	if "resolution" in lower:
 		return ["640 x 480", "800 x 600", "1024 x 768"]
 	if "aspect" in lower:
-		return ["NORMAL", "WIDESCREEN"]
+		return ["Normal", "Widescreen"]
 	if "renderer" in lower:
-		return ["OPENGL", "SOFTWARE"]
+		return ["OpenGL", "Software"]
 	if "quality" in lower:
-		return ["HIGH", "LOW"]
+		return ["High", "Low"]
 	if "crosshair" in lower and "color" in lower:
-		return ["GREEN", "RED", "BLUE", "YELLOW", "LIGHT BLUE"]
+		return ["Green", "Red", "Blue", "Yellow", "Light Blue"]
 	if "crosshair" in lower and "size" in lower:
-		return ["AUTO-SIZE", "SMALL", "MEDIUM", "LARGE"]
-	return ["DEFAULT"]
+		return ["Auto-Size", "Small", "Medium", "Large"]
+	return ["Default"]
 
 
 func _on_source_option_command(tab_key: String, command: String) -> void:
@@ -1898,6 +2192,26 @@ func _show_options_tab(tab_key: String) -> void:
 	_options_page_key = tab_key
 	for page in options_pages.get_children():
 		page.visible = page.name == "Page_%s" % tab_key
+	# GameUI raises/highlights the active tab: it reads as a lit plate joined
+	# to the page while the resting tabs stay flat dim text.
+	if is_instance_valid(options_tab_bar):
+		for tab_variant in options_tab_bar.get_children():
+			var tab := tab_variant as Button
+			if tab == null:
+				continue
+			var active := tab.name == "Tab_%s" % tab_key
+			tab.add_theme_stylebox_override(
+				"normal",
+				_panel_style(
+					Color(0.40, 0.45, 0.36, 1.0) if active else Color(0.0, 0.0, 0.0, 0.10),
+					Color(0.62, 0.66, 0.56, 1.0) if active else Color(0.30, 0.33, 0.27, 1.0),
+					0,
+				),
+			)
+			tab.add_theme_color_override(
+				"font_color",
+				GAMEUI_MENU_TEXT_BRIGHT if active else GAMEUI_MENU_TEXT_DIM,
+			)
 	_set_menu_state("options_%s" % tab_key)
 
 
@@ -1907,17 +2221,19 @@ func _build_accessibility_overlay() -> void:
 	accessibility_overlay.position = Vector2(110, 92)
 	accessibility_overlay.size = Vector2(420, 296)
 	accessibility_overlay.visible = false
-	accessibility_overlay.add_theme_stylebox_override("panel", _panel_style(Color(0.0, 0.0, 0.0, 0.94), vgui_blue, 0))
+	# Keep this non-parity extension visually inside the GameUI scheme: tan on
+	# olive, square borderless panel, mixed-case labels.
+	accessibility_overlay.add_theme_stylebox_override("panel", _panel_style(GAMEUI_PANEL, GAMEUI_PANEL_BORDER, 0))
 	pause_canvas.add_child(accessibility_overlay)
 	var page := VBoxContainer.new()
 	page.add_theme_constant_override("separation", 8)
 	accessibility_overlay.add_child(page)
-	page.add_child(_vgui_text("PROTOCOL 47 ACCESSIBILITY EXTENSION", 15, vgui_blue))
-	page.add_child(_vgui_text("These controls are additive and are not part of the CS 1.6 parity surface.", 10, vgui_amber_dim))
+	page.add_child(_vgui_text("Accessibility", 15, GAMEUI_MENU_TEXT))
+	page.add_child(_vgui_text("These controls are additive and are not part of the CS 1.6 parity surface.", 10, GAMEUI_MENU_TEXT_DIM))
 	var sensitivity_value := _vgui_text(
-		"CROSSHAIR SCALE  %.2f" % settings.crosshair_scale,
+		"Crosshair scale  %.2f" % settings.crosshair_scale,
 		11,
-		vgui_amber,
+		GAMEUI_MENU_TEXT,
 	)
 	var crosshair_size := HSlider.new()
 	crosshair_size.min_value = 0.75
@@ -1926,18 +2242,18 @@ func _build_accessibility_overlay() -> void:
 	crosshair_size.value = settings.crosshair_scale
 	_style_vgui_slider(crosshair_size)
 	crosshair_size.value_changed.connect(func(value: float) -> void:
-		sensitivity_value.text = "CROSSHAIR SCALE  %.2f" % value
+		sensitivity_value.text = "Crosshair scale  %.2f" % value
 		settings.update_accessibility(value, settings.high_contrast, settings.reduced_motion)
 	)
 	page.add_child(sensitivity_value)
 	page.add_child(crosshair_size)
-	var contrast := _vgui_check("HIGH-CONTRAST CROSSHAIR", settings.high_contrast)
+	var contrast := _vgui_check("High-contrast crosshair", settings.high_contrast)
 	contrast.toggled.connect(func(enabled: bool) -> void: settings.update_accessibility(settings.crosshair_scale, enabled, settings.reduced_motion))
 	page.add_child(contrast)
-	var reduced_motion := _vgui_check("REDUCED CAMERA MOTION", settings.reduced_motion)
+	var reduced_motion := _vgui_check("Reduced camera motion", settings.reduced_motion)
 	reduced_motion.toggled.connect(func(enabled: bool) -> void: settings.update_accessibility(settings.crosshair_scale, settings.high_contrast, enabled))
 	page.add_child(reduced_motion)
-	var back := _vgui_button(page, "AccessibilityBack", "BACK TO OPTIONS", Vector2.ZERO, Vector2(140, 24), _hide_accessibility, 11)
+	var back := _vgui_button(page, "AccessibilityBack", "Back to options", Vector2.ZERO, Vector2(140, 24), _hide_accessibility, 11)
 	back.custom_minimum_size = Vector2(140, 24)
 
 
@@ -1975,6 +2291,7 @@ func _vgui_frame(
 	frame_name: String,
 	source_path := "",
 	source_control := "",
+	shade_width := 172.0,
 ) -> Control:
 	var frame := Control.new()
 	frame.name = frame_name
@@ -1991,12 +2308,14 @@ func _vgui_frame(
 	frame.set_meta("app90_source", source_path)
 	frame.set_meta("app90_control", source_control)
 	parent.add_child(frame)
-	var shade := ColorRect.new()
-	shade.name = "FrameShade"
-	shade.position = Vector2(-8, 0)
-	shade.size = frame.size + Vector2(8, 0)
-	shade.color = vgui_source.scheme_color("Menu/BgColor", Color(0.0, 0.0, 0.0, 0.24))
-	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Classic VGUI menus sit on a compact near-black translucent panel behind
+	# the option column, not a full-height light backdrop. Steam-era VGUI
+	# panels have rounded corners and a visible scheme border (BorderBright).
+	var shade := _vgui_dialog_panel(
+		"FrameShade",
+		Vector2(-12, 12),
+		Vector2(shade_width, frame.size.y - 24.0),
+	)
 	frame.add_child(shade)
 	frame.move_child(shade, 0)
 	return frame
@@ -2028,7 +2347,9 @@ func _font_for_rule(font_name: String) -> SystemFont:
 	})
 	var font := SystemFont.new()
 	var requested_name := str(spec.get("name", "Verdana")).replace(" Bold", "")
-	font.font_names = PackedStringArray([requested_name, "Verdana", "Tahoma", "Arial"])
+	font.font_names = PackedStringArray([
+		requested_name, "Trebuchet MS", "Verdana", "Tahoma", "Arial",
+	])
 	font.font_weight = int(spec.get("weight", 400))
 	_vgui_fonts[font_name] = font
 	return font
@@ -2058,6 +2379,59 @@ func layout_for_viewport(viewport_size: Vector2) -> void:
 		canvas.position = offset
 		canvas.set_meta("reference_scale", scale_factor)
 		canvas.set_meta("reference_offset", offset)
+	_update_crosshair_scale()
+
+
+func _update_crosshair_scale() -> void:
+	# CS 1.6 draws the crosshair in physical pixels: hard-edged 1px arms at
+	# every resolution. Rebuild the four segments in physical-pixel units
+	# (converted through the canvas-items stretch factor) so they stay
+	# hairline-thin with hard ends instead of fattening or blurring.
+	if not is_instance_valid(crosshair):
+		return
+	for child in crosshair.get_children():
+		child.free()
+	var stretch := 1.0
+	var window := get_window()
+	var parent := crosshair.get_parent() as Control
+	if window != null and parent != null and parent.size.y > 0.0:
+		stretch = maxf(float(window.size.y) / parent.size.y, 0.001)
+	var user_scale: float = settings.crosshair_scale if settings != null else 1.0
+	var arm := maxf(1.0, roundf(9.0 * user_scale))
+	var gap := maxf(1.0, roundf(3.0 * user_scale)) + _crosshair_spread_px
+	var color := (
+		Color("#fff316")
+		if settings != null and settings.high_contrast
+		else Color(0.1, 1.0, 0.1, 0.78)
+	)
+	crosshair.scale = Vector2.ONE
+	# Pin the (zero-sized) control exactly to the parent's center via offsets;
+	# assigning `position` here would re-anchor it to the parent's top-left.
+	crosshair.offset_left = 0.0
+	crosshair.offset_top = 0.0
+	crosshair.offset_right = 0.0
+	crosshair.offset_bottom = 0.0
+	for rect: Rect2 in [
+		Rect2(-1.0, -gap - arm, 1.0, arm),
+		Rect2(-1.0, gap, 1.0, arm),
+		Rect2(-gap - arm, -1.0, arm, 1.0),
+		Rect2(gap, -1.0, arm, 1.0),
+	]:
+		var line := ColorRect.new()
+		line.position = rect.position / stretch
+		line.size = rect.size / stretch
+		line.color = color
+		line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		crosshair.add_child(line)
+
+
+func set_crosshair_spread(spread_px: int) -> void:
+	# Classic dynamic gap: movement/firing widens the arm gap in pixels.
+	var clamped := clampi(spread_px, 0, 24)
+	if clamped == _crosshair_spread_px:
+		return
+	_crosshair_spread_px = clamped
+	_update_crosshair_scale()
 
 
 func _vgui_label(
@@ -2069,8 +2443,9 @@ func _vgui_label(
 	font_size: int,
 	color: Color,
 	wrap := false,
+	font_rule := "Default",
 ) -> Label:
-	var label := _vgui_text(text, font_size, color)
+	var label := _vgui_text(text, font_size, color, font_rule)
 	label.name = label_name
 	label.position = position
 	label.size = size
@@ -2106,6 +2481,7 @@ func _vgui_button(
 	size: Vector2,
 	action: Callable,
 	font_size := 12,
+	_bordered := false,
 ) -> Button:
 	var button := Button.new()
 	button.name = button_name
@@ -2125,21 +2501,31 @@ func _vgui_button(
 	button.add_theme_color_override("font_hover_color", vgui_amber)
 	button.add_theme_color_override("font_focus_color", vgui_amber)
 	button.add_theme_color_override("font_pressed_color", vgui_amber)
+	# VGUI1 list rows (team/class/buy) are bare text on the dialog surface —
+	# no per-row plate and no amber outline; the armed row only gets a faint
+	# translucent highlight. GameUI rows behave the same way.
+	button.clip_contents = true
+	var row_border := Color(0.0, 0.0, 0.0, 0.0)
+	var row_fill := Color(0.0, 0.0, 0.0, 0.0)
 	button.add_theme_stylebox_override(
 		"normal",
-		_panel_style(Color(0.0, 0.0, 0.0, 0.18), Color(0.0, 0.0, 0.0, 0.0), 0),
+		_panel_style(row_fill, row_border, 0),
 	)
 	button.add_theme_stylebox_override(
 		"hover",
-		_panel_style(Color(1.0, 0.69, 0.0, 0.22), vgui_amber_dim, 0),
+		_panel_style(Color(1.0, 0.69, 0.0, 0.14), row_border, 0),
 	)
 	button.add_theme_stylebox_override(
 		"focus",
-		_panel_style(Color(1.0, 0.69, 0.0, 0.13), vgui_amber_dim, 0),
+		_panel_style(Color(1.0, 0.69, 0.0, 0.10), row_border, 0),
 	)
 	button.add_theme_stylebox_override(
 		"pressed",
-		_panel_style(Color(1.0, 0.69, 0.0, 0.28), vgui_amber, 0),
+		_panel_style(Color(1.0, 0.69, 0.0, 0.20), row_border, 0),
+	)
+	button.add_theme_stylebox_override(
+		"disabled",
+		_panel_style(row_fill, row_border * Color(1, 1, 1, 0.6), 0),
 	)
 	if accelerator_index >= 0 and accelerator_index < clean_text.length():
 		var accelerator := str(clean_text[accelerator_index])
@@ -2153,6 +2539,8 @@ func _vgui_button(
 		rich.bbcode_enabled = true
 		rich.fit_content = false
 		rich.scroll_active = false
+		rich.autowrap_mode = TextServer.AUTOWRAP_OFF
+		rich.clip_contents = true
 		rich.add_theme_font_override("normal_font", _font_for_rule("DefaultUnderline"))
 		rich.add_theme_font_size_override("normal_font_size", font_size)
 		rich.add_theme_color_override("default_color", vgui_amber_dim)
@@ -2196,6 +2584,38 @@ func _vgui_section(text: String) -> Label:
 	return section
 
 
+var _check_icons: Dictionary = {}
+
+
+func _vgui_check_icon(checked: bool) -> ImageTexture:
+	if _check_icons.has(checked):
+		return _check_icons[checked]
+	var size := 13
+	var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.0, 0.0, 0.0, 0.82))
+	for index in range(size):
+		image.set_pixel(index, 0, GAMEUI_MENU_TEXT_DIM)
+		image.set_pixel(index, size - 1, GAMEUI_MENU_TEXT_DIM)
+		image.set_pixel(0, index, GAMEUI_MENU_TEXT_DIM)
+		image.set_pixel(size - 1, index, GAMEUI_MENU_TEXT_DIM)
+	if checked:
+		# GameUI checkboxes draw a check GLYPH, not a filled inner square:
+		# short down-stroke into a long rising stroke, 2px thick.
+		for step in range(3):
+			for thickness in range(2):
+				var y := 6 + step + thickness
+				if y < size:
+					image.set_pixel(3 + step, y, GAMEUI_MENU_TEXT)
+		for step in range(6):
+			for thickness in range(2):
+				var y := 8 - step + thickness
+				if y >= 0 and y < size and 5 + step < size:
+					image.set_pixel(5 + step, y, GAMEUI_MENU_TEXT)
+	var texture := ImageTexture.create_from_image(image)
+	_check_icons[checked] = texture
+	return texture
+
+
 func _vgui_check(text: String, enabled: bool) -> CheckBox:
 	var check := CheckBox.new()
 	check.text = text
@@ -2203,31 +2623,70 @@ func _vgui_check(text: String, enabled: bool) -> CheckBox:
 	check.custom_minimum_size.y = 20
 	check.add_theme_font_override("font", _vgui_font)
 	check.add_theme_font_size_override("font_size", 11)
-	check.add_theme_color_override("font_color", vgui_amber)
-	check.add_theme_color_override("font_hover_color", vgui_amber)
-	check.add_theme_color_override("font_pressed_color", vgui_amber)
-	check.add_theme_color_override("font_focus_color", vgui_amber)
+	check.add_theme_color_override("font_color", GAMEUI_MENU_TEXT)
+	check.add_theme_color_override("font_hover_color", GAMEUI_MENU_TEXT_BRIGHT)
+	check.add_theme_color_override("font_pressed_color", GAMEUI_MENU_TEXT)
+	check.add_theme_color_override("font_focus_color", GAMEUI_MENU_TEXT_BRIGHT)
+	check.add_theme_icon_override("checked", _vgui_check_icon(true))
+	check.add_theme_icon_override("unchecked", _vgui_check_icon(false))
+	check.add_theme_icon_override("checked_disabled", _vgui_check_icon(true))
+	check.add_theme_icon_override("unchecked_disabled", _vgui_check_icon(false))
 	return check
+
+
+func _style_vgui_scrollbar(scroll: ScrollContainer) -> void:
+	# Square dark VGUI scrollbar instead of the rounded modern default.
+	var bar := scroll.get_v_scroll_bar()
+	if bar == null:
+		return
+	bar.custom_minimum_size.x = 9
+	bar.add_theme_stylebox_override(
+		"scroll",
+		_panel_style(Color(0.0, 0.0, 0.0, 0.55), Color(0.24, 0.24, 0.24, 1.0), 0),
+	)
+	for grabber_state in ["grabber", "grabber_highlight", "grabber_pressed"]:
+		bar.add_theme_stylebox_override(
+			grabber_state,
+			_panel_style(
+				vgui_amber_dim if grabber_state == "grabber" else vgui_amber,
+				Color(0.0, 0.0, 0.0, 0.0),
+				0,
+			),
+		)
 
 
 func _style_vgui_slider(slider: HSlider) -> void:
 	slider.custom_minimum_size.y = 15
-	slider.add_theme_icon_override("grabber", _solid_icon(vgui_amber_dim, Vector2i(9, 15)))
-	slider.add_theme_icon_override("grabber_highlight", _solid_icon(vgui_amber, Vector2i(9, 15)))
+	# GameUI sliders: recessed dark groove with a wide beveled tan tick knob.
+	slider.add_theme_icon_override("grabber", _solid_icon(GAMEUI_MENU_TEXT_DIM, Vector2i(9, 15)))
+	slider.add_theme_icon_override("grabber_highlight", _solid_icon(GAMEUI_MENU_TEXT, Vector2i(9, 15)))
 	slider.add_theme_stylebox_override(
 		"slider",
-		_panel_style(Color(0.12, 0.12, 0.12, 1.0), Color(0.31, 0.31, 0.31, 1.0), 0),
+		_panel_style(Color(0.14, 0.16, 0.12, 1.0), Color(0.09, 0.10, 0.08, 1.0), 0),
+	)
+	slider.add_theme_stylebox_override(
+		"grabber_area",
+		_panel_style(Color(0.20, 0.23, 0.17, 1.0), Color(0.0, 0.0, 0.0, 0.0), 0),
+	)
+	slider.add_theme_stylebox_override(
+		"grabber_area_highlight",
+		_panel_style(Color(0.24, 0.27, 0.20, 1.0), Color(0.0, 0.0, 0.0, 0.0), 0),
 	)
 
 
 func _style_vgui_option(option: OptionButton) -> void:
+	# GameUI combo boxes show plain mixed-case text in the dialog's tan
+	# scheme on a recessed dark field — not amber shouting caps.
 	option.custom_minimum_size.y = 22
 	option.add_theme_font_override("font", _vgui_font)
 	option.add_theme_font_size_override("font_size", 11)
-	option.add_theme_color_override("font_color", vgui_amber)
+	option.add_theme_color_override("font_color", GAMEUI_MENU_TEXT)
+	option.add_theme_color_override("font_hover_color", GAMEUI_MENU_TEXT_BRIGHT)
+	option.add_theme_color_override("font_focus_color", GAMEUI_MENU_TEXT_BRIGHT)
+	option.add_theme_color_override("font_pressed_color", GAMEUI_MENU_TEXT_BRIGHT)
 	option.add_theme_stylebox_override(
 		"normal",
-		_panel_style(Color(0.0, 0.0, 0.0, 0.72), vgui_amber_dim, 0),
+		_panel_style(Color(0.10, 0.11, 0.09, 0.92), Color(0.30, 0.33, 0.27, 1.0), 0),
 	)
 
 
@@ -2254,17 +2713,74 @@ func _panel_style(background: Color, border: Color, radius: int) -> StyleBoxFlat
 func _apply_accessibility() -> void:
 	if not is_instance_valid(crosshair):
 		return
-	crosshair.scale = Vector2.ONE * settings.crosshair_scale
-	crosshair.pivot_offset = crosshair.size * 0.5
-	var lines := crosshair.get_children()
-	for index in range(lines.size()):
-		var child := lines[index]
-		if child is ColorRect and index % 2 == 1:
+	_update_crosshair_scale()
+	for child in crosshair.get_children():
+		if child is ColorRect:
 			child.color = (
 				Color("#fff316")
 				if settings.high_contrast
-				else Color(0.1, 1.0, 0.1, 0.76)
+				else Color(0.1, 1.0, 0.1, 0.78)
 			)
+
+
+func _classic_radar_texture(texture: Texture2D) -> Texture2D:
+	# CS 1.6's radar (per the classic in-game reference): a translucent bright
+	# green DISC with thin quadrant cross lines and a darker rim. The center
+	# implicitly means "you"; blips are drawn live by the contact layer above.
+	var size := 128
+	if texture != null:
+		size = maxi(texture.get_width(), 8)
+	var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center := Vector2(size / 2.0, size / 2.0)
+	var radius := size / 2.0 - 1.0
+	var fill := Color(0.13, 0.72, 0.10, 0.55)
+	var grid := Color(0.07, 0.50, 0.06, 0.65)
+	var rim := Color(0.04, 0.30, 0.03, 0.85)
+	for y in range(size):
+		for x in range(size):
+			var point := Vector2(x + 0.5, y + 0.5)
+			var distance := point.distance_to(center)
+			if distance > radius:
+				continue
+			var color := fill
+			if distance > radius - 1.6:
+				color = rim
+			elif absf(point.x - center.x) < 0.9 or absf(point.y - center.y) < 0.9:
+				color = grid
+			image.set_pixel(x, y, color)
+	return ImageTexture.create_from_image(image)
+
+
+func _vgui_dialog_panel(panel_name: String, position: Vector2, size: Vector2) -> Panel:
+	# Shared chrome for classic dialog surfaces. VGUI1 panels are square-
+	# cornered translucent dark grey rectangles with a thin plain border —
+	# never rounded cards and never a glowing accent stroke.
+	var panel := Panel.new()
+	panel.name = panel_name
+	panel.position = position
+	panel.size = size
+	var style := _panel_style(
+		_dialog_panel_color(),
+		Color(0.36, 0.36, 0.36, 0.85),
+		0,
+	)
+	style.content_margin_left = 0.0
+	style.content_margin_right = 0.0
+	style.content_margin_top = 0.0
+	style.content_margin_bottom = 0.0
+	style.anti_aliasing = true
+	panel.add_theme_stylebox_override("panel", style)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.clip_contents = true
+	return panel
+
+
+func _dialog_panel_color() -> Color:
+	# CS 1.6's VGUI dialog surfaces are semi-transparent dark panels: the world
+	# clearly reads through them (roughly three-quarter opacity in-game).
+	var color := vgui_source.scheme_color("WindowBG", Color(0.0, 0.0, 0.0, 0.78))
+	color.a = 0.78
+	return color
 
 
 func _label(text: String, size: int, color: Color) -> Label:
@@ -2294,13 +2810,22 @@ func _metric(value: String, caption: String, color: Color) -> Label:
 	return value_label
 
 
-func update_health(health: int, armor: int) -> void:
+func update_health(health: int, armor: int, helmet := false) -> void:
 	health_label.text = str(health)
 	armor_label.text = str(armor)
 	var health_color := CLASSIC_RED if health <= 25 else CLASSIC_ORANGE
 	health_label.add_theme_color_override("font_color", health_color)
 	_set_digit_row(health_digits, health_label.text, health_color, 3)
 	_set_digit_row(armor_digits, armor_label.text, CLASSIC_ORANGE, 3)
+	# CS 1.6 shows the vest sprite for kevlar and the vest+helmet variant
+	# once a helmet is owned.
+	if helmet != _has_helmet and is_instance_valid(_armor_icon):
+		_has_helmet = helmet
+		var sprite_name := "suithelmet_full" if helmet else "suit_full"
+		_armor_icon.texture = load(
+			CLASSIC_HUD_ROOT.path_join("%s.png" % sprite_name)
+		) as Texture2D
+		_armor_icon.set_meta("classic_sprite", sprite_name)
 
 
 func update_ammo(clip: int, reserve: int, reloading: bool) -> void:
@@ -2315,6 +2840,51 @@ func update_ammo(clip: int, reserve: int, reloading: bool) -> void:
 func update_weapon(weapon_name: String, fire_mode: String) -> void:
 	_weapon_name = weapon_name
 	_fire_mode = fire_mode
+	if not is_instance_valid(_ammo_icon):
+		return
+	var sprite_name := str(AMMO_ICONS.get(weapon_name.to_upper(), ""))
+	if sprite_name.is_empty():
+		# Knife/C4-style items draw no caliber icon in CS 1.6.
+		_ammo_icon.visible = false
+		return
+	_ammo_icon.visible = true
+	if str(_ammo_icon.get_meta("classic_sprite", "")) != sprite_name:
+		_ammo_icon.texture = load(
+			CLASSIC_HUD_ROOT.path_join("%s.png" % sprite_name)
+		) as Texture2D
+		_ammo_icon.set_meta("classic_sprite", sprite_name)
+
+
+func set_buy_zone(active: bool) -> void:
+	# Mirrors CS 1.6's buyzone icon contract: shown only while the player
+	# stands in a buy zone during buy time (and never under a modal menu).
+	_in_buy_zone = active
+	_refresh_gameplay_visibility()
+
+
+func update_tactical_display(
+	observer_position: Vector3,
+	observer_yaw: float,
+	teammates: Array[Dictionary],
+	hostages: Array[Dictionary],
+) -> void:
+	radar_display.set_snapshot(observer_position, observer_yaw, teammates)
+	var cache_key := JSON.stringify(hostages)
+	if str(hostage_status_group.get_meta("cache_key", "")) == cache_key:
+		return
+	hostage_status_group.set_meta("cache_key", cache_key)
+	for child in hostage_status_group.get_children():
+		child.free()
+	for hostage: Dictionary in hostages:
+		var icon := _classic_sprite("hostage", CLASSIC_ORANGE)
+		icon.custom_minimum_size = Vector2(32, 32)
+		icon.size = Vector2(32, 32)
+		if bool(hostage.get("rescued", false)):
+			icon.modulate = CLASSIC_GREEN
+		elif not bool(hostage.get("alive", true)):
+			icon.modulate = CLASSIC_RED
+		icon.tooltip_text = str(hostage.get("id", "hostage"))
+		hostage_status_group.add_child(icon)
 
 
 func update_round(round_number: int, seconds_left: float, kills: int, target_count: int) -> void:
@@ -2352,12 +2922,66 @@ func update_match(
 	timer_label.add_theme_color_override("font_color", timer_color)
 	_set_digit_row(timer_digits, timer_label.text, timer_color)
 	objective_label.text = "CT %d  :  %d T" % [ct_score, terrorist_score]
+	# During freeze/buy phases every spawn point sits inside its buy zone, so
+	# the classic buyzone icon shows; callers with real buy-zone volumes can
+	# re-assert it with set_buy_zone() after any live-phase update.
+	if phase == "freeze" or phase == "buy":
+		set_buy_zone(true)
+	elif _in_buy_zone:
+		set_buy_zone(false)
 	money_label.text = "$%d" % money
-	_set_digit_row(money_digits, str(money), CLASSIC_GREEN)
+	# CS 1.6's account counter is always the one fixed HUD orange; on change it
+	# briefly brightens (more additive light) but never shifts hue.
+	var money_color := CLASSIC_ORANGE
+	if _last_money != -2147483648 and money != _last_money:
+		money_color = CLASSIC_ORANGE_BRIGHT
+		_money_flash_generation += 1
+		var generation := _money_flash_generation
+		get_tree().create_timer(0.9).timeout.connect(func() -> void:
+			if generation != _money_flash_generation:
+				return
+			if not is_instance_valid(money_digits) or not is_instance_valid(_money_sign):
+				return
+			_set_digit_row(money_digits, money_label.text.trim_prefix("$"), CLASSIC_ORANGE)
+			_money_sign.modulate = _classic_sprite_modulate(CLASSIC_ORANGE)
+		)
+	_last_money = money
+	if is_instance_valid(_money_sign):
+		_money_sign.modulate = _classic_sprite_modulate(money_color)
+	_set_digit_row(money_digits, str(money), money_color)
 
 
 func update_objective(text: String) -> void:
+	# CS 1.6 never keeps a persistent objective string on the HUD; surface
+	# objective changes as a transient round-start style message instead.
+	if text == _objective_text:
+		return
+	_objective_text = text
+	# The standing mission statement is never printed by CS 1.6's HUD —
+	# only situational objective updates appear, and only briefly.
+	if text == "ELIMINATE OR PLANT":
+		text = ""
 	status_label.text = text
+	_objective_generation += 1
+	if text.is_empty():
+		status_label.modulate.a = 0.0
+		return
+	status_label.modulate.a = 1.0
+	var generation := _objective_generation
+	get_tree().create_timer(4.0).timeout.connect(func() -> void:
+		if generation != _objective_generation or not is_instance_valid(status_label):
+			return
+		var tween := create_tween()
+		tween.tween_property(status_label, "modulate:a", 0.0, 0.4)
+	)
+
+
+func update_spectate_target(target_name: String) -> void:
+	if not is_instance_valid(spectate_label):
+		return
+	spectate_label.text = (
+		"" if target_name.is_empty() else "Spectating: %s" % target_name
+	)
 
 
 func show_hitmarker(headshot: bool) -> void:
@@ -2369,6 +2993,132 @@ func show_damage() -> void:
 	damage_flash.color.a = 0.24
 	var tween := create_tween()
 	tween.tween_property(damage_flash, "color:a", 0.0, 0.26)
+
+
+var _radio_menu_box: VBoxContainer
+var _radio_line_label: Label
+var _radio_line_tween: Tween
+
+
+func show_radio_menu(title: String, items: Array[String]) -> void:
+	hide_radio_menu()
+	_radio_menu_box = VBoxContainer.new()
+	_radio_menu_box.name = "ClassicRadioMenu"
+	_radio_menu_box.position = Vector2(18, 210)
+	_radio_menu_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var root := get_node_or_null("HUDRoot")
+	if root == null:
+		root = self
+	root.add_child(_radio_menu_box)
+	var rows: Array[String] = [title]
+	for index in range(items.size()):
+		rows.append("%d. %s" % [index + 1, items[index]])
+	rows.append("0. Exit")
+	for row_index in range(rows.size()):
+		var label := Label.new()
+		label.text = rows[row_index]
+		if _vgui_font != null:
+			label.add_theme_font_override("font", _vgui_font)
+		label.add_theme_font_size_override("font_size", 14)
+		label.add_theme_color_override(
+			"font_color",
+			CLASSIC_ORANGE_BRIGHT if row_index == 0 else CLASSIC_ORANGE,
+		)
+		label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+		label.add_theme_constant_override("shadow_offset_x", 1)
+		label.add_theme_constant_override("shadow_offset_y", 1)
+		_radio_menu_box.add_child(label)
+
+
+func hide_radio_menu() -> void:
+	if is_instance_valid(_radio_menu_box):
+		_radio_menu_box.queue_free()
+	_radio_menu_box = null
+
+
+func show_radio_line(text: String) -> void:
+	if not is_instance_valid(_radio_line_label):
+		_radio_line_label = Label.new()
+		_radio_line_label.name = "ClassicRadioLine"
+		_radio_line_label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+		_radio_line_label.position = Vector2(18, -140)
+		if _vgui_font != null:
+			_radio_line_label.add_theme_font_override("font", _vgui_font)
+		_radio_line_label.add_theme_font_size_override("font_size", 14)
+		_radio_line_label.add_theme_color_override("font_color", CLASSIC_ORANGE)
+		_radio_line_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+		_radio_line_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var root := get_node_or_null("HUDRoot")
+		if root == null:
+			root = self
+		root.add_child(_radio_line_label)
+	_radio_line_label.text = text
+	_radio_line_label.modulate.a = 1.0
+	if _radio_line_tween != null and _radio_line_tween.is_valid():
+		_radio_line_tween.kill()
+	_radio_line_tween = create_tween()
+	_radio_line_tween.tween_interval(4.0)
+	_radio_line_tween.tween_property(_radio_line_label, "modulate:a", 0.0, 0.8)
+
+
+const KILL_FEED_LIMIT := 5
+const KILL_FEED_SECONDS := 6.0
+const KILL_FEED_CT_HEX := "9bbdff"
+const KILL_FEED_T_HEX := "ff5040"
+const KILL_FEED_NEUTRAL_HEX := "d8d8d8"
+
+
+func _kill_feed_team_hex(team: String) -> String:
+	match team:
+		Combatant.TEAM_COUNTER_TERRORIST:
+			return KILL_FEED_CT_HEX
+		Combatant.TEAM_TERRORIST:
+			return KILL_FEED_T_HEX
+	return KILL_FEED_NEUTRAL_HEX
+
+
+func add_kill_notice(
+	killer: String,
+	killer_team: String,
+	weapon: String,
+	victim: String,
+	victim_team: String,
+	headshot := false,
+) -> void:
+	if not is_instance_valid(kill_feed_box):
+		return
+	var row := RichTextLabel.new()
+	row.bbcode_enabled = true
+	row.fit_content = true
+	row.scroll_active = false
+	row.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.size_flags_horizontal = Control.SIZE_SHRINK_END
+	if _vgui_font != null:
+		row.add_theme_font_override("normal_font", _vgui_font)
+	row.add_theme_font_size_override("normal_font_size", 14)
+	if killer.is_empty():
+		row.text = "[color=#%s]%s[/color] [color=#%s]died[/color]" % [
+			_kill_feed_team_hex(victim_team), victim, KILL_FEED_NEUTRAL_HEX,
+		]
+	else:
+		row.text = "[color=#%s]%s[/color] [color=#ffa000](%s%s)[/color] [color=#%s]%s[/color]" % [
+			_kill_feed_team_hex(killer_team),
+			killer,
+			weapon if not weapon.is_empty() else "?",
+			" hs" if headshot else "",
+			_kill_feed_team_hex(victim_team),
+			victim,
+		]
+	kill_feed_box.add_child(row)
+	while kill_feed_box.get_child_count() > KILL_FEED_LIMIT:
+		var oldest := kill_feed_box.get_child(0)
+		kill_feed_box.remove_child(oldest)
+		oldest.free()
+	var tween := row.create_tween()
+	tween.tween_interval(KILL_FEED_SECONDS)
+	tween.tween_property(row, "modulate:a", 0.0, 0.8)
+	tween.tween_callback(row.queue_free)
 
 
 func show_banner(text: String, color: Color, duration := 1.7) -> void:
@@ -2424,6 +3174,8 @@ func _refresh_gameplay_visibility() -> void:
 	for control in _gameplay_controls:
 		if is_instance_valid(control):
 			control.visible = not modal_visible
+	if is_instance_valid(_buyzone_icon):
+		_buyzone_icon.visible = _in_buy_zone and not modal_visible
 
 
 func current_input_contract() -> Dictionary:

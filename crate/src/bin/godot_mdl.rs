@@ -1,5 +1,7 @@
 use cs16_demo_parser::mdl::{
-    parse_mdl, parse_mdl_animated, parse_mdl_attached, MdlAnim, ParsedMdl,
+    external_sequence_group_names, parse_mdl, parse_mdl_animated_family_with_sequence_groups,
+    parse_mdl_animated_with_sequence_groups, parse_mdl_attached, parse_mdl_body_variants, MdlAnim,
+    ParsedMdl,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -14,6 +16,7 @@ struct ExportGroup {
     vert_start: u32,
     vert_count: u32,
     texture: Option<String>,
+    skins: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -40,6 +43,14 @@ struct AnimationExport {
     blend_start: [f32; 2],
     blend_end: [f32; 2],
     file: String,
+}
+
+#[derive(Serialize)]
+struct BodyVariantManifest {
+    format: &'static str,
+    version: u32,
+    source_model: String,
+    variants: Vec<String>,
 }
 
 fn safe_name(name: &str) -> String {
@@ -89,7 +100,9 @@ fn usage(program: &str) -> String {
     format!(
         "Usage:\n\
          {program} <model.mdl> <output-directory>\n\
+         {program} --body-variants <gibs.mdl> <output-directory>\n\
          {program} --animated <player.mdl> <output-directory>\n\
+         {program} --animated-family <family> <player.mdl> <output-directory>\n\
          {program} --attached <player.mdl> <weapon.mdl> <output-directory>"
     )
 }
@@ -134,11 +147,39 @@ fn export_model(
         } else {
             None
         };
+        let mut skins = Vec::with_capacity(group.skin_textures.len());
+        for (family, skin) in group.skin_textures.iter().enumerate() {
+            if skin.pix_offset < 0 || skin.width == 0 || skin.height == 0 {
+                continue;
+            }
+            let key = (skin.pix_offset, skin.width, skin.height);
+            let relative = if let Some(existing) = texture_files.get(&key) {
+                existing.clone()
+            } else {
+                let filename = format!("{index:03}_skin{family}_{}.tga", safe_name(&skin.tex_name));
+                let offset = skin.pix_offset as usize;
+                let count = skin.width as usize * skin.height as usize * 4;
+                let pixels = parsed.pixels.get(offset..offset + count).ok_or_else(|| {
+                    format!("skin texture {} points outside pixel buffer", skin.tex_name)
+                })?;
+                write_tga(
+                    &texture_path.join(&filename),
+                    skin.width,
+                    skin.height,
+                    pixels,
+                )?;
+                let relative = format!("textures/{filename}");
+                texture_files.insert(key, relative.clone());
+                relative
+            };
+            skins.push(relative);
+        }
         groups.push(ExportGroup {
             name: group.tex_name.clone(),
             vert_start: group.vert_start,
             vert_count: group.vert_count,
             texture,
+            skins,
         });
     }
 
@@ -202,6 +243,26 @@ fn read_model(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))
 }
 
+fn read_external_sequence_groups(model_path: &Path, model: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let model_directory = model_path.parent().unwrap_or_else(|| Path::new("."));
+    external_sequence_group_names(model)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, authored_name)| {
+            // GoldSrc model paths are authored with Windows separators. Studio
+            // sequence groups are resolved beside the owning model, regardless
+            // of the embedded "models\\" prefix.
+            let normalized_name = authored_name.replace('\\', "/");
+            let filename = normalized_name
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| format!("sequence group {} has an invalid filename", index + 1))?;
+            read_model(&model_directory.join(filename))
+        })
+        .collect()
+}
+
 fn run() -> Result<(), String> {
     let arguments: Vec<String> = env::args().collect();
     let program = arguments.first().map(String::as_str).unwrap_or("godot_mdl");
@@ -215,7 +276,64 @@ fn run() -> Result<(), String> {
         [_, mode, model, output] if mode == "--animated" => {
             let model_path = PathBuf::from(model);
             let bytes = read_model(&model_path)?;
-            let (parsed, animations) = parse_mdl_animated(&bytes)?;
+            let sequence_groups = read_external_sequence_groups(&model_path, &bytes)?;
+            let sequence_group_slices: Vec<&[u8]> = sequence_groups
+                .iter()
+                .map(|group| group.as_slice())
+                .collect();
+            let (parsed, animations) =
+                parse_mdl_animated_with_sequence_groups(&bytes, &sequence_group_slices)?;
+            export_model(&parsed, &animations, &model_path, Path::new(output))
+        }
+        [_, mode, model, output] if mode == "--body-variants" => {
+            let model_path = PathBuf::from(model);
+            let bytes = read_model(&model_path)?;
+            let variants = parse_mdl_body_variants(&bytes)?;
+            let output_path = Path::new(output);
+            let mut variant_paths = Vec::with_capacity(variants.len());
+            for (index, parsed) in variants.iter().enumerate() {
+                let relative = format!("variants/{index:03}/model.json");
+                export_model(
+                    parsed,
+                    &[],
+                    &model_path,
+                    &output_path.join(format!("variants/{index:03}")),
+                )?;
+                variant_paths.push(relative);
+            }
+            let manifest = BodyVariantManifest {
+                format: "protocol47-mdl-body-variants",
+                version: 1,
+                source_model: model_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(model)
+                    .to_string(),
+                variants: variant_paths,
+            };
+            let json = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
+            fs::write(output_path.join("variants.json"), json)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "Exported {} authored body variants for {}",
+                variants.len(),
+                model_path.display()
+            );
+            Ok(())
+        }
+        [_, mode, family, model, output] if mode == "--animated-family" => {
+            let model_path = PathBuf::from(model);
+            let bytes = read_model(&model_path)?;
+            let sequence_groups = read_external_sequence_groups(&model_path, &bytes)?;
+            let sequence_group_slices: Vec<&[u8]> = sequence_groups
+                .iter()
+                .map(|group| group.as_slice())
+                .collect();
+            let (parsed, animations) = parse_mdl_animated_family_with_sequence_groups(
+                &bytes,
+                &sequence_group_slices,
+                family,
+            )?;
             export_model(&parsed, &animations, &model_path, Path::new(output))
         }
         [_, mode, player, weapon, output] if mode == "--attached" => {

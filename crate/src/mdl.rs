@@ -81,8 +81,18 @@ pub struct MdlGroup {
     pub width: u32,
     pub height: u32,
     pub pix_offset: i64,
+    /// One texture per authored skin family, in studiohdr_t skin order.
+    pub skin_textures: Vec<MdlTexture>,
     pub vert_start: u32,
     pub vert_count: u32,
+}
+
+#[derive(Clone)]
+pub struct MdlTexture {
+    pub tex_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub pix_offset: i64,
 }
 
 pub struct ParsedMdl {
@@ -157,16 +167,82 @@ fn anim_value(d: &[u8], base: usize, frame: usize) -> f32 {
     }
 }
 
-/// Bone matrices for `frame` and authored blend of `seq` (seqgroup 0 only).
-fn anim_pose_matrices(
-    d: &[u8],
-    numbones: usize,
-    boneindex: usize,
+/// Names of the external sequence-group files in GoldSrc group-index order.
+///
+/// Group zero is stored in the main IDST model and is intentionally omitted,
+/// so the first returned name corresponds to sequence group one.
+pub fn external_sequence_group_names(d: &[u8]) -> Result<Vec<String>, String> {
+    if d.len() < 244 || &d[0..4] != b"IDST" {
+        return Err("not a studio model".into());
+    }
+    if i32_at(d, 4) != 10 {
+        return Err(format!("unsupported mdl version {}", i32_at(d, 4)));
+    }
+    let num_groups = i32_at(d, 172);
+    let group_index = i32_at(d, 176);
+    if num_groups < 1 || num_groups > 64 || group_index < 0 {
+        return Err("implausible sequence group table".into());
+    }
+    let num_groups = num_groups as usize;
+    let group_index = group_index as usize;
+    let table_size = num_groups
+        .checked_mul(104)
+        .ok_or_else(|| "sequence group table overflow".to_string())?;
+    if group_index
+        .checked_add(table_size)
+        .filter(|end| *end <= d.len())
+        .is_none()
+    {
+        return Err("sequence group table out of range".into());
+    }
+
+    let mut names = Vec::with_capacity(num_groups.saturating_sub(1));
+    for group in 1..num_groups {
+        // mstudioseqgroup_t: label[32], name[64], cache pointer, data.
+        let offset = group_index + group * 104 + 32;
+        let raw = &d[offset..offset + 64];
+        let end = raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len());
+        let name = String::from_utf8_lossy(&raw[..end]).to_string();
+        if name.is_empty() {
+            return Err(format!("sequence group {group} has no filename"));
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn validate_external_sequence_group(d: &[u8], group: usize) -> Result<(), String> {
+    if d.len() < 76 || &d[0..4] != b"IDSQ" {
+        return Err(format!("sequence group {group} is not an IDSQ model"));
+    }
+    if i32_at(d, 4) != 10 {
+        return Err(format!(
+            "sequence group {group} has unsupported version {}",
+            i32_at(d, 4)
+        ));
+    }
+    let authored_length = i32_at(d, 72);
+    if authored_length < 76 || authored_length as usize > d.len() {
+        return Err(format!(
+            "sequence group {group} has invalid authored length {authored_length}"
+        ));
+    }
+    Ok(())
+}
+
+/// Bone matrices for `frame` and authored blend of `seq`.
+///
+/// `external_groups[0]` is GoldSrc sequence group one, matching the order
+/// returned by [`external_sequence_group_names`]. Group zero continues to
+/// read animation data from the main IDST model.
+/// Resolve a sequence's animation data source, mstudioanim_t table offset,
+/// and blend count. `external_groups[0]` is GoldSrc sequence group one.
+fn sequence_anim_source<'a>(
+    d: &'a [u8],
+    external_groups: &[&'a [u8]],
     seqindex: usize,
     seq: usize,
-    frame: usize,
-    blend: usize,
-) -> Result<Vec<Mat34>, String> {
+) -> Result<(&'a [u8], usize, usize), String> {
     let so = seqindex + seq * 176;
     if so + 176 > d.len() {
         return Err("seqdesc out of range".into());
@@ -174,9 +250,63 @@ fn anim_pose_matrices(
     let seqgroup = i32_at(d, so + 156);
     let animindex = i32_at(d, so + 124) as usize;
     let numblends = i32_at(d, so + 120).max(1) as usize;
-    if seqgroup != 0 {
-        return Err("external seqgroup".into());
+    let anim_data = if seqgroup == 0 {
+        d
+    } else if seqgroup > 0 {
+        let group_index = seqgroup as usize;
+        let group = external_groups
+            .get(group_index - 1)
+            .ok_or_else(|| format!("external sequence group {group_index} is unavailable"))?;
+        validate_external_sequence_group(group, group_index)?;
+        *group
+    } else {
+        return Err(format!("invalid sequence group {seqgroup}"));
+    };
+    Ok((anim_data, animindex, numblends))
+}
+
+/// One bone's authored local transform for a sequence sample.
+///
+/// Each authored blend owns a complete numbones-sized mstudioanim_t table.
+fn bone_local_pose_matrix(
+    d: &[u8],
+    anim_data: &[u8],
+    boneindex: usize,
+    numbones: usize,
+    b: usize,
+    animindex: usize,
+    blend: usize,
+    frame: usize,
+) -> Mat34 {
+    let bo = boneindex + b * 112;
+    let vals: Vec<f32> = (0..6).map(|i| f32_at(d, bo + 64 + i * 4)).collect();
+    let scales: Vec<f32> = (0..6).map(|i| f32_at(d, bo + 88 + i * 4)).collect();
+    let ao = animindex + (blend * numbones + b) * 12;
+    let mut dof = [0f32; 6];
+    for j in 0..6 {
+        dof[j] = vals[j];
+        if ao + 12 <= anim_data.len() {
+            let off = u16::from_le_bytes(anim_data[ao + j * 2..ao + j * 2 + 2].try_into().unwrap())
+                as usize;
+            if off != 0 {
+                dof[j] += anim_value(anim_data, ao + off, frame) * scales[j];
+            }
+        }
     }
+    bone_local_matrix([dof[0], dof[1], dof[2]], [dof[3], dof[4], dof[5]])
+}
+
+fn anim_pose_matrices(
+    d: &[u8],
+    external_groups: &[&[u8]],
+    numbones: usize,
+    boneindex: usize,
+    seqindex: usize,
+    seq: usize,
+    frame: usize,
+    blend: usize,
+) -> Result<Vec<Mat34>, String> {
+    let (anim_data, animindex, numblends) = sequence_anim_source(d, external_groups, seqindex, seq)?;
     if blend >= numblends {
         return Err(format!(
             "blend {blend} outside sequence blend count {numblends}"
@@ -187,25 +317,9 @@ fn anim_pose_matrices(
     for b in 0..numbones {
         let bo = boneindex + b * 112;
         let parent = i32_at(d, bo + 32);
-        let vals: Vec<f32> = (0..6).map(|i| f32_at(d, bo + 64 + i * 4)).collect();
-        let scales: Vec<f32> = (0..6).map(|i| f32_at(d, bo + 88 + i * 4)).collect();
-
-        // Each authored blend owns a complete numbones-sized mstudioanim_t
-        // table. The previous importer always read the first table, which
-        // locked nine-way player aim sequences to their -90 degree endpoint.
-        let ao = animindex + (blend * numbones + b) * 12;
-        let mut dof = [0f32; 6];
-        for j in 0..6 {
-            dof[j] = vals[j];
-            if ao + 12 <= d.len() {
-                let off =
-                    u16::from_le_bytes(d[ao + j * 2..ao + j * 2 + 2].try_into().unwrap()) as usize;
-                if off != 0 {
-                    dof[j] += anim_value(d, ao + off, frame) * scales[j];
-                }
-            }
-        }
-        let local = bone_local_matrix([dof[0], dof[1], dof[2]], [dof[3], dof[4], dof[5]]);
+        let local = bone_local_pose_matrix(
+            d, anim_data, boneindex, numbones, b, animindex, blend, frame,
+        );
         let world = if parent >= 0 && (parent as usize) < bone_mats.len() {
             mat_mul(&bone_mats[parent as usize], &local)
         } else {
@@ -214,6 +328,298 @@ fn anim_pose_matrices(
         bone_mats.push(world);
     }
     Ok(bone_mats)
+}
+
+/// First bone that belongs to the upper-body layer. GoldSrc's player renderer
+/// (StudioProcessGait) copies the gait sequence into every bone BEFORE
+/// "Bip01 Spine" and keeps the aim/shoot sequence from the spine upward.
+fn spine_bone_boundary(d: &[u8]) -> Option<usize> {
+    bone_names(d).iter().position(|name| name == "Bip01 Spine")
+}
+
+/// GoldSrc third-person player pose: legs and pelvis follow the gait
+/// sequence while the spine, arms, and head follow the aim/shoot sequence.
+#[allow(clippy::too_many_arguments)]
+fn composite_pose_matrices(
+    d: &[u8],
+    external_groups: &[&[u8]],
+    numbones: usize,
+    boneindex: usize,
+    seqindex: usize,
+    gait_seq: usize,
+    gait_frame: usize,
+    aim_seq: usize,
+    aim_frame: usize,
+    aim_blend: usize,
+) -> Result<Vec<Mat34>, String> {
+    let Some(boundary) = spine_bone_boundary(d) else {
+        return anim_pose_matrices(
+            d,
+            external_groups,
+            numbones,
+            boneindex,
+            seqindex,
+            aim_seq,
+            aim_frame,
+            aim_blend,
+        );
+    };
+    let (gait_data, gait_animindex, _) =
+        sequence_anim_source(d, external_groups, seqindex, gait_seq)?;
+    let (aim_data, aim_animindex, aim_blends) =
+        sequence_anim_source(d, external_groups, seqindex, aim_seq)?;
+    if aim_blend >= aim_blends {
+        return Err(format!(
+            "blend {aim_blend} outside sequence blend count {aim_blends}"
+        ));
+    }
+    let mut bone_mats: Vec<Mat34> = Vec::with_capacity(numbones);
+    for b in 0..numbones {
+        let bo = boneindex + b * 112;
+        let parent = i32_at(d, bo + 32);
+        let local = if b < boundary {
+            bone_local_pose_matrix(
+                d,
+                gait_data,
+                boneindex,
+                numbones,
+                b,
+                gait_animindex,
+                0,
+                gait_frame,
+            )
+        } else {
+            bone_local_pose_matrix(
+                d,
+                aim_data,
+                boneindex,
+                numbones,
+                b,
+                aim_animindex,
+                aim_blend,
+                aim_frame,
+            )
+        };
+        let world = if parent >= 0 && (parent as usize) < bone_mats.len() {
+            mat_mul(&bone_mats[parent as usize], &local)
+        } else {
+            local
+        };
+        bone_mats.push(world);
+    }
+    Ok(bone_mats)
+}
+
+/// One baked output pose: either a raw authored sequence sample or the
+/// gait-composited player pose.
+enum PoseSample {
+    Full {
+        seq: usize,
+        frame: usize,
+        blend: usize,
+    },
+    Composite {
+        gait_seq: usize,
+        gait_frame: usize,
+        aim_seq: usize,
+        aim_frame: usize,
+        aim_blend: usize,
+    },
+}
+
+/// Baked animation plan entry shared between the player-body exporter and
+/// the attached p_ weapon exporter so both walk the exact same matrices.
+struct PosePlanEntry {
+    name: &'static str,
+    source_label: String,
+    sequence_index: u32,
+    fps: f32,
+    frames: u32,
+    looping: bool,
+    blends: u32,
+    blend_type: [i32; 2],
+    blend_start: [f32; 2],
+    blend_end: [f32; 2],
+    /// Blend-major, then frame order — matching the export data layout.
+    poses: Vec<PoseSample>,
+}
+
+/// Source-faithful third-person pose plan for one weapon activity family.
+///
+/// Locomotion states keep the gait sequence's timing with the family's
+/// level (center-blend) aim pose layered on the upper body; shoot/reload
+/// states keep the aim layer's authored timing and pitch blends over a
+/// stationary gait frame. Returns None when the model has no aim layers
+/// (hostages, misc models) so callers keep the plain full-sequence bake.
+fn player_pose_plan(d: &[u8], family: &str) -> Option<Vec<PosePlanEntry>> {
+    let ref_aim_label = format!("ref_aim_{family}");
+    let crouch_aim_label = format!("crouch_aim_{family}");
+    let ref_aim = find_sequence(d, &[ref_aim_label.as_str()])?;
+    let crouch_aim = find_sequence(d, &[crouch_aim_label.as_str()]).unwrap_or(ref_aim.clone());
+    spine_bone_boundary(d)?;
+
+    let gait_idle = find_sequence(d, &["idle1", "idle"])?;
+    let gait_run = find_sequence(d, &["run", "walk"])?;
+    let gait_crouch_idle = find_sequence(d, &["crouch_idle", "crouchidle"])?;
+    let gait_crouch_run = find_sequence(d, &["crouchrun", "crouch_run"])?;
+
+    let mut plan = Vec::new();
+    let center_blend = |aim: &SequenceInfo| (aim.blends - 1) / 2;
+
+    // Gait-timed locomotion: legs cycle through the gait tape, upper body
+    // holds the family's level aim pose (aim frame zero, center pitch).
+    let locomotion: [(&'static str, &SequenceInfo, &SequenceInfo); 4] = [
+        ("idle", &gait_idle, &ref_aim),
+        ("run", &gait_run, &ref_aim),
+        ("crouchidle", &gait_crouch_idle, &crouch_aim),
+        ("crouchrun", &gait_crouch_run, &crouch_aim),
+    ];
+    for (name, gait, aim) in locomotion {
+        let poses = (0..gait.frames)
+            .map(|frame| PoseSample::Composite {
+                gait_seq: gait.index,
+                gait_frame: frame,
+                aim_seq: aim.index,
+                aim_frame: 0,
+                aim_blend: center_blend(aim),
+            })
+            .collect();
+        plan.push(PosePlanEntry {
+            name,
+            source_label: gait.label.clone(),
+            sequence_index: gait.index as u32,
+            fps: gait.fps,
+            frames: gait.frames as u32,
+            looping: gait.looping,
+            blends: 1,
+            blend_type: [0, 0],
+            blend_start: [0.0, 0.0],
+            blend_end: [1.0, 0.0],
+            poses,
+        });
+    }
+
+    // Aim-timed actions: the family's authored shoot/reload tape (including
+    // its nine-way pitch blends) plays over a stationary gait frame.
+    let crouch_shoot = format!("crouch_shoot_{family}");
+    let standing_shoot = format!("ref_shoot_{family}");
+    let crouch_reload = format!("crouch_reload_{family}");
+    let standing_reload = format!("ref_reload_{family}");
+    let actions: [(&'static str, Vec<&str>, &SequenceInfo); 4] = [
+        ("crouchshoot", vec![crouch_shoot.as_str()], &gait_crouch_idle),
+        ("shoot", vec![standing_shoot.as_str()], &gait_idle),
+        (
+            "crouchreload",
+            vec![crouch_reload.as_str()],
+            &gait_crouch_idle,
+        ),
+        ("reload", vec![standing_reload.as_str()], &gait_idle),
+    ];
+    for (name, labels, gait) in actions {
+        let Some(aim) = find_sequence(d, &labels) else {
+            continue;
+        };
+        let mut poses = Vec::with_capacity(aim.blends * aim.frames);
+        for blend in 0..aim.blends {
+            for frame in 0..aim.frames {
+                poses.push(PoseSample::Composite {
+                    gait_seq: gait.index,
+                    gait_frame: 0,
+                    aim_seq: aim.index,
+                    aim_frame: frame,
+                    aim_blend: blend,
+                });
+            }
+        }
+        plan.push(PosePlanEntry {
+            name,
+            source_label: aim.label.clone(),
+            sequence_index: aim.index as u32,
+            fps: aim.fps,
+            frames: aim.frames as u32,
+            looping: aim.looping,
+            blends: aim.blends as u32,
+            blend_type: aim.blend_type,
+            blend_start: aim.blend_start,
+            blend_end: aim.blend_end,
+            poses,
+        });
+    }
+
+    // Death keeps its complete authored full-body sequence.
+    if let Some(die) = find_sequence(
+        d,
+        &[
+            "death1",
+            "death2",
+            "death3",
+            "diesimple",
+            "dieforward",
+            "diebackward",
+        ],
+    ) {
+        let poses = (0..die.frames)
+            .map(|frame| PoseSample::Full {
+                seq: die.index,
+                frame,
+                blend: 0,
+            })
+            .collect();
+        plan.push(PosePlanEntry {
+            name: "die",
+            source_label: die.label.clone(),
+            sequence_index: die.index as u32,
+            fps: die.fps,
+            frames: die.frames as u32,
+            looping: die.looping,
+            blends: 1,
+            blend_type: [0, 0],
+            blend_start: [0.0, 0.0],
+            blend_end: [1.0, 0.0],
+            poses,
+        });
+    }
+    Some(plan)
+}
+
+fn plan_pose_matrices(
+    d: &[u8],
+    external_groups: &[&[u8]],
+    numbones: usize,
+    boneindex: usize,
+    seqindex: usize,
+    sample: &PoseSample,
+) -> Result<Vec<Mat34>, String> {
+    match sample {
+        PoseSample::Full { seq, frame, blend } => anim_pose_matrices(
+            d,
+            external_groups,
+            numbones,
+            boneindex,
+            seqindex,
+            *seq,
+            *frame,
+            *blend,
+        ),
+        PoseSample::Composite {
+            gait_seq,
+            gait_frame,
+            aim_seq,
+            aim_frame,
+            aim_blend,
+        } => composite_pose_matrices(
+            d,
+            external_groups,
+            numbones,
+            boneindex,
+            seqindex,
+            *gait_seq,
+            *gait_frame,
+            *aim_seq,
+            *aim_frame,
+            *aim_blend,
+        ),
+    }
 }
 
 pub struct MdlAnim {
@@ -293,6 +699,7 @@ fn walk_geometry(
     bodypartindex: usize,
     numskinref: usize,
     skinindex: usize,
+    body_value: usize,
 ) -> std::collections::BTreeMap<usize, (Vec<f32>, Vec<f32>)> {
     let skin_of = |skinref: usize| -> usize {
         let o = skinindex + skinref * 2;
@@ -307,9 +714,14 @@ fn walk_geometry(
     for bp in 0..numbodyparts {
         let o = bodypartindex + bp * 76;
         let nummodels = i32_at(d, o + 64) as usize;
+        let bodypart_base = i32_at(d, o + 68).max(1) as usize;
         let modelindex = i32_at(d, o + 72) as usize;
-        // Body group 0: first model of each bodypart
-        for m in 0..nummodels.min(1) {
+        let selected_model = if nummodels > 0 {
+            (body_value / bodypart_base) % nummodels
+        } else {
+            0
+        };
+        for m in selected_model..(selected_model + nummodels.min(1)) {
             let mo = modelindex + m * 112;
             if mo + 112 > d.len() {
                 continue;
@@ -406,7 +818,7 @@ fn walk_geometry(
     buckets
 }
 
-pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
+fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
     if d.len() < 244 || &d[0..4] != b"IDST" {
         return Err("not a studio model".into());
     }
@@ -420,6 +832,7 @@ pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
     let numtextures = i32_at(d, 180) as usize;
     let textureindex = i32_at(d, 184) as usize;
     let numskinref = i32_at(d, 192) as usize;
+    let numskinfamilies = i32_at(d, 196).max(1) as usize;
     let skinindex = i32_at(d, 200) as usize;
     let numbodyparts = i32_at(d, 204) as usize;
     let bodypartindex = i32_at(d, 208) as usize;
@@ -465,6 +878,7 @@ pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
         bodypartindex,
         numskinref,
         skinindex,
+        body_value,
     );
 
     let mut out = ParsedMdl {
@@ -476,11 +890,36 @@ pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
     };
     for (tex, (pos, uv)) in buckets {
         let (name, w, h, off) = tex_meta[tex].clone();
+        let skin_ref = (0..numskinref).find(|skin_ref| {
+            let offset = skinindex + skin_ref * 2;
+            offset + 2 <= d.len() && i16_at(d, offset) as usize == tex
+        });
+        let mut skin_textures = Vec::with_capacity(numskinfamilies);
+        if let Some(skin_ref) = skin_ref {
+            for family in 0..numskinfamilies {
+                let offset = skinindex + (family * numskinref + skin_ref) * 2;
+                if offset + 2 > d.len() {
+                    break;
+                }
+                let texture_index = i16_at(d, offset) as usize;
+                if let Some((skin_name, skin_width, skin_height, skin_offset)) =
+                    tex_meta.get(texture_index)
+                {
+                    skin_textures.push(MdlTexture {
+                        tex_name: skin_name.clone(),
+                        width: *skin_width,
+                        height: *skin_height,
+                        pix_offset: *skin_offset,
+                    });
+                }
+            }
+        }
         out.groups.push(MdlGroup {
             tex_name: name,
             width: w,
             height: h,
             pix_offset: off,
+            skin_textures,
             vert_start: (out.positions.len() / 3) as u32,
             vert_count: (pos.len() / 3) as u32,
         });
@@ -490,9 +929,67 @@ pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
     Ok(out)
 }
 
+pub fn parse_mdl(d: &[u8]) -> Result<ParsedMdl, String> {
+    parse_mdl_body(d, 0)
+}
+
+/// Enumerate every authored submodel of the single-bodypart layout used by
+/// GoldSrc gib models. Refusing compound layouts keeps this export bounded and
+/// prevents an incomplete bodygroup Cartesian product from looking valid.
+pub fn parse_mdl_body_variants(d: &[u8]) -> Result<Vec<ParsedMdl>, String> {
+    if d.len() < 244 || &d[0..4] != b"IDST" || i32_at(d, 4) != 10 {
+        return Err("not a supported studio model".into());
+    }
+    let numbodyparts = i32_at(d, 204);
+    let bodypartindex = i32_at(d, 208);
+    if numbodyparts != 1 || bodypartindex < 0 {
+        return Err(format!(
+            "body-variant export requires exactly one bodypart, found {numbodyparts}"
+        ));
+    }
+    let bodypartindex = bodypartindex as usize;
+    if bodypartindex + 76 > d.len() {
+        return Err("bodypart table out of range".into());
+    }
+    let variant_count = i32_at(d, bodypartindex + 64);
+    if variant_count < 1 || variant_count > 64 {
+        return Err(format!("implausible body variant count {variant_count}"));
+    }
+    (0..variant_count as usize)
+        .map(|body_value| parse_mdl_body(d, body_value))
+        .collect()
+}
+
 /// Parse a model AND bake idle/run animation frames (vertex positions per
 /// frame, same order as ParsedMdl.positions).
 pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String> {
+    parse_mdl_animated_with_sequence_groups(d, &[])
+}
+
+/// Parse a player model using one original weapon activity family.
+pub fn parse_mdl_animated_family(
+    d: &[u8],
+    family: &str,
+) -> Result<(ParsedMdl, Vec<MdlAnim>), String> {
+    parse_mdl_animated_family_with_sequence_groups(d, &[], family)
+}
+
+/// Parse a model and bake animation frames, including external IDSQ sequence
+/// groups. Slice element zero supplies GoldSrc sequence group one.
+pub fn parse_mdl_animated_with_sequence_groups(
+    d: &[u8],
+    external_groups: &[&[u8]],
+) -> Result<(ParsedMdl, Vec<MdlAnim>), String> {
+    parse_mdl_animated_family_with_sequence_groups(d, external_groups, "ak47")
+}
+
+/// Parse a model with external sequence groups while selecting the original
+/// player action family authored for a particular p_ weapon.
+pub fn parse_mdl_animated_family_with_sequence_groups(
+    d: &[u8],
+    external_groups: &[&[u8]],
+    family: &str,
+) -> Result<(ParsedMdl, Vec<MdlAnim>), String> {
     let base = parse_mdl(d)?;
 
     let numbones = i32_at(d, 140) as usize;
@@ -543,7 +1040,16 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
             let mut ok = true;
             for blend in 0..blends {
                 for frame in 0..frames {
-                    match anim_pose_matrices(d, numbones, boneindex, seqindex, seq, frame, blend) {
+                    match anim_pose_matrices(
+                        d,
+                        external_groups,
+                        numbones,
+                        boneindex,
+                        seqindex,
+                        seq,
+                        frame,
+                        blend,
+                    ) {
                         Ok(mats) => {
                             let buckets = walk_geometry(
                                 d,
@@ -553,6 +1059,7 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
                                 bodypartindex,
                                 numskinref,
                                 skinindex,
+                                0,
                             );
                             for (_, (positions, _)) in buckets {
                                 data.extend_from_slice(&positions);
@@ -603,38 +1110,105 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
         return Ok((base, anims));
     }
 
-    for (name, labels) in [
-        ("idle", &["idle1", "idle"][..]),
-        ("run", &["run", "walk"][..]),
-        ("crouchidle", &["crouch_idle", "crouchidle"][..]),
-        ("crouchrun", &["crouchrun", "crouch_run"][..]),
+    // Player models with authored aim layers bake the source-faithful
+    // gait-composited pose plan (legs = gait, upper body = aim family).
+    if let Some(plan) = player_pose_plan(d, family) {
+        for entry in plan {
+            let mut data = Vec::new();
+            let mut ok = true;
+            for sample in &entry.poses {
+                match plan_pose_matrices(
+                    d,
+                    external_groups,
+                    numbones,
+                    boneindex,
+                    i32_at(d, 168) as usize,
+                    sample,
+                ) {
+                    Ok(mats) => {
+                        let buckets = walk_geometry(
+                            d,
+                            &mats,
+                            &tex_meta,
+                            numbodyparts,
+                            bodypartindex,
+                            numskinref,
+                            skinindex,
+                            0,
+                        );
+                        for (_, (pos, _)) in buckets {
+                            data.extend_from_slice(&pos);
+                        }
+                    }
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && !data.is_empty() {
+                anims.push(MdlAnim {
+                    name: entry.name.to_string(),
+                    source_label: entry.source_label,
+                    sequence_index: entry.sequence_index,
+                    fps: entry.fps,
+                    frames: entry.frames,
+                    looping: entry.looping,
+                    blends: entry.blends,
+                    blend_type: entry.blend_type,
+                    blend_start: entry.blend_start,
+                    blend_end: entry.blend_end,
+                    data,
+                });
+            }
+        }
+        return Ok((base, anims));
+    }
+
+    let crouch_shoot = format!("crouch_shoot_{family}");
+    let standing_shoot = format!("ref_shoot_{family}");
+    let crouch_reload = format!("crouch_reload_{family}");
+    let standing_reload = format!("ref_reload_{family}");
+    let mut sequence_specs = vec![
+        ("idle", vec!["idle1", "idle"]),
+        ("run", vec!["run", "walk"]),
+        ("crouchidle", vec!["crouch_idle", "crouchidle"]),
+        ("crouchrun", vec!["crouchrun", "crouch_run"]),
+        ("crouchshoot", vec![crouch_shoot.as_str()]),
+        ("shoot", vec![standing_shoot.as_str()]),
+        ("crouchreload", vec![crouch_reload.as_str()]),
+        ("reload", vec![standing_reload.as_str()]),
         (
-            "crouchshoot",
-            &[
-                "crouch_shoot_ak47",
-                "crouch_shoot_rifle",
-                "crouch_shoot_carbine",
-            ][..],
+            "die",
+            vec![
+                "death1",
+                "death2",
+                "death3",
+                "diesimple",
+                "dieforward",
+                "diebackward",
+            ],
         ),
-        (
-            "shoot",
-            &["ref_shoot_ak47", "ref_shoot_rifle", "ref_shoot_carbine"][..],
-        ),
-        (
-            "crouchreload",
-            &[
-                "crouch_reload_ak47",
-                "crouch_reload_rifle",
-                "crouch_reload_carbine",
-            ][..],
-        ),
-        (
-            "reload",
-            &["ref_reload_ak47", "ref_reload_rifle", "ref_reload_carbine"][..],
-        ),
-        ("die", &["death1", "death2", "death3"][..]),
-    ] {
-        let Some(sequence) = find_sequence(d, labels) else {
+    ];
+    if !external_groups.is_empty() {
+        // Stock hostage/scientist models keep these gameplay activities in
+        // IDSQ files. Preserve distinct walk and hit-reaction motions without
+        // changing the established player-model export set.
+        sequence_specs.push(("walk", vec!["walk", "walk_scared"]));
+        sequence_specs.push(("flinch", vec!["flinch", "flinch1", "laflinch", "raflinch"]));
+        sequence_specs.push(("panic", vec!["panic", "fear1", "fear2"]));
+        sequence_specs.push(("acknowledge", vec!["yes"]));
+        sequence_specs.push(("cower", vec!["cowering_in_corner"]));
+        // Hostage/scientist corpses must end floor-flat: diesimple's held final
+        // frame keeps both knees raised, while dieforward sprawls the body
+        // flat across the ground plane like a settled GoldSrc corpse (and its
+        // forward root motion falls into open space, not the wall behind).
+        if let Some(die_spec) = sequence_specs.iter_mut().find(|(name, _)| *name == "die") {
+            die_spec.1 = vec!["dieforward", "diebackward", "diesimple"];
+        }
+    }
+    for (name, labels) in sequence_specs {
+        let Some(sequence) = find_sequence(d, &labels) else {
             continue;
         };
         let mut data = Vec::new();
@@ -643,6 +1217,7 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
             for frame in 0..sequence.frames {
                 match anim_pose_matrices(
                     d,
+                    external_groups,
                     numbones,
                     boneindex,
                     i32_at(d, 168) as usize,
@@ -659,6 +1234,7 @@ pub fn parse_mdl_animated(d: &[u8]) -> Result<(ParsedMdl, Vec<MdlAnim>), String>
                             bodypartindex,
                             numskinref,
                             skinindex,
+                            0,
                         );
                         for (_, (pos, _)) in buckets {
                             data.extend_from_slice(&pos);
@@ -725,8 +1301,18 @@ fn attached_weapon_family(d: &[u8]) -> &'static str {
         .trim_start_matches("p_")
         .trim_end_matches(".mdl");
     match weapon {
-        "ak47" => "ak47",
-        "aug" | "famas" | "galil" | "m4a1" | "sg552" => "carbine",
+        // The standing ref_aim_ak47/ref_shoot_ak47 tapes in the stock player
+        // MDLs pose the torso off the gait facing (their crouch twins are
+        // fine); on screen the AK reads as a gun carried across the hips
+        // instead of a shouldered rifle. Re-measured after the STUDIO_XR aim
+        // blend interpolation landed, so it is not a blend-sampling artifact:
+        // ref_aim_ak47 frame 0 center blend puts "Bip01 Spine" at yaw -61
+        // degrees versus -12 for ref_aim_carbine and -11 for the idle gait,
+        // and every one of the nine pitch blends renders with the same yaw
+        // offset. The carbine family carries the correct two-handed forward
+        // rifle aim, so the attached p_ak47 bakes through it. Mirrors
+        // WEAPON_FAMILIES in game/scripts/mdl_character_model.gd.
+        "ak47" | "aug" | "famas" | "galil" | "m4a1" | "sg552" => "carbine",
         "awp" | "g3sg1" | "scout" | "sg550" => "rifle",
         "deagle" | "fiveseven" | "glock18" | "p228" | "usp" => "onehanded",
         "elite" => "dualpistols",
@@ -820,6 +1406,7 @@ pub fn parse_mdl_attached(
         w_bodypartindex,
         w_numskinref,
         w_skinindex,
+        0,
     ) {
         positions.extend_from_slice(&pos);
     }
@@ -828,38 +1415,21 @@ pub fn parse_mdl_attached(
     // Reusing AK poses for pistols, SMGs, and grenades puts a correctly merged
     // p_ model in the wrong authored hand pose.
     let family = attached_weapon_family(weapon);
-    let crouch_shoot = format!("crouch_shoot_{family}");
-    let standing_shoot = format!("ref_shoot_{family}");
-    let crouch_reload = format!("crouch_reload_{family}");
-    let standing_reload = format!("ref_reload_{family}");
     let mut anims = Vec::new();
-    let sequence_specs = [
-        ("idle", vec!["idle1", "idle"]),
-        ("run", vec!["run", "walk"]),
-        ("crouchidle", vec!["crouch_idle", "crouchidle"]),
-        ("crouchrun", vec!["crouchrun", "crouch_run"]),
-        ("crouchshoot", vec![crouch_shoot.as_str()]),
-        ("shoot", vec![standing_shoot.as_str()]),
-        ("crouchreload", vec![crouch_reload.as_str()]),
-        ("reload", vec![standing_reload.as_str()]),
-        ("die", vec!["death1", "death2", "death3"]),
-    ];
-    for (name, labels) in sequence_specs {
-        let Some(sequence) = find_sequence(player, &labels) else {
-            continue;
-        };
-        let mut data = Vec::new();
-        let mut ok = true;
-        for blend in 0..sequence.blends {
-            for frame in 0..sequence.frames {
-                match anim_pose_matrices(
+    if let Some(plan) = player_pose_plan(player, family) {
+        // The weapon walks the exact composite matrices the player body bakes
+        // for this family, so the gun stays in the animated hands.
+        for entry in plan {
+            let mut data = Vec::new();
+            let mut ok = true;
+            for sample in &entry.poses {
+                match plan_pose_matrices(
                     player,
+                    &[],
                     p_numbones,
                     p_boneindex,
                     i32_at(player, 168) as usize,
-                    sequence.index,
-                    frame,
-                    blend,
+                    sample,
                 ) {
                     Ok(mats) => {
                         for (_, (pos, _)) in walk_geometry(
@@ -870,6 +1440,7 @@ pub fn parse_mdl_attached(
                             w_bodypartindex,
                             w_numskinref,
                             w_skinindex,
+                            0,
                         ) {
                             data.extend_from_slice(&pos);
                         }
@@ -880,24 +1451,95 @@ pub fn parse_mdl_attached(
                     }
                 }
             }
-            if !ok {
-                break;
+            if ok && !data.is_empty() {
+                anims.push(MdlAnim {
+                    name: entry.name.to_string(),
+                    source_label: entry.source_label,
+                    sequence_index: entry.sequence_index,
+                    fps: entry.fps,
+                    frames: entry.frames,
+                    looping: entry.looping,
+                    blends: entry.blends,
+                    blend_type: entry.blend_type,
+                    blend_start: entry.blend_start,
+                    blend_end: entry.blend_end,
+                    data,
+                });
             }
         }
-        if ok && !data.is_empty() {
-            anims.push(MdlAnim {
-                name: name.to_string(),
-                source_label: sequence.label,
-                sequence_index: sequence.index as u32,
-                fps: sequence.fps,
-                frames: sequence.frames as u32,
-                looping: sequence.looping,
-                blends: sequence.blends as u32,
-                blend_type: sequence.blend_type,
-                blend_start: sequence.blend_start,
-                blend_end: sequence.blend_end,
-                data,
-            });
+    } else {
+        let crouch_shoot = format!("crouch_shoot_{family}");
+        let standing_shoot = format!("ref_shoot_{family}");
+        let crouch_reload = format!("crouch_reload_{family}");
+        let standing_reload = format!("ref_reload_{family}");
+        let sequence_specs = [
+            ("idle", vec!["idle1", "idle"]),
+            ("run", vec!["run", "walk"]),
+            ("crouchidle", vec!["crouch_idle", "crouchidle"]),
+            ("crouchrun", vec!["crouchrun", "crouch_run"]),
+            ("crouchshoot", vec![crouch_shoot.as_str()]),
+            ("shoot", vec![standing_shoot.as_str()]),
+            ("crouchreload", vec![crouch_reload.as_str()]),
+            ("reload", vec![standing_reload.as_str()]),
+            ("die", vec!["death1", "death2", "death3"]),
+        ];
+        for (name, labels) in sequence_specs {
+            let Some(sequence) = find_sequence(player, &labels) else {
+                continue;
+            };
+            let mut data = Vec::new();
+            let mut ok = true;
+            for blend in 0..sequence.blends {
+                for frame in 0..sequence.frames {
+                    match anim_pose_matrices(
+                        player,
+                        &[],
+                        p_numbones,
+                        p_boneindex,
+                        i32_at(player, 168) as usize,
+                        sequence.index,
+                        frame,
+                        blend,
+                    ) {
+                        Ok(mats) => {
+                            for (_, (pos, _)) in walk_geometry(
+                                weapon,
+                                &remap(&mats),
+                                &w_texmeta,
+                                w_numbodyparts,
+                                w_bodypartindex,
+                                w_numskinref,
+                                w_skinindex,
+                                0,
+                            ) {
+                                data.extend_from_slice(&pos);
+                            }
+                        }
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    break;
+                }
+            }
+            if ok && !data.is_empty() {
+                anims.push(MdlAnim {
+                    name: name.to_string(),
+                    source_label: sequence.label,
+                    sequence_index: sequence.index as u32,
+                    fps: sequence.fps,
+                    frames: sequence.frames as u32,
+                    looping: sequence.looping,
+                    blends: sequence.blends as u32,
+                    blend_type: sequence.blend_type,
+                    blend_start: sequence.blend_start,
+                    blend_end: sequence.blend_end,
+                    data,
+                });
+            }
         }
     }
 
@@ -919,7 +1561,84 @@ mod tests {
 
     const TERROR_MODEL: &[u8] = include_bytes!("../../public/models/player/terror/terror.mdl");
     const AK47_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_ak47.mdl");
+    const C4_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_c4.mdl");
     const DEAGLE_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_deagle.mdl");
+    const HOSTAGE_MODEL: &[u8] = include_bytes!("../../public/models/classic/hostage.mdl");
+    const HOSTAGE_SEQUENCE_GROUPS: [&[u8]; 8] = [
+        include_bytes!("../../public/models/classic/hostage01.mdl"),
+        include_bytes!("../../public/models/classic/hostage02.mdl"),
+        include_bytes!("../../public/models/classic/hostage03.mdl"),
+        include_bytes!("../../public/models/classic/hostage04.mdl"),
+        include_bytes!("../../public/models/classic/hostage05.mdl"),
+        include_bytes!("../../public/models/classic/hostage06.mdl"),
+        include_bytes!("../../public/models/classic/hostage07.mdl"),
+        include_bytes!("../../public/models/classic/hostage08.mdl"),
+    ];
+
+    #[test]
+    fn hostage_sequence_groups_preserve_authored_names_and_animation_data() {
+        assert_eq!(
+            external_sequence_group_names(HOSTAGE_MODEL).expect("hostage sequence groups"),
+            (1..=8)
+                .map(|group| format!("models\\hostage{group:02}.mdl"))
+                .collect::<Vec<_>>()
+        );
+
+        let (model, animations) =
+            parse_mdl_animated_with_sequence_groups(HOSTAGE_MODEL, &HOSTAGE_SEQUENCE_GROUPS)
+                .expect("animated hostage model");
+        assert_eq!(model.groups.len(), 2);
+        assert_eq!(
+            model.groups[0]
+                .skin_textures
+                .iter()
+                .map(|texture| texture.tex_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Hostage_Template1.BMP", "Hostage_Template2.BMP"]
+        );
+        assert_eq!(
+            model.groups[1]
+                .skin_textures
+                .iter()
+                .map(|texture| texture.tex_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Face-Unwrap1.bmp", "Face-Unwrap2.bmp"]
+        );
+        for (name, source, frames, looping) in [
+            ("idle", "idle1", 31, true),
+            ("run", "run", 19, true),
+            ("crouchidle", "crouch_idle", 11, true),
+            ("die", "dieforward", 31, false),
+            ("walk", "walk", 17, true),
+            ("flinch", "flinch", 31, false),
+            ("panic", "panic", 21, false),
+            ("acknowledge", "yes", 31, false),
+            ("cower", "cowering_in_corner", 131, true),
+        ] {
+            let animation = animations
+                .iter()
+                .find(|animation| animation.name == name)
+                .unwrap_or_else(|| panic!("missing hostage {name} animation"));
+            assert_eq!(animation.source_label, source);
+            assert_eq!(animation.frames, frames);
+            assert_eq!(animation.looping, looping);
+            assert_eq!(
+                animation.data.len(),
+                model.positions.len() * frames as usize * animation.blends as usize
+            );
+            let first_frame = &animation.data[..model.positions.len()];
+            let comparison_offset = (frames as usize / 2) * model.positions.len();
+            let comparison_frame =
+                &animation.data[comparison_offset..comparison_offset + model.positions.len()];
+            assert!(
+                first_frame
+                    .iter()
+                    .zip(comparison_frame)
+                    .any(|(first, comparison)| (first - comparison).abs() >= 0.0001),
+                "hostage {name} collapsed to a static pose"
+            );
+        }
+    }
 
     #[test]
     fn player_pose_lookup_prefers_standing_ak_and_death_sequences() {
@@ -1009,14 +1728,42 @@ mod tests {
     }
 
     #[test]
+    fn c4_player_family_matches_the_attached_c4_action_tape() {
+        let (_, body_animations) =
+            parse_mdl_animated_family(TERROR_MODEL, "c4").expect("C4 player body");
+        let (_, weapon_animations) =
+            parse_mdl_attached(TERROR_MODEL, C4_PLAYER_MODEL).expect("attached C4");
+        for (name, source, frames) in [
+            ("shoot", "ref_shoot_c4", 151),
+            ("crouchshoot", "crouch_shoot_c4", 121),
+        ] {
+            let body = body_animations
+                .iter()
+                .find(|animation| animation.name == name)
+                .unwrap_or_else(|| panic!("missing body {name}"));
+            let weapon = weapon_animations
+                .iter()
+                .find(|animation| animation.name == name)
+                .unwrap_or_else(|| panic!("missing attached {name}"));
+            assert_eq!(body.source_label, source);
+            assert_eq!(body.frames, frames);
+            assert_eq!(body.fps, weapon.fps);
+            assert_eq!(body.frames, weapon.frames);
+            assert_eq!(body.blends, weapon.blends);
+        }
+    }
+
+    #[test]
     fn attached_weapon_preserves_player_action_sequences() {
         let (model, animations) =
             parse_mdl_attached(TERROR_MODEL, AK47_PLAYER_MODEL).expect("attached AK-47");
+        // The AK bakes on the carbine family (see attached_weapon_family), so
+        // these are the carbine tape's frame counts, not ref_shoot_ak47's.
         for (name, frames, blends) in [
-            ("shoot", 6, 9),
+            ("shoot", 5, 9),
             ("crouchshoot", 5, 9),
-            ("reload", 91, 1),
-            ("crouchreload", 91, 1),
+            ("reload", 61, 1),
+            ("crouchreload", 61, 1),
             ("die", 36, 1),
         ] {
             let animation = animations
@@ -1032,9 +1779,14 @@ mod tests {
         }
     }
 
+
     #[test]
     fn attached_weapon_uses_its_authored_activity_family() {
-        assert_eq!(attached_weapon_family(AK47_PLAYER_MODEL), "ak47");
+        // p_ak47 deliberately resolves to the carbine family: the stock
+        // ref_aim_ak47/ref_shoot_ak47 tapes pose the torso off the gait facing
+        // at every pitch blend, so the rifle renders hip-carried instead of
+        // shouldered. attached_weapon_family documents the measurement.
+        assert_eq!(attached_weapon_family(AK47_PLAYER_MODEL), "carbine");
         assert_eq!(attached_weapon_family(DEAGLE_PLAYER_MODEL), "onehanded");
         let (_, animations) =
             parse_mdl_attached(TERROR_MODEL, DEAGLE_PLAYER_MODEL).expect("attached Deagle");

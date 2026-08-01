@@ -30,6 +30,21 @@ const TE_EXPLOSION_FLICKER_PALETTE := [
 ]
 const TE_SPARK_TRACER_COUNT := 8
 const TE_SPARK_LIFETIME_TICKS := 50
+# CS 1.6 smoke grenade contract (CSmokeGrenade / gas cloud temp entities):
+# a dense, ground-hugging cloud roughly 200+ units across that blocks vision
+# for ~15 seconds before dissipating. Rendered GoldSrc-style as a cluster of
+# large individual gas-puff billboards whose overlapping rounded silhouettes
+# stay readable (per-puff shading variation), never as one uniform fog slab.
+const SMOKE_CLOUD_PUFF_COUNT := 17
+const SMOKE_CLOUD_CORE_PUFFS := 7
+const SMOKE_CLOUD_LIFETIME_TICKS := 1500
+const SMOKE_CLOUD_FADE_IN_TICKS := 60
+const SMOKE_CLOUD_FADE_OUT_TICKS := 400
+# Flat neutral gray with the faint warm cast of the gas_puff palette.
+const SMOKE_CLOUD_COLOR := Color(0.68, 0.66, 0.63)
+# GoldSrc muzzle-flash dlights (cl_dlight): ~0.1 s warm orange pop.
+const MUZZLE_DLIGHT_TICKS := 9
+const MUZZLE_DLIGHT_COLOR := Color8(255, 208, 128)
 # BLOOD_COLOR_RED is palette index 247: RGB (103, 0, 0) in cstrike/gfx/palette.lmp.
 const BLOOD_COLOR_RED := Color8(103, 0, 0)
 
@@ -45,11 +60,14 @@ const EVENT_HE_SPARKS := "he_sparks"
 const EVENT_HE_FLICKER := "he_flicker"
 const EVENT_HE_LIGHT := "he_light"
 const EVENT_C4_FIREBALL := "c4_fireball"
+const EVENT_SMOKE_CLOUD := "smoke_cloud"
+const EVENT_IMPACT_PUFF := "impact_puff"
 const EVENT_RICOCHET := "ricochet"
 const EVENT_SOUND := "sound"
 
 static var _manifest_cache: Dictionary = {}
 static var _shell_template_cache: Dictionary = {}
+static var _edge_faded_texture_cache: Dictionary = {}
 
 var tick := 0
 var event_log: Array[Dictionary] = []
@@ -79,13 +97,18 @@ static func release_cached_resources() -> void:
 	# when tearing down the entire game scene.
 	_shell_template_cache.clear()
 	_manifest_cache.clear()
+	_shot_decal_texture_cache.clear()
+	_edge_faded_texture_cache.clear()
 
 
 static func shot_profile(weapon_name: String, shot_sequence: int) -> Dictionary:
 	match weapon_name:
 		"ak47":
 			return {
-				"muzzle": "muzzleflash3",
+				# muzzleflash2: the round white-yellow core with short radial
+				# spikes. The X-shaped muzzleflash3 frames read as a clip-art
+				# star pinned to the handguard instead of a blast at the tip.
+				"muzzle": "muzzleflash2",
 				"smoke": "rifle_smoke%d" % (shot_sequence % 3 + 1),
 				"shell": "rshell",
 				# CS's AK event does not request a TE_TRACER for each round.
@@ -174,31 +197,64 @@ func spawn_weapon_shot(
 ) -> void:
 	var profile := shot_profile(weapon_name, shot_sequence)
 	var forward := direction.normalized()
-	var muzzle_origin := origin + forward * 0.38 + right * 0.12 - up * 0.08
+	# Anchored at the viewmodel barrel TIP (the GoldSrc muzzle attachment):
+	# further forward and only slightly right/below screen center, where the
+	# AK barrel actually ends on screen — never centered over the receiver.
+	var muzzle_origin := origin + forward * 0.72 + right * 0.235 - up * 0.155
+	# The engine muzzle flash: starts on a random frame of the flash sprite
+	# with a random per-shot roll, fully additive, playing its painted frames
+	# at the TE default 30 fps. A fixed frame-0 with zero roll read as a
+	# repeated clip-art stamp; the frame+roll shuffle is exactly what makes
+	# GoldSrc flashes look organic shot after shot.
 	_spawn_sprite(
 		str(profile.muzzle),
 		muzzle_origin,
-		0.26,
+		0.14,
 		30.0,
 		EVENT_MUZZLE_FLASH,
 		0,
 		true,
+		Color(1.0, 0.92, 0.74),
+		Vector3.ZERO,
+		_unit_hash(shot_sequence, 7) * 360.0,
+		0,
+		false,
+		0,
+		0,
+		# Nearest sampling: the low-res additive muzzleflash frames must keep
+		# their hard-edged spiky star texels when magnified at the first-person
+		# muzzle; linear filtering melted them into a soft modern fireball.
+		true,
+		shot_sequence + int(_unit_hash(shot_sequence, 11) * 977.0),
 	)
+	# GoldSrc EV_..._MuzzleFlash also spawns a short-lived warm dlight that
+	# visibly brightens the viewmodel and nearby geometry for one flash frame.
+	spawn_muzzle_light(muzzle_origin)
 	if not str(profile.smoke).is_empty():
+		# Faint grey and drifting, and delayed past the flash frame: GoldSrc
+		# muzzle smoke trails AFTER the additive flash. A dark alpha-blended
+		# puff visible on the same frame as the flash rims its bright arms
+		# with a brown fringe — the one artifact additive sprites can't show.
 		_spawn_sprite(
 			str(profile.smoke),
 			muzzle_origin + forward * 0.035,
-			0.18,
+			0.10,
 			30.0,
 			EVENT_MUZZLE_SMOKE,
-		2,
+		4,
 		false,
+		Color(0.58, 0.57, 0.55, 0.30),
+		forward * 0.10 + Vector3.UP * 0.16,
 		)
 	if not str(profile.shell).is_empty():
+		# EjectBrass: the casing leaves the ejection PORT (behind the muzzle,
+		# on the weapon's right side) and flies right and up. Anchoring off the
+		# muzzle keeps the brass beside the receiver for both the first-person
+		# viewmodel and third-person shooters.
 		_spawn_shell(
 			str(profile.shell),
-			origin + right * 0.15 - up * 0.07 + forward * 0.12,
-			right * 1.35 + up * 1.1 - forward * 0.25,
+			muzzle_origin - forward * 0.22 + right * 0.02 - up * 0.05,
+			right * 1.9 + up * 1.25 + forward * 0.05,
 			shot_sequence,
 		)
 
@@ -211,6 +267,34 @@ func spawn_world_impact(
 ) -> void:
 	var decal_name := "shot%d" % (shot_sequence % 5 + 1)
 	spawn_decal(decal_name, position, normal, "shot", shot_sequence)
+	var surface_normal := normal.normalized() if normal.length_squared() > 0.0 else Vector3.UP
+	# CS 1.6 wall impacts pair the crisp dark bullet-hole decal with a brief
+	# SMALL light-gray dust puff: the original wall_puff1.spr animation, and
+	# gone fast — the persistent mark must be the dark {shot chip decal, but
+	# the puff itself must clearly read for its few frames.
+	_spawn_sprite(
+		"wall_puff1",
+		position + surface_normal * 0.05,
+		0.30,
+		60.0,
+		EVENT_IMPACT_PUFF,
+		0,
+		false,
+		Color(0.62, 0.61, 0.58, 0.68),
+		surface_normal * 0.20 + Vector3.UP * 0.10,
+		0.0,
+		18,
+		false,
+		12,
+	)
+	if shot_sequence % 3 == 0:
+		_spawn_sprite(
+			"richo1",
+			position + surface_normal * 0.02,
+			0.10,
+			30.0,
+			EVENT_RICOCHET,
+		)
 	_spawn_impact_particles(position, normal, shot_sequence, surface)
 
 
@@ -220,10 +304,11 @@ func spawn_blood_impact(
 	shot_sequence: int,
 ) -> void:
 	var backwards := -direction.normalized()
+	# TE_BLOODSPRITE sprites are brief flat splashes, not large glossy volumes.
 	_spawn_sprite(
 		"bloodspray",
 		position + backwards * 0.015,
-		0.55,
+		0.30,
 		18.0,
 		EVENT_BLOOD_SPRITE,
 		0,
@@ -233,7 +318,7 @@ func spawn_blood_impact(
 	_spawn_sprite(
 		"blood",
 		position + backwards * 0.025,
-		0.32,
+		0.18,
 		18.0,
 		EVENT_BLOOD_SPRITE,
 		1,
@@ -256,33 +341,57 @@ func spawn_he_explosion(position: Vector3, normal: Vector3) -> void:
 	var serial := _next_serial()
 	# Explode3 sends two independent TE_EXPLOSION messages: fexplo at scale
 	# 2.5, then eexplo at scale 3.0 with a deterministic testable offset.
+	# Both stay essentially co-located so the pair superimposes into ONE
+	# roughly spherical additive fireball about player height — never a tall
+	# fire column with a detached second blob above it.
+	# Each fireball is lifted by its own half-height so the billboard quad
+	# bottom clears the floor plane: an intersecting quad depth-clips into a
+	# razor-straight horizontal line, which GoldSrc additive sprites never show.
+	# Scales sized so the taller fexplo billboard stands roughly player height
+	# (96 px * 1.9 ≈ 1.8 m): the earlier 2.5/3.0 pair towered past the dust2
+	# archways and read as a bonfire column instead of the compact spherical
+	# fireball CS 1.6 shows at a detonation point.
 	_spawn_te_explosion(
 		"fexplo",
-		position + Vector3.UP * 0.20,
-		2.5,
+		position + Vector3.UP * (_sprite_half_height("fexplo", 1.9) + 0.06),
+		1.9,
 		30.0,
 		serial,
+		Color.WHITE,
 	)
 	var second_offset := Vector3(
-		_signed_hash(serial, 17) * 0.64,
-		0.30 + _unit_hash(serial, 31) * 0.05,
-		_signed_hash(serial, 47) * 0.64,
+		_signed_hash(serial, 17) * 0.26,
+		_sprite_half_height("eexplo", 2.2) + 0.10 + _unit_hash(serial, 31) * 0.05,
+		_signed_hash(serial, 47) * 0.26,
 	)
+	# Dim the second co-located additive sprite: two full-brightness stacked
+	# fireballs summed to a blown-out white slab instead of keeping the
+	# painted zerogxplode-style frame detail readable.
 	_spawn_te_explosion(
 		"eexplo",
 		position + second_offset,
-		3.0,
+		2.2,
 		30.0,
 		serial + 1,
+		Color(1.0, 1.0, 1.0, 0.62),
 	)
 	# Smoke3_C runs 0.55 seconds after Explode3 and uses steam1 at 5 fps.
+	var steam_scale := 3.5 + _unit_hash(serial, 61)
 	_spawn_sprite(
 		"steam1",
-		position - Vector3.UP * 0.05,
-		3.5 + _unit_hash(serial, 61),
+		position + Vector3.UP * _sprite_half_height("steam1", steam_scale),
+		steam_scale,
 		5.0,
 		EVENT_HE_SMOKE,
 		HE_SMOKE_DELAY_TICKS,
+		false,
+		Color(1.0, 1.0, 1.0, 0.85),
+		Vector3.ZERO,
+		0.0,
+		0,
+		false,
+		0,
+		0,
 		false,
 	)
 	spawn_decal(
@@ -306,26 +415,137 @@ func spawn_he_explosion(position: Vector3, normal: Vector3) -> void:
 	)
 
 
+func spawn_smoke_cloud(position: Vector3, seed := 0) -> void:
+	# CSmokeGrenade builds one large vision-blocking cloud out of overlapping
+	# gas puffs. GoldSrc look: 10-15 LARGE billboard puffs whose individual
+	# rounded silhouettes and per-puff shading (darker undersides) stay
+	# readable against the background — a lumpy boiling cluster, never one
+	# saturated featureless fog slab.
+	var serial := _next_serial()
+	var base_seed := serial * 7 + seed * 131
+	var rim_count := SMOKE_CLOUD_PUFF_COUNT - SMOKE_CLOUD_CORE_PUFFS
+	for index in range(SMOKE_CLOUD_PUFF_COUNT):
+		var puff_seed := base_seed + index * 13
+		# A few medium puffs pack the core so the interior blocks vision; the
+		# rest are rim puffs distributed evenly (with jitter) around the core
+		# and pushed well past it, so each rounded billboard silhouette bulges
+		# out and the cloud reads as a lumpy cluster of distinct gas_puff
+		# sprites, never one smooth slab.
+		# Three tiers: packed core puffs that block vision, mid rim puffs whose
+		# rounded edges bulge past the core, and small far satellites whose
+		# lone translucent silhouettes break the outline into boiling lobes.
+		var tier := (
+			0
+			if index < SMOKE_CLOUD_CORE_PUFFS
+			else 1
+			if index < SMOKE_CLOUD_CORE_PUFFS + rim_count - 3
+			else 2
+		)
+		var core := tier == 0
+		var angle := (
+			_unit_hash(puff_seed, 17) * TAU
+			if core
+			else (
+				float(index - SMOKE_CLOUD_CORE_PUFFS) / float(rim_count) * TAU
+				+ _signed_hash(puff_seed, 17) * 0.38
+			)
+		)
+		# Spawn radii are constrained so every puff overlaps the mass: CS smoke
+		# is ONE ground-hugging cluster. Detached satellites drifting near
+		# ceilings or crate tops read as stray blobs and depth-clip against
+		# geometry at full prominence, which GoldSrc smoke never shows.
+		var radius := 0.10 + _unit_hash(puff_seed, 31) * 0.40
+		if tier == 1:
+			radius = 0.70 + _unit_hash(puff_seed, 31) * 0.55
+		elif tier == 2:
+			radius = 1.05 + _unit_hash(puff_seed, 31) * 0.35
+		var height := (
+			0.25 + _unit_hash(puff_seed, 47) * 0.50
+			if core
+			else 0.05 + _unit_hash(puff_seed, 47) * (0.65 if tier == 1 else 0.35)
+		)
+		var offset := Vector3(cos(angle) * radius, height, sin(angle) * radius)
+		var puff_scale := 2.3 + _unit_hash(puff_seed, 61) * 0.4
+		if tier == 1:
+			puff_scale = 1.45 + _unit_hash(puff_seed, 61) * 0.55
+		elif tier == 2:
+			puff_scale = 1.00 + _unit_hash(puff_seed, 61) * 0.35
+		# GoldSrc sprites are fullbright flat gray — no painted-in shading —
+		# and each puff is individually translucent (kRenderTransAlpha at
+		# partial amount). Density then accumulates where puffs overlap, so
+		# the cluster reads as distinct boiling lobes: rim puffs stay wispy
+		# against the background while the packed core blocks vision.
+		# Strong per-puff shade variance plus darker undersides: this is what
+		# separates the overlapping billboard lobes into readable puffy volumes
+		# instead of one smooth uniform fog mass. Tone stays muddy gray; the
+		# packed core is near-opaque so it genuinely blocks vision.
+		var shade := 0.78 + _signed_hash(puff_seed, 103) * 0.20
+		shade -= maxf(0.0, 0.70 - height) * 0.12
+		# Core puffs at full amount: stacked gas_puff alpha must integrate to a
+		# genuinely opaque, vision-blocking center — the CS 1.6 smoke contract.
+		var puff_alpha := 1.0
+		if tier == 1:
+			puff_alpha = 0.82
+		elif tier == 2:
+			puff_alpha = 0.62
+		var puff_color := Color(
+			SMOKE_CLOUD_COLOR.r * shade,
+			SMOKE_CLOUD_COLOR.g * shade,
+			SMOKE_CLOUD_COLOR.b * shade,
+			puff_alpha,
+		)
+		var drift := (
+			Vector3(cos(angle), 0.0, sin(angle))
+			* (0.012 + _unit_hash(puff_seed, 73) * 0.018)
+			+ Vector3.UP * 0.008
+		)
+		# The original gas_puff_01.spr: a rounded lumpy puff billboard, exactly
+		# what CSmokeGrenade's client gas cloud renders. Bilinear sampling,
+		# like the GoldSrc GL renderer: nearest magnified the 64px frames
+		# into hard diamond texel blocks that read as mesh faceting.
+		_spawn_sprite(
+			"gas_puff_01",
+			position + offset,
+			puff_scale,
+			2.0,
+			EVENT_SMOKE_CLOUD,
+			index * 4,
+			false,
+			puff_color,
+			drift,
+			_unit_hash(puff_seed, 89) * 360.0,
+			SMOKE_CLOUD_LIFETIME_TICKS,
+			true,
+			SMOKE_CLOUD_FADE_OUT_TICKS,
+			SMOKE_CLOUD_FADE_IN_TICKS,
+			false,
+			index % 2,
+		)
+
+
 func spawn_c4_explosion(position: Vector3, normal: Vector3, underwater := false) -> void:
 	var serial := _next_serial()
 	# CGrenade::Explode2 emits four large sprites. Scale 25 is derived from the
-	# stock 500-damage C4 expression `(dmg - 275) * .6` / ten.
+	# stock 500-damage C4 expression `(dmg - 275) * .6` / ten. Lateral spread
+	# stays tight (well under the blast radius) so every fireball hangs in open
+	# air near the bomb — a wide spread shoved quads inside nearby brush
+	# geometry, smearing fire texture flat across walls.
 	var offsets := [
 		Vector3(0.0, -0.10, 0.0),
 		Vector3(
-			_signed_hash(serial, 17) * 5.12,
+			_signed_hash(serial, 17) * 0.95,
 			_signed_hash(serial, 31) * 0.10,
-			_signed_hash(serial, 47) * 5.12,
+			_signed_hash(serial, 47) * 0.95,
 		),
 		Vector3(
-			_signed_hash(serial, 61) * 5.12,
+			_signed_hash(serial, 61) * 0.95,
 			_signed_hash(serial, 73) * 0.10,
-			_signed_hash(serial, 89) * 5.12,
+			_signed_hash(serial, 89) * 0.95,
 		),
 		Vector3(
-			_signed_hash(serial, 101) * 5.12,
+			_signed_hash(serial, 101) * 0.95,
 			_signed_hash(serial, 113) * 0.10,
-			_signed_hash(serial, 127) * 5.12,
+			_signed_hash(serial, 127) * 0.95,
 		),
 	]
 	# The fourth stock sprite is zerogxplode. The CS depot fixture carries only
@@ -333,17 +553,82 @@ func spawn_c4_explosion(position: Vector3, normal: Vector3, underwater := false)
 	# that Half-Life base sprite is present in the verified asset corpus.
 	var assets := ["fexplo", "eexplo", "fexplo", "fexplo"]
 	for index in offsets.size():
+		# Lift each fireball by its own billboard half-height (plus a stagger)
+		# so no quad bottom ever intersects the floor plane: a floor-clipped
+		# additive quad depth-cuts into a razor-straight line, and the tight
+		# lateral spread above keeps quads out of nearby brush geometry so no
+		# vertical clip edges smear fire across walls.
+		var lifted: Vector3 = offsets[index] + Vector3.UP * (
+			_sprite_half_height(assets[index], 2.0)
+			+ 0.10
+			+ 0.30 * float(index % 2)
+		)
 		var node := _spawn_sprite(
 			assets[index],
-			position + offsets[index],
-			13.5,
-			15.0 if index < 3 else 1.7,
+			position + lifted,
+			2.0,
+			# All four Explode2 sprites play through their painted frames at the
+			# TE default 15 fps; a near-static held first frame reads as a giant
+			# white slab instead of the crisp flame tongues. Short per-sprite
+			# stagger desynchronizes the four animations so overlapping additive
+			# frames keep individual fireball structure instead of stacking into
+			# one blown-out cream mass.
+			15.0,
 			EVENT_C4_FIREBALL,
+			index * 4,
+			false,
+			Color(1.0, 0.86, 0.68, 0.55 if index > 0 else 1.0),
+			Vector3.ZERO,
+			0.0,
 			0,
 			false,
+			0,
+			0,
+			false,
+			0,
+			# Edge fade: the ember/noise frames paint texels to the border;
+			# without the rim fade the fireball terminated in straight quad
+			# lines against the ground and crates.
+			true,
 		)
-		if is_instance_valid(node):
-			_spawn_explosion_lights(node, node.position, 12.0, 100, serial + index)
+		# One dlight pair for the whole detonation: four stacked pairs turned
+		# the pavement incandescent red instead of leaving flat black scorch.
+		if index == 0 and is_instance_valid(node):
+			_spawn_explosion_lights(node, node.position, 2.4, 70, serial + index)
+	# Explode2's aftermath: rolling DARK gray smoke columns framing the orange
+	# fireballs, delayed until the flame tongues have developed. Kept smaller
+	# and darker than the fireballs so the detonation reads as distinct fire
+	# plus structured smoke, never one washed-out cream cloud.
+	for smoke_index in range(3):
+		var smoke_seed := serial * 19 + smoke_index * 7
+		var smoke_offset := Vector3(
+			_signed_hash(smoke_seed, 141) * 1.2,
+			1.1 + _unit_hash(smoke_seed, 151) * 0.7,
+			_signed_hash(smoke_seed, 163) * 1.2,
+		)
+		# The original black_smoke3.spr rolling-smoke animation, modulated dark
+		# gray exactly like GoldSrc black-smoke temp entities (INDEXALPHA base
+		# tinted by render color). Kept translucent so it reads as separate
+		# rising smoke sprites, never one opaque cotton mass.
+		_spawn_sprite(
+			"black_smoke3",
+			position + smoke_offset,
+			2.3 + _unit_hash(smoke_seed, 173) * 0.9,
+			15.0,
+			EVENT_HE_SMOKE,
+			55 + smoke_index * 14,
+			false,
+			Color(0.34, 0.33, 0.32, 0.58),
+			Vector3.UP * 0.22,
+			0.0,
+			420,
+			true,
+			160,
+			35,
+			false,
+			0,
+			true,
+		)
 	spawn_decal(
 		"scorch%d" % (serial % 2 + 1),
 		position,
@@ -356,12 +641,21 @@ func spawn_c4_explosion(position: Vector3, normal: Vector3, underwater := false)
 		_spawn_spark_shower(position, normal, serial % 4, serial)
 
 
+func _sprite_half_height(asset_name: String, scale_factor: float) -> float:
+	# World-space half-height of the sprite's billboard quad; used to lift
+	# floor-level effects so their quads never depth-clip against the ground.
+	_load_manifest()
+	var sprite: Dictionary = _manifest().get("sprites", {}).get(asset_name, {})
+	return float(sprite.get("max_height", 0)) * 0.01 * scale_factor * 0.5
+
+
 func _spawn_te_explosion(
 	asset_name: String,
 	position: Vector3,
 	scale_factor: float,
 	fps: float,
 	seed: int,
+	color_modulate := Color.WHITE,
 ) -> void:
 	var sprite_node := _spawn_sprite(
 		asset_name,
@@ -371,8 +665,20 @@ func _spawn_te_explosion(
 		EVENT_HE_FIREBALL,
 		0,
 		false,
-		Color.WHITE,
+		color_modulate,
 		Vector3.UP * TE_EXPLOSION_RISE_METERS_PER_SECOND,
+		0.0,
+		0,
+		false,
+		0,
+		0,
+		# Linear sampling: the GoldSrc GL renderer draws sprites bilinearly.
+		# Nearest magnified the painted frames into hard chunky noise squares.
+		false,
+		0,
+		# Edge fade: the painted low-level glow must die before the quad edge
+		# so no straight billboard boundary shows over sky or brushwork.
+		true,
 	)
 	if not is_instance_valid(sprite_node) or _sprites.is_empty():
 		return
@@ -406,17 +712,50 @@ func spawn_decal(
 	if decal.is_empty():
 		return null
 	var mesh := QuadMesh.new()
+	# Blood stamps in CS 1.6 read as several small hard splats, not one large
+	# smeared sheet; keep them well under half the exported quad size. Bullet
+	# holes get a modest boost: the {shot chip occupies only the middle of its
+	# 16x16 canvas, and at source scale the dark hole disappeared into wall
+	# noise instead of clearly reading as a hole.
+	var family_size_scale := 1.0
+	if family == "blood":
+		family_size_scale = 0.55
+	elif family == "shot":
+		# Close to source scale: the earlier 1.4x blow-up magnified the 16x16
+		# {shot chip into a blurry palm-sized diamond smudge instead of the
+		# small crisp CS 1.6 bullet hole.
+		family_size_scale = 0.95
 	mesh.size = Vector2(
-		float(decal.width) * 0.01,
-		float(decal.height) * 0.01,
+		float(decal.width) * 0.01 * family_size_scale,
+		float(decal.height) * 0.01 * family_size_scale,
 	)
 	var material := StandardMaterial3D.new()
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.blend_mode = BaseMaterial3D.BLEND_MODE_MUL
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
-	material.albedo_texture = load("res://assets/vfx/%s" % str(decal.texture))
+	# Bilinear sampling, exactly like the GoldSrc GL renderer draws decals:
+	# nearest sampling magnified the 3-4 texel {shot pockmark into solid hard
+	# squares; linear restores the round soft-edged pockmark falloff.
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	var decal_texture := load("res://assets/vfx/%s" % str(decal.texture)) as Texture2D
+	if family == "shot":
+		# GoldSrc converts {-prefixed decals into darkness-alpha textures
+		# (R_DecalTexture) and stamps them as near-black marks. The straight
+		# WAD-RGB export leaves the tiny pockmark at only ~0.4-0.55 multiply,
+		# which vanishes into busy wall texels. A gamma curve on the multiply
+		# mask restores the original dark shot hole while leaving the white
+		# (identity) surround untouched. 1.7 keeps the hole dark without
+		# spreading the darkening into the surround (2.4 smeared the whole
+		# quad into a soft dark diamond).
+		decal_texture = _boosted_decal_texture(decal_name, decal_texture, 1.7)
+	elif family == "blood":
+		# CS 1.6 {blood decals multiply to a dark dried-maroon stain. The raw
+		# WAD RGB stamps as a flat bright red sheet; the same darkness curve
+		# restores the maroon tone and the palette-noise variation while the
+		# white surround stays identity.
+		decal_texture = _boosted_decal_texture(decal_name, decal_texture, 1.8)
+	material.albedo_texture = decal_texture
 	# The imported PNG retains the original WAD RGB. White is the
 	# multiplicative identity, exactly matching GoldSrc decal modulation
 	# against the already-lit destination surface.
@@ -433,10 +772,16 @@ func spawn_decal(
 		else Vector3.UP
 	)
 	var basis := Basis.looking_at(-plane_normal, orientation_up)
-	basis = basis.rotated(plane_normal, float(rotation_seed % 4) * PI * 0.5)
+	# R_DecalShoot applies a random full-circle roll per decal; 90-degree
+	# steps left every {shot chip with an identical readable orientation.
+	basis = basis.rotated(plane_normal, _unit_hash(rotation_seed, 53) * TAU)
+	# ~1.2 cm lift off the surface: brush visual faces (breakable crates run
+	# through a collision proxy) can sit a few millimetres proud of the physics
+	# surface the impact ray hit, and a 2 mm offset left decals buried inside
+	# the visible face. Still far below a readable air gap at play distances.
 	instance.global_transform = Transform3D(
 		basis,
-		position + plane_normal * (0.002 + float(_decal_nodes.size() % 4) * 0.0002),
+		position + plane_normal * (0.012 + float(_decal_nodes.size() % 4) * 0.0008),
 	)
 	_decal_nodes.append(instance)
 	while _decal_nodes.size() > MAX_WORLD_DECALS:
@@ -454,6 +799,38 @@ func spawn_decal(
 	return instance
 
 
+static var _shot_decal_texture_cache: Dictionary = {}
+
+
+static func _boosted_decal_texture(
+	decal_name: String,
+	source: Texture2D,
+	gamma: float,
+) -> Texture2D:
+	if source == null:
+		return source
+	if _shot_decal_texture_cache.has(decal_name):
+		return _shot_decal_texture_cache[decal_name]
+	var image := source.get_image()
+	if image == null:
+		return source
+	image = image.duplicate()
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	for y in range(image.get_height()):
+		for x in range(image.get_width()):
+			var color := image.get_pixel(x, y)
+			color.r = pow(color.r, gamma)
+			color.g = pow(color.g, gamma)
+			color.b = pow(color.b, gamma)
+			image.set_pixel(x, y, color)
+	image.generate_mipmaps()
+	var boosted := ImageTexture.create_from_image(image)
+	_shot_decal_texture_cache[decal_name] = boosted
+	return boosted
+
+
 func _spawn_sprite(
 	asset_name: String,
 	position: Vector3,
@@ -465,6 +842,13 @@ func _spawn_sprite(
 	color_modulate := Color.WHITE,
 	velocity := Vector3.ZERO,
 	source_roll_degrees := 0.0,
+	lifetime_ticks_override := 0,
+	loop_frames := false,
+	fade_out_ticks := 0,
+	fade_in_ticks := 0,
+	nearest_filter := false,
+	frame_offset := 0,
+	edge_fade := false,
 ) -> MeshInstance3D:
 	_load_manifest()
 	var sprite: Dictionary = _manifest().get("sprites", {}).get(asset_name, {})
@@ -485,6 +869,12 @@ func _spawn_sprite(
 				"width": int(sprite.max_width),
 				"height": int(sprite.max_height),
 			})
+	if frame_offset > 0 and frame_paths.size() > 1:
+		# Random start frame (engine muzzle-flash style): rotate the frame ring
+		# so playback begins on the requested frame.
+		var start := frame_offset % frame_paths.size()
+		frame_paths = frame_paths.slice(start) + frame_paths.slice(0, start)
+		frame_metadata = frame_metadata.slice(start) + frame_metadata.slice(0, start)
 	var mesh := QuadMesh.new()
 	var first_geometry := sprite_frame_geometry(frame_metadata[0], scale_factor)
 	mesh.size = first_geometry.size
@@ -499,10 +889,26 @@ func _spawn_sprite(
 	)
 	var orientation := int(sprite.get("orientation", 2))
 	material.billboard_mode = billboard_mode_for_orientation(orientation)
+	# GoldSrc VP_PARALLEL sprites support per-entity roll (the random muzzle
+	# flash roll). Godot's material billboard discards node rotation, so rolled
+	# parallel sprites face the camera manually each tick instead.
+	var face_camera_roll := (
+		(orientation == 2 or orientation == 0 or orientation == 1)
+		and absf(source_roll_degrees) > 0.001
+	)
+	if face_camera_roll:
+		material.billboard_mode = BaseMaterial3D.BILLBOARD_DISABLED
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.no_depth_test = no_depth_test
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	material.albedo_texture = load(frame_paths[0])
+	# GoldSrc sprites are low-res paletted frames; nearest sampling keeps their
+	# dithered texel crunch readable when a frame is magnified across the
+	# screen (smoke, explosions), while small transient sprites stay linear.
+	material.texture_filter = (
+		BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
+		if nearest_filter
+		else BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	)
+	material.albedo_texture = _frame_texture(frame_paths[0], edge_fade)
 	material.albedo_color = color_modulate
 	mesh.material = material
 	var instance := MeshInstance3D.new()
@@ -512,8 +918,12 @@ func _spawn_sprite(
 	instance.global_position = position
 	if orientation == 3 or orientation == 4:
 		instance.rotation.z = deg_to_rad(source_roll_degrees)
+	elif face_camera_roll:
+		_face_camera_with_roll(instance, source_roll_degrees)
 	instance.visible = start_delay_ticks <= 0
 	var duration_ticks := maxi(1, int(ceil(float(frame_paths.size()) / fps * TICK_RATE_HZ)))
+	if lifetime_ticks_override > 0:
+		duration_ticks = lifetime_ticks_override
 	_sprites.append({
 		"node": instance,
 		"material": material,
@@ -526,6 +936,11 @@ func _spawn_sprite(
 		"orientation": orientation,
 		"source_roll_degrees": source_roll_degrees,
 		"velocity": velocity,
+		"loop_frames": loop_frames,
+		"face_camera_roll": face_camera_roll,
+		"edge_fade": edge_fade,
+		"fade_out_ticks": fade_out_ticks,
+		"fade_in_ticks": fade_in_ticks,
 		"start_tick": tick + start_delay_ticks,
 		"expire_tick": tick + start_delay_ticks + duration_ticks,
 		"frame_index": -1,
@@ -543,6 +958,67 @@ func _spawn_sprite(
 		"expire_tick": tick + start_delay_ticks + duration_ticks,
 	})
 	return instance
+
+
+static func _frame_texture(path: String, edge_fade: bool) -> Texture2D:
+	var source := load(path) as Texture2D
+	if not edge_fade or source == null:
+		return source
+	if _edge_faded_texture_cache.has(path):
+		return _edge_faded_texture_cache[path]
+	# GoldSrc's big explosion frames paint low-level glow haze right up to the
+	# sprite border. At CS scales that reveals the billboard's straight quad
+	# edges as hard lines over the sky and against geometry. Rolling the outer
+	# rim of every frame smoothly to zero keeps the painted interior intact
+	# while guaranteeing the additive/alpha content dies before the quad edge.
+	var image := source.get_image()
+	if image == null:
+		return source
+	image = image.duplicate()
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	var width := image.get_width()
+	var height := image.get_height()
+	var margin := maxf(2.0, minf(width, height) * 0.16)
+	for y in range(height):
+		for x in range(width):
+			var border := float(mini(mini(x, width - 1 - x), mini(y, height - 1 - y)))
+			if border >= margin:
+				continue
+			var fraction := border / margin
+			var factor := fraction * fraction * (3.0 - 2.0 * fraction)
+			var color := image.get_pixel(x, y)
+			color.r *= factor
+			color.g *= factor
+			color.b *= factor
+			color.a *= factor
+			image.set_pixel(x, y, color)
+	image.generate_mipmaps()
+	var faded := ImageTexture.create_from_image(image)
+	_edge_faded_texture_cache[path] = faded
+	return faded
+
+
+func _face_camera_with_roll(node: Node3D, roll_degrees: float) -> void:
+	# Manual VP_PARALLEL billboard with sprite roll: aim the quad's +Z at the
+	# active camera, then roll around the view axis.
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var camera := viewport.get_camera_3d()
+	if not is_instance_valid(camera):
+		return
+	var forward := node.global_position - camera.global_position
+	if forward.length_squared() < 0.000001:
+		return
+	forward = forward.normalized()
+	var reference_up := (
+		Vector3.UP if absf(forward.dot(Vector3.UP)) < 0.98 else Vector3.RIGHT
+	)
+	var basis := Basis.looking_at(forward, reference_up)
+	basis = basis.rotated(basis.z, deg_to_rad(roll_degrees))
+	node.global_basis = basis
 
 
 func _spawn_shell(
@@ -609,9 +1085,11 @@ func _spawn_impact_particles(
 			position + normal * 0.01,
 			normal * (0.35 + 0.1 * index) + spread * 0.22,
 			3.0,
-			12,
-			Color("#83745f"),
-			0.035,
+			10,
+			# Dim additive chips: at full brightness the short debris lines read
+			# as white wireframe artifacts stamped over nearby decals.
+			Color(0.51, 0.45, 0.37, 0.55),
+			0.028,
 		)
 	_record(EVENT_IMPACT_PARTICLES, {
 		"position": position,
@@ -719,6 +1197,29 @@ func _spawn_gravity_tracer(
 	return tracer
 
 
+func spawn_muzzle_light(position: Vector3) -> void:
+	# The GoldSrc muzzle-flash dlight: a brief warm point light that visibly
+	# brightens the viewmodel and nearby geometry while the flash sprite is up.
+	# Intentionally not recorded: it is a client-side dlight, not a temp entity.
+	var light := OmniLight3D.new()
+	light.name = "GoldSrcMuzzleDLight"
+	light.light_color = MUZZLE_DLIGHT_COLOR
+	light.light_energy = 1.5
+	light.omni_range = 3.2
+	light.shadow_enabled = false
+	add_child(light)
+	light.global_position = position
+	_lights.append({
+		"node": light,
+		"owner": null,
+		"start_tick": tick,
+		"expire_tick": tick + MUZZLE_DLIGHT_TICKS,
+		"energy": light.light_energy,
+		"range": light.omni_range,
+		"kind": "muzzle_dlight",
+	})
+
+
 func _spawn_explosion_lights(
 	owner: Node3D,
 	position: Vector3,
@@ -738,8 +1239,11 @@ func _spawn_explosion_lights(
 			if light_index == 0
 			else Color8(255, 224, 160)
 		)
-		light.light_energy = 4.0 if light_index == 0 else 2.0
-		light.omni_range = radius_meters * (1.0 if light_index == 0 else 0.5)
+		# GoldSrc explosion dlights are tight and short-lived; keep them subtle so
+		# the hand-painted additive sprite reads instead of blowing every nearby
+		# surface out to uniform white.
+		light.light_energy = 0.7 if light_index == 0 else 0.35
+		light.omni_range = radius_meters * (0.5 if light_index == 0 else 0.25)
 		light.shadow_enabled = false
 		add_child(light)
 		light.global_position = position
@@ -822,14 +1326,38 @@ func _update_sprites() -> void:
 			continue
 		var velocity: Vector3 = effect.get("velocity", Vector3.ZERO)
 		node.global_position += velocity * TICK_SECONDS
+		if bool(effect.get("face_camera_roll", false)):
+			_face_camera_with_roll(node, float(effect.get("source_roll_degrees", 0.0)))
+		var fade_in := int(effect.get("fade_in_ticks", 0))
+		var fade_out := int(effect.get("fade_out_ticks", 0))
+		if fade_in > 0 or fade_out > 0:
+			var alpha := 1.0
+			var age := tick - start_tick
+			if fade_in > 0 and age < fade_in:
+				alpha = minf(alpha, float(age) / float(fade_in))
+			var remaining := int(effect.expire_tick) - tick
+			if fade_out > 0 and remaining < fade_out:
+				alpha = minf(alpha, float(remaining) / float(fade_out))
+			var base_color: Color = effect.color
+			var faded := base_color
+			faded.a = base_color.a * clampf(alpha, 0.0, 1.0)
+			var fade_material: StandardMaterial3D = effect.material
+			fade_material.albedo_color = faded
 		var frames: Array[String] = effect.frames
-		var frame_index := mini(
-			frames.size() - 1,
-			int(floor(float(tick - start_tick) * float(effect.fps) / TICK_RATE_HZ)),
+		var raw_frame := int(
+			floor(float(tick - start_tick) * float(effect.fps) / TICK_RATE_HZ)
+		)
+		var frame_index := (
+			raw_frame % frames.size()
+			if bool(effect.get("loop_frames", false))
+			else mini(frames.size() - 1, raw_frame)
 		)
 		if frame_index != int(effect.frame_index):
 			var material: StandardMaterial3D = effect.material
-			material.albedo_texture = load(frames[frame_index])
+			material.albedo_texture = _frame_texture(
+				frames[frame_index],
+				bool(effect.get("edge_fade", false)),
+			)
 			var frame_metadata: Array[Dictionary] = effect.frame_metadata
 			var geometry := sprite_frame_geometry(
 				frame_metadata[frame_index],

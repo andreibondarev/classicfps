@@ -182,6 +182,9 @@ func _run() -> void:
 	target.audio_router = router
 	target.global_position = Vector3(9.0, 0.0, 0.0)
 	target.reset_target(target.global_position)
+	# Bots spawn on the classic pistol-round loadout, so the rifle fire event
+	# under test has to be equipped explicitly rather than assumed.
+	target.configure_weapon("ak47")
 	router.reset(0xC516)
 	target._try_fire(player)
 	_check(

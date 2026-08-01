@@ -16,6 +16,7 @@ func _init() -> void:
 	_test_blind_and_smoke_hooks()
 	_test_reacquisition_reaction()
 	_test_render_schedule_equivalence()
+	_test_rear_damage_stimulus()
 	if failures.is_empty():
 		print("GAME_BOT_PERCEPTION_TEST_PASS")
 		quit(0)
@@ -298,6 +299,66 @@ func _test_reacquisition_reaction() -> void:
 		reacquired_tactics.state == TacticsScript.STATE_REACT
 		and not reacquired_tactics.fire,
 		"reacquisition pays the reaction delay again",
+	)
+
+
+func _test_rear_damage_stimulus() -> void:
+	var token := RefCounted.new()
+	var behind := _target_at_angle(180.0, 3.0)
+	var candidate := _candidate(
+		token,
+		"attacker",
+		behind,
+		[true, true, true, true, true],
+	)
+	var perception := _make_perception(_new_world([candidate]))
+	var ignored: Dictionary = perception.advance_ticks(30, ORIGIN, FORWARD)
+	_check(
+		not is_instance_valid(ignored.target) and str(ignored.state) == "patrol",
+		"an enemy behind the bot stays unseen until something reveals it",
+	)
+	perception.note_damage(token, behind, "attacker")
+	var during_reaction: Dictionary = perception.advance_ticks(
+		perception.damage_reaction_ticks - 1,
+		ORIGIN,
+		FORWARD,
+	)
+	_check(
+		not bool(during_reaction.investigating),
+		"a hit does not produce an instant reaction",
+	)
+	# Ticks 52..59: the reaction has elapsed but the next 10-tick scan has not run.
+	var reacting: Dictionary = perception.advance_ticks(8, ORIGIN, FORWARD)
+	_check(
+		bool(reacting.investigating)
+		and str(reacting.state) == "investigate"
+		and (reacting.damage_position as Vector3) == behind,
+		"after the reaction delay the bot investigates where the shot came from",
+	)
+	var acquired: Dictionary = perception.advance_ticks(2, ORIGIN, FORWARD)
+	_check(
+		acquired.target == token and bool(acquired.visible),
+		"the attacker is acquired on the next scan even from outside the cone",
+	)
+
+	var occluded_token := RefCounted.new()
+	var occluded_candidate := _candidate(
+		occluded_token,
+		"occluded_attacker",
+		behind,
+		[false, false, false, false, false],
+	)
+	var occluded_perception := _make_perception(_new_world([occluded_candidate]))
+	occluded_perception.note_damage(occluded_token, behind, "occluded_attacker")
+	var blocked: Dictionary = occluded_perception.advance_ticks(
+		120,
+		ORIGIN,
+		FORWARD,
+	)
+	_check(
+		not is_instance_valid(blocked.target)
+		and bool(blocked.investigating),
+		"damage never grants sight through cover, only a direction to face",
 	)
 
 

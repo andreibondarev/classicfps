@@ -7,6 +7,98 @@ const MODEL_SCALE := 1.0
 const AIM_PITCH_SCALE := 3.0
 const BLEND_KEY_STEPS := 1024.0
 const FRAME_KEY_STEPS := 4096.0
+# GoldSrc third-person poses are authored per weapon activity family; the body
+# and the bone-merged p_ model must sample the SAME family or the gun detaches
+# from the hands. Mirrors attached_weapon_family in the Rust exporter.
+const WEAPON_FAMILIES := {
+	# The standing ref_aim_ak47/ref_shoot_ak47 tapes appended to the stock 1.6
+	# player MDLs pose the torso off the gait facing (their crouch twins are
+	# fine); on screen the AK reads as a gun carried across the hips instead of
+	# a shouldered rifle. Re-measured after _blend_position started
+	# interpolating the STUDIO_XR pitch blends, so it is not a blend-sampling
+	# artifact: ref_aim_ak47 frame 0 center blend puts "Bip01 Spine" at yaw -61
+	# degrees versus -12 for ref_aim_carbine, and rendering all nine pitch
+	# blends shows the same yaw offset at every pitch.
+	# CS 1.6's carbine family carries the same two-handed forward aim the game
+	# shows for rifles, so the AK samples that family instead. Mirrors
+	# attached_weapon_family in crate/src/mdl.rs.
+	"ak47": "carbine",
+	"aug": "carbine",
+	"famas": "carbine",
+	"galil": "carbine",
+	"m4a1": "carbine",
+	"sg552": "carbine",
+	"awp": "rifle",
+	"g3sg1": "rifle",
+	"scout": "rifle",
+	"sg550": "rifle",
+	"deagle": "onehanded",
+	"fiveseven": "onehanded",
+	"glock18": "onehanded",
+	"p228": "onehanded",
+	"usp": "onehanded",
+	"elite": "dualpistols",
+	"mac10": "mp5",
+	"mp5": "mp5",
+	"p90": "mp5",
+	"tmp": "mp5",
+	"ump45": "mp5",
+	"m3": "shotgun",
+	"xm1014": "shotgun",
+	"m249": "m249",
+	"flashbang": "grenade",
+	"hegrenade": "grenade",
+	"smokegrenade": "grenade",
+	"c4": "c4",
+	"knife": "knife",
+}
+# GoldSrc modulates the whole player model with the lightmap sample under its
+# origin. Approximated here with a sun-occlusion ray against the map colliders:
+# the baked lightmap shadows and this ray derive from the same brush geometry
+# and sun angles, so the model darkens exactly where the floor shadow lies.
+const TINT_REFRESH_INTERVAL := 0.25
+const TINT_FLOOR := 0.28
+# de_dust2 light_environment: angle 43, pitch -60 (GoldSrc x,y,z), converted to
+# Godot (x, z, -y): the direction from a model toward the sun. Only used when
+# no baked lightmap is available to sample directly.
+const FALLBACK_SUN_DIRECTION := Vector3(-0.36575, 0.86603, 0.34101)
+# Floor-luxel probe grid resolution (Godot meters; 32 GoldSrc units).
+const LIGHT_PROBE_CELL := 0.32
+# Lightmap luxels inside the dust2 sun shadow settle around half brightness
+# with a slightly cool cast; sunlit luxels render the model unmodulated.
+const SHADOW_TINT := Color(0.50, 0.52, 0.57)
+const LIT_TINT := Color(1.0, 1.0, 1.0)
+# GoldSrc holds the weapon aim layer (ref_aim_*, approximated by frame 0 of the
+# baked ref_shoot_* tape with its 9-way STUDIO_XR pitch blend) over the gait
+# sequence whenever a player simply carries the weapon: both hands stay on the
+# gun and the barrel tracks aim yaw/pitch. The base idle1/run tapes alone would
+# sling the rifle across the chest with the support arm hanging free.
+const AIM_LAYER_FOR := {
+	"idle": "shoot",
+	"run": "shoot",
+	"crouchidle": "crouchshoot",
+	"crouchrun": "crouchshoot",
+}
+# GoldSrc drives the legs from gaitsequence while ref_shoot/ref_reload style
+# action tapes animate only the upper body (their authored legs are a raised
+# reference pose that never renders in-engine). These action states composite
+# the current locomotion tape below the belt line, mirroring StudioSetupBones'
+# gait split at the pelvis.
+const GAIT_COMPOSITE_STATES := ["shoot", "reload", "crouchshoot", "crouchreload"]
+# Belt line in reference-pose units above the feet (~34 GoldSrc units).
+const LOWER_BODY_SPLIT := 0.34
+# CS 1.6 removes the bone-merged p_ model the instant a player dies and the gun
+# reappears as a separate ground item; sidearm-less carry items simply vanish.
+const UNDROPPABLE_WEAPONS := ["knife", "hegrenade", "flashbang", "smokegrenade", "c4"]
+# CS 1.6 tosses the dropped weapon entity with inherited momentum: it arcs from
+# the hands, bounces off the floor and only then settles. Closed-form ballistic
+# constants (Godot meters, 0.01/GoldSrc unit; sv_gravity 800 → 8.0).
+const DROP_GRAVITY := 8.0
+const DROP_START := Vector3(0.14, 0.34, 0.16)
+const DROP_REST := Vector3(0.10, 0.0, 0.26)
+const DROP_LAUNCH_UP := 0.10
+const DROP_RESTITUTION := 0.30
+const DROP_MIN_BOUNCE := 0.60
 
 static var _template_cache: Dictionary = {}
 
@@ -15,6 +107,9 @@ static func release_cached_resources() -> void:
 	# The runtime shares immutable player/weapon meshes across every combatant.
 	# Whole-scene teardown (tests and hot reload) owns the matching release.
 	_template_cache.clear()
+	_chrome_texture_cache.clear()
+	_light_probe_grid.clear()
+	_light_probe_map_id = 0
 
 
 var skin_name := ""
@@ -25,6 +120,7 @@ var available_animations: Array[String] = []
 
 var body_instance: MeshInstance3D
 var weapon_instance: MeshInstance3D
+var dropped_weapon_instance: MeshInstance3D
 var _body_template: Dictionary = {}
 var _weapon_template: Dictionary = {}
 var _animation_time := 0.0
@@ -36,9 +132,13 @@ var _crouched := false
 var _grounded := true
 var _aim_pitch_degrees := 0.0
 var _death_ground_offset := NAN
+var _drop_elapsed := 0.0
 var _body_frame_key := ""
 var _weapon_frame_key := ""
 var _flash_material: StandardMaterial3D
+var _tint_timer := INF
+var _tint_refresh_position := Vector3(INF, INF, INF)
+var _environment_tint := Color(1.0, 1.0, 1.0)
 
 
 func _ready() -> void:
@@ -49,7 +149,15 @@ func _ready() -> void:
 func load_character(requested_skin: String, requested_weapon := "ak47") -> bool:
 	skin_name = requested_skin
 	weapon_name = requested_weapon
-	_body_template = _load_template("res://generated/players/%s/model.json" % skin_name)
+	var body_path := "res://generated/players/%s/model.json" % skin_name
+	var family := str(WEAPON_FAMILIES.get(weapon_name, "rifle"))
+	var family_body_path := (
+		"res://generated/player_action_families/%s/%s/model.json"
+		% [family, skin_name]
+	)
+	if FileAccess.file_exists(family_body_path):
+		body_path = family_body_path
+	_body_template = _load_template(body_path)
 	if _body_template.is_empty():
 		return false
 	body_instance = _create_instance("Authentic_%s" % skin_name, _body_template)
@@ -106,14 +214,173 @@ func play_death() -> void:
 		false,
 		"",
 	)
-	_weapon_frame_key = _set_frame(
-		weapon_instance,
+	# CS 1.6 detaches the bone-merged p_ model the instant the death sequence
+	# starts: corpses are always empty-handed and the gun becomes a ground item.
+	if is_instance_valid(weapon_instance):
+		weapon_instance.visible = false
+	_spawn_dropped_weapon()
+
+
+func _spawn_dropped_weapon() -> void:
+	if (
+		_weapon_template.is_empty()
+		or UNDROPPABLE_WEAPONS.has(weapon_name)
+		or is_instance_valid(dropped_weapon_instance)
+	):
+		return
+	var flattened := _flattened_weapon_positions(_weapon_template)
+	if flattened.is_empty():
+		return
+	dropped_weapon_instance = _create_instance(
+		"Dropped_%s" % weapon_name,
 		_weapon_template,
-		animation_state,
-		0.0,
-		false,
-		"",
 	)
+	_render_frame(dropped_weapon_instance, _weapon_template, flattened, 0)
+	add_child(dropped_weapon_instance)
+	_drop_elapsed = 0.0
+	_update_dropped_weapon()
+
+
+func _update_dropped_weapon() -> void:
+	## Closed-form dropped-weapon toss: arc from the hands, bounce on the floor
+	## plane, settle at the rest spot. Being a pure function of elapsed time it
+	## stays deterministic under any delta partitioning (100 Hz game ticks or a
+	## capture's single large advance).
+	if not is_instance_valid(dropped_weapon_instance):
+		return
+	# Local space: the model root is already yawed and lifted by the death
+	# ground offset, so compensate y to land on the actual floor plane.
+	var floor_y := -position.y + 0.004
+	var vertical := DROP_START.y - floor_y
+	var speed := DROP_LAUNCH_UP
+	var elapsed := _drop_elapsed
+	var settled := false
+	var flight_time := 0.0
+	# Walk the bounce segments analytically until the toss clock lands inside
+	# one (or the arc has decayed into rest).
+	while true:
+		var segment := (
+			(speed + sqrt(speed * speed + 2.0 * DROP_GRAVITY * vertical))
+			/ DROP_GRAVITY
+		)
+		if elapsed < segment:
+			break
+		elapsed -= segment
+		flight_time += segment
+		speed = (speed - DROP_GRAVITY * segment) * -DROP_RESTITUTION
+		vertical = 0.0
+		if speed < DROP_MIN_BOUNCE:
+			settled = true
+			break
+	var height := floor_y
+	if not settled:
+		height = (
+			floor_y
+			+ vertical
+			+ speed * elapsed
+			- 0.5 * DROP_GRAVITY * elapsed * elapsed
+		)
+	# Horizontal slide decays toward the rest offset over the toss.
+	var slide := clampf(_drop_elapsed / 0.55, 0.0, 1.0)
+	slide = 1.0 - (1.0 - slide) * (1.0 - slide)
+	dropped_weapon_instance.position = Vector3(
+		lerpf(DROP_START.x, DROP_REST.x, slide),
+		maxf(height, floor_y),
+		lerpf(DROP_START.z, DROP_REST.z, slide),
+	)
+	dropped_weapon_instance.rotation.y = 0.9
+	if settled:
+		dropped_weapon_instance.rotation.x = 0.0
+	else:
+		# One full tumble across the first flight segment reads as inherited
+		# momentum and still meets the floor flat at first impact.
+		var first_flight := (
+			(
+				DROP_LAUNCH_UP
+				+ sqrt(
+					DROP_LAUNCH_UP * DROP_LAUNCH_UP
+					+ 2.0 * DROP_GRAVITY * (DROP_START.y - floor_y)
+				)
+			)
+			/ DROP_GRAVITY
+		)
+		dropped_weapon_instance.rotation.x = (
+			TAU * clampf(_drop_elapsed / maxf(first_flight, 0.001), 0.0, 1.0)
+		)
+
+
+static func _flattened_weapon_positions(template: Dictionary) -> PackedFloat32Array:
+	## Re-poses the baked in-hands reference vertices as a ground item: longest
+	## axis (barrel) horizontal, thinnest axis (receiver side) vertical, lowest
+	## point on the floor — the way GoldSrc w_ ground models lie on their side.
+	var source: PackedFloat32Array = template.positions
+	var vertex_count := source.size() / 3
+	if vertex_count < 4:
+		return PackedFloat32Array()
+	var points: Array[Vector3] = []
+	points.resize(vertex_count)
+	var centroid := Vector3.ZERO
+	for index in range(vertex_count):
+		var point := Vector3(
+			source[index * 3],
+			source[index * 3 + 1],
+			source[index * 3 + 2],
+		)
+		points[index] = point
+		centroid += point
+	centroid /= float(vertex_count)
+	# Longest axis from the farthest vertex pair (subsampled for cost).
+	var stride := maxi(1, vertex_count / 160)
+	var barrel_axis := Vector3.RIGHT
+	var longest := 0.0
+	for a in range(0, vertex_count, stride):
+		for b in range(a + stride, vertex_count, stride):
+			var separation := points[b] - points[a]
+			var length := separation.length_squared()
+			if length > longest:
+				longest = length
+				barrel_axis = separation
+	if longest <= 0.0:
+		return PackedFloat32Array()
+	barrel_axis = barrel_axis.normalized()
+	# Thinnest in-plane direction perpendicular to the barrel becomes "up".
+	var plane_u := barrel_axis.cross(Vector3.UP)
+	if plane_u.length_squared() < 0.001:
+		plane_u = barrel_axis.cross(Vector3.RIGHT)
+	plane_u = plane_u.normalized()
+	var plane_v := barrel_axis.cross(plane_u).normalized()
+	var up_axis := plane_u
+	var thinnest := INF
+	for step in range(36):
+		var angle := PI * float(step) / 36.0
+		var direction := plane_u * cos(angle) + plane_v * sin(angle)
+		var low := INF
+		var high := -INF
+		for index in range(0, vertex_count, stride):
+			var extent := (points[index] - centroid).dot(direction)
+			low = minf(low, extent)
+			high = maxf(high, extent)
+		if high - low < thinnest:
+			thinnest = high - low
+			up_axis = direction
+	var side_axis := barrel_axis.cross(up_axis).normalized()
+	var flattened := PackedFloat32Array()
+	flattened.resize(source.size())
+	var minimum_y := INF
+	for index in range(vertex_count):
+		var local := points[index] - centroid
+		var reposed := Vector3(
+			local.dot(barrel_axis),
+			local.dot(up_axis),
+			local.dot(side_axis),
+		)
+		flattened[index * 3] = reposed.x
+		flattened[index * 3 + 1] = reposed.y
+		flattened[index * 3 + 2] = reposed.z
+		minimum_y = minf(minimum_y, reposed.y)
+	for index in range(vertex_count):
+		flattened[index * 3 + 1] -= minimum_y
+	return flattened
 
 
 func reset_animation() -> void:
@@ -126,9 +393,15 @@ func reset_animation() -> void:
 	_animation_time = 0.0
 	_action_time = 0.0
 	_death_ground_offset = NAN
+	_drop_elapsed = 0.0
 	animation_state = "idle"
 	_body_frame_key = ""
 	_weapon_frame_key = ""
+	if is_instance_valid(dropped_weapon_instance):
+		dropped_weapon_instance.queue_free()
+		dropped_weapon_instance = null
+	if is_instance_valid(weapon_instance):
+		weapon_instance.visible = true
 	_body_frame_key = _set_frame(body_instance, _body_template, "idle", 0.0, true, "")
 	_weapon_frame_key = _set_frame(
 		weapon_instance,
@@ -161,6 +434,20 @@ func force_pose(state: String, frame_fraction := 0.0, aim_pitch_degrees := 0.0) 
 		false,
 		"",
 	)
+	if state == "die":
+		# Mirror production death visuals: the p_ model detaches the instant the
+		# death tape starts and the tossed gun's clock tracks the death clock.
+		if is_instance_valid(weapon_instance):
+			weapon_instance.visible = false
+		_spawn_dropped_weapon()
+		_drop_elapsed = pose_time
+		_update_dropped_weapon()
+		return
+	if is_instance_valid(weapon_instance):
+		weapon_instance.visible = true
+	if is_instance_valid(dropped_weapon_instance):
+		dropped_weapon_instance.queue_free()
+		dropped_weapon_instance = null
 	_weapon_frame_key = _set_frame(
 		weapon_instance,
 		_weapon_template,
@@ -192,6 +479,256 @@ func flash_hit(headshot: bool) -> void:
 
 func _process(delta: float) -> void:
 	advance_animation(delta)
+	_tint_timer += delta
+	# Refresh on the coarse clock, and immediately after teleports (round
+	# resets, staged captures) so the lightmap modulation never lags a warp.
+	if (
+		_tint_timer >= TINT_REFRESH_INTERVAL
+		or global_position.distance_squared_to(_tint_refresh_position) > 0.09
+	):
+		_tint_timer = 0.0
+		_tint_refresh_position = global_position
+		_update_environment_tint()
+
+
+func _update_environment_tint() -> void:
+	## GoldSrc samples the lightmap under the player and modulates the whole
+	## model with that color. The primary path samples the map's actual baked
+	## floor luxels under the entity (via the exported UV2 lightmap atlas);
+	## when no lightmap exists the fallback occludes a ray toward the map's
+	## authored sun so shadows still register against the same brush geometry.
+	if not model_loaded or not is_inside_tree():
+		return
+	var tint := LIT_TINT
+	if _ensure_light_probe_grid(get_tree().root):
+		var sample := _sample_floor_light()
+		if sample.a > 0.5:
+			tint = sample
+	else:
+		var world := get_world_3d()
+		if world == null:
+			return
+		var space := world.direct_space_state
+		if space == null:
+			return
+		var origin := global_position + Vector3.UP * 0.52
+		var query := PhysicsRayQueryParameters3D.create(
+			origin,
+			origin + FALLBACK_SUN_DIRECTION * 60.0,
+		)
+		query.collide_with_areas = false
+		var owning_body := _owning_collision_body()
+		if owning_body != null:
+			query.exclude = [owning_body.get_rid()]
+		if not space.intersect_ray(query).is_empty():
+			tint = SHADOW_TINT
+	tint.r = clampf(tint.r, TINT_FLOOR, 1.0)
+	tint.g = clampf(tint.g, TINT_FLOOR, 1.0)
+	tint.b = clampf(tint.b, TINT_FLOOR, 1.0)
+	tint.a = 1.0
+	if tint.is_equal_approx(_environment_tint):
+		return
+	_environment_tint = tint
+	for instance in [body_instance, weapon_instance, dropped_weapon_instance]:
+		if not is_instance_valid(instance):
+			continue
+		for material: StandardMaterial3D in instance.get_meta("group_materials", []):
+			material.albedo_color = tint
+
+
+func _owning_collision_body() -> CollisionObject3D:
+	var node: Node = get_parent()
+	while node != null:
+		if node is CollisionObject3D:
+			return node
+		node = node.get_parent()
+	return null
+
+
+# Shared floor-luxel probe grid: cell (x,z) -> flat [y, r, g, b, ...] entries
+# collected once per map from upward-facing lightmapped vertices.
+static var _light_probe_grid: Dictionary = {}
+static var _light_probe_map_id := 0
+
+
+static func _ensure_light_probe_grid(tree_root: Node) -> bool:
+	var map := _find_bsp_map(tree_root)
+	if map == null:
+		_light_probe_map_id = 0
+		return false
+	if map.get_instance_id() == _light_probe_map_id:
+		return not _light_probe_grid.is_empty()
+	_light_probe_map_id = map.get_instance_id()
+	_light_probe_grid = {}
+	var atlas: Texture2D = map.get("_lightmap_texture")
+	if atlas == null:
+		return false
+	var image := atlas.get_image()
+	if image == null:
+		return false
+	if image.is_compressed():
+		image.decompress()
+	_collect_floor_luxels(map, image)
+	return not _light_probe_grid.is_empty()
+
+
+static func _find_bsp_map(node: Node) -> Node3D:
+	if node is BspMap:
+		return node
+	for child in node.get_children():
+		var found := _find_bsp_map(child)
+		if found != null:
+			return found
+	return null
+
+
+static func _collect_floor_luxels(node: Node, image: Image) -> void:
+	if node is MeshInstance3D:
+		var mesh := (node as MeshInstance3D).mesh as ArrayMesh
+		if mesh != null:
+			var transform: Transform3D = (node as MeshInstance3D).global_transform
+			for surface_index in range(mesh.get_surface_count()):
+				var arrays := mesh.surface_get_arrays(surface_index)
+				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+				var normals: Variant = arrays[Mesh.ARRAY_NORMAL]
+				var uv2s: Variant = arrays[Mesh.ARRAY_TEX_UV2]
+				if not normals is PackedVector3Array or not uv2s is PackedVector2Array:
+					continue
+				var surface_normals: PackedVector3Array = normals
+				var surface_uv2s: PackedVector2Array = uv2s
+				if surface_uv2s.size() != vertices.size():
+					continue
+				var indices := PackedInt32Array()
+				var raw_indices: Variant = arrays[Mesh.ARRAY_INDEX]
+				if raw_indices is PackedInt32Array:
+					indices = raw_indices
+				else:
+					indices.resize(vertices.size())
+					for sequential in range(vertices.size()):
+						indices[sequential] = sequential
+				for triangle in range(0, indices.size() - 2, 3):
+					_rasterize_floor_triangle(
+						image,
+						transform * vertices[indices[triangle]],
+						transform * vertices[indices[triangle + 1]],
+						transform * vertices[indices[triangle + 2]],
+						surface_normals[indices[triangle]],
+						surface_uv2s[indices[triangle]],
+						surface_uv2s[indices[triangle + 1]],
+						surface_uv2s[indices[triangle + 2]],
+					)
+	for child in node.get_children():
+		_collect_floor_luxels(child, image)
+
+
+static func _rasterize_floor_triangle(
+	image: Image,
+	point_a: Vector3,
+	point_b: Vector3,
+	point_c: Vector3,
+	normal: Vector3,
+	uv_a: Vector2,
+	uv_b: Vector2,
+	uv_c: Vector2,
+) -> void:
+	## Splats one upward-facing lightmapped triangle into the probe grid at
+	## cell-center resolution (BSP floor polygons span many cells, so vertex
+	## samples alone leave holes).
+	if normal.y < 0.6:
+		return
+	var edge_ab := Vector2(point_b.x - point_a.x, point_b.z - point_a.z)
+	var edge_ac := Vector2(point_c.x - point_a.x, point_c.z - point_a.z)
+	var denominator := edge_ab.x * edge_ac.y - edge_ab.y * edge_ac.x
+	if absf(denominator) < 0.000001:
+		return
+	var min_cell_x := floori(minf(point_a.x, minf(point_b.x, point_c.x)) / LIGHT_PROBE_CELL)
+	var max_cell_x := floori(maxf(point_a.x, maxf(point_b.x, point_c.x)) / LIGHT_PROBE_CELL)
+	var min_cell_z := floori(minf(point_a.z, minf(point_b.z, point_c.z)) / LIGHT_PROBE_CELL)
+	var max_cell_z := floori(maxf(point_a.z, maxf(point_b.z, point_c.z)) / LIGHT_PROBE_CELL)
+	var width := image.get_width()
+	var height := image.get_height()
+	for cell_x in range(min_cell_x, max_cell_x + 1):
+		for cell_z in range(min_cell_z, max_cell_z + 1):
+			var probe := Vector2(
+				(float(cell_x) + 0.5) * LIGHT_PROBE_CELL - point_a.x,
+				(float(cell_z) + 0.5) * LIGHT_PROBE_CELL - point_a.z,
+			)
+			var weight_b := (probe.x * edge_ac.y - probe.y * edge_ac.x) / denominator
+			var weight_c := (edge_ab.x * probe.y - edge_ab.y * probe.x) / denominator
+			var weight_a := 1.0 - weight_b - weight_c
+			# Slight negative margin keeps coverage along shared cell edges.
+			if weight_a < -0.12 or weight_b < -0.12 or weight_c < -0.12:
+				continue
+			weight_a = clampf(weight_a, 0.0, 1.0)
+			weight_b = clampf(weight_b, 0.0, 1.0)
+			weight_c = clampf(weight_c, 0.0, 1.0)
+			var total := weight_a + weight_b + weight_c
+			if total <= 0.0:
+				continue
+			weight_a /= total
+			weight_b /= total
+			weight_c /= total
+			var floor_y := (
+				point_a.y * weight_a + point_b.y * weight_b + point_c.y * weight_c
+			)
+			var uv := uv_a * weight_a + uv_b * weight_b + uv_c * weight_c
+			var luxel := image.get_pixel(
+				clampi(int(uv.x * float(width)), 0, width - 1),
+				clampi(int(uv.y * float(height)), 0, height - 1),
+			)
+			var key := Vector2i(cell_x, cell_z)
+			var bucket: PackedFloat32Array = _light_probe_grid.get(
+				key,
+				PackedFloat32Array(),
+			)
+			bucket.append(floor_y)
+			bucket.append(luxel.r)
+			bucket.append(luxel.g)
+			bucket.append(luxel.b)
+			_light_probe_grid[key] = bucket
+
+
+func _sample_floor_light() -> Color:
+	## Nearest baked floor luxel at or below the entity origin — the sample
+	## GoldSrc's R_LightPoint would take. Alpha 0 signals "no data here".
+	var origin := global_position
+	var cell_x := floori(origin.x / LIGHT_PROBE_CELL)
+	var cell_z := floori(origin.z / LIGHT_PROBE_CELL)
+	var best_y := -INF
+	var best := Color(0.0, 0.0, 0.0, 0.0)
+	for offset_x in range(-1, 2):
+		for offset_z in range(-1, 2):
+			var bucket: PackedFloat32Array = _light_probe_grid.get(
+				Vector2i(cell_x + offset_x, cell_z + offset_z),
+				PackedFloat32Array(),
+			)
+			for entry in range(0, bucket.size(), 4):
+				var floor_y := bucket[entry]
+				if floor_y > origin.y + 0.4 or floor_y <= best_y:
+					continue
+				best_y = floor_y
+				best = Color(
+					bucket[entry + 1],
+					bucket[entry + 2],
+					bucket[entry + 3],
+					1.0,
+				)
+	if best.a < 0.5:
+		return best
+	# Mirror the map shader's lightgamma treatment (pow 0.85 lift, partial
+	# desaturation) so the model modulation tracks what the floor shows.
+	var lifted := Color(
+		pow(best.r, 0.85) * 1.9,
+		pow(best.g, 0.85) * 1.9,
+		pow(best.b, 0.85) * 1.9,
+	)
+	var luma := lifted.r * 0.299 + lifted.g * 0.587 + lifted.b * 0.114
+	return Color(
+		clampf(lerpf(lifted.r, luma, 0.5), 0.0, 1.0),
+		clampf(lerpf(lifted.g, luma, 0.5), 0.0, 1.0),
+		clampf(lerpf(lifted.b, luma, 0.5), 0.0, 1.0),
+		1.0,
+	)
 
 
 func advance_animation(delta: float) -> void:
@@ -244,6 +781,12 @@ func advance_animation(delta: float) -> void:
 		loop,
 		_body_frame_key,
 	)
+	if _dead:
+		# The p_ model is detached at the moment of death; the corpse tape only
+		# ever drives the body while the dropped gun finishes its toss.
+		_drop_elapsed += delta
+		_update_dropped_weapon()
+		return
 	_weapon_frame_key = _set_frame(
 		weapon_instance,
 		_weapon_template,
@@ -275,6 +818,15 @@ func _set_frame(
 		animation = animations.get(resolved_state, {})
 	if animation.is_empty():
 		return previous_key
+	# Locomotion states composite GoldSrc-style: the aim layer (the ref_shoot
+	# tape held at its first frame with the STUDIO_XR pitch blend) drives the
+	# torso/arms and the bone-merged p_ weapon while the authored locomotion
+	# tape keeps its clock and only survives below the pelvis. The gait tape
+	# remains the authoritative frame clock in the cache key.
+	var aim_animation: Dictionary = {}
+	var aim_state := str(AIM_LAYER_FOR.get(resolved_state, ""))
+	if not aim_state.is_empty() and animations.has(aim_state):
+		aim_animation = animations[aim_state]
 	var frame_count := int(animation.frames)
 	if frame_count <= 0:
 		return previous_key
@@ -298,11 +850,35 @@ func _set_frame(
 		next_frame_index = mini(frame_index + 1, frame_count - 1)
 		if frame_index == frame_count - 1:
 			frame_alpha = 0.0
-	var blend_position := _blend_position(animation)
+	var blend_position := _blend_position(
+		aim_animation if not aim_animation.is_empty() else animation
+	)
 	var blend_low := int(floor(blend_position))
 	var blend_high := int(ceil(blend_position))
 	var blend_alpha := blend_position - float(blend_low)
-	var frame_key := "%s:%d:%d:%d:%d:%d:%d" % [
+	var lower_overlay := {}
+	if instance == body_instance:
+		if not aim_animation.is_empty() and template.has("lower_mask"):
+			# The legs render the locomotion tape sampled above; the aim layer
+			# replaces everything above the pelvis.
+			lower_overlay = {
+				"animation": animation,
+				"positions": animation.positions,
+				"frame_index": frame_index,
+				"next_frame_index": next_frame_index,
+				"current_offset": _pose_float_offset(template, animation, frame_index, 0),
+				"next_offset": _pose_float_offset(template, animation, next_frame_index, 0),
+				"frame_alpha": frame_alpha,
+				"mask": template.lower_mask,
+				"key": "aim",
+			}
+		elif aim_animation.is_empty() and GAIT_COMPOSITE_STATES.has(resolved_state):
+			lower_overlay = _gait_overlay(
+				template,
+				_action_gait_state(resolved_state),
+				_animation_time,
+			)
+	var frame_key := "%s:%d:%d:%d:%d:%d:%d:%s" % [
 		resolved_state,
 		frame_index,
 		next_frame_index,
@@ -310,31 +886,109 @@ func _set_frame(
 		blend_low,
 		blend_high,
 		int(round(blend_alpha * BLEND_KEY_STEPS)),
+		"aim" if not aim_animation.is_empty() else str(lower_overlay.get("key", "")),
 	]
 	if frame_key == previous_key:
 		return previous_key
+	var base_animation := animation
+	var base_frame := frame_index
+	var base_next := next_frame_index
+	var base_alpha := frame_alpha
+	if not aim_animation.is_empty():
+		base_animation = aim_animation
+		base_frame = 0
+		base_next = 0
+		base_alpha = 0.0
 	_render_interpolated_frame(
 		instance,
 		template,
-		animation.positions,
-		_pose_float_offset(template, animation, frame_index, blend_low),
-		_pose_float_offset(template, animation, frame_index, blend_high),
-		_pose_float_offset(template, animation, next_frame_index, blend_low),
-		_pose_float_offset(template, animation, next_frame_index, blend_high),
-		frame_alpha,
+		base_animation.positions,
+		_pose_float_offset(template, base_animation, base_frame, blend_low),
+		_pose_float_offset(template, base_animation, base_frame, blend_high),
+		_pose_float_offset(template, base_animation, base_next, blend_low),
+		_pose_float_offset(template, base_animation, base_next, blend_high),
+		base_alpha,
 		blend_alpha,
+		lower_overlay,
 	)
 	if instance == body_instance:
-		_align_body_feet(
-			animation,
+		if lower_overlay.is_empty():
+			_align_body_feet(
+				animation,
+				frame_index,
+				next_frame_index,
+				frame_alpha,
+				blend_low,
+				blend_high,
+				blend_alpha,
+			)
+		else:
+			# The legs on screen come from the gait tape, so the ground contact
+			# must be measured on that tape, not the action's authored legs.
+			_align_body_feet(
+				lower_overlay.animation,
+				int(lower_overlay.frame_index),
+				int(lower_overlay.next_frame_index),
+				float(lower_overlay.frame_alpha),
+				0,
+				0,
+				0.0,
+			)
+	return frame_key
+
+
+func _action_gait_state(action_state: String) -> String:
+	var crouched := action_state.begins_with("crouch") or _crouched
+	return (
+		("crouchrun" if _moving else "crouchidle")
+		if crouched
+		else ("run" if _moving else "idle")
+	)
+
+
+func _gait_overlay(
+	template: Dictionary,
+	gait_state: String,
+	gait_seconds: float,
+) -> Dictionary:
+	## Samples the requested locomotion tape for the lower body while an
+	## upper-body tape (aim layer or action) plays — GoldSrc's gaitsequence
+	## split at the pelvis.
+	if not template.has("lower_mask"):
+		return {}
+	var animations: Dictionary = template.animations
+	var animation: Dictionary = animations.get(gait_state, animations.get("idle", {}))
+	if animation.is_empty():
+		return {}
+	var frame_count := int(animation.frames)
+	if frame_count <= 0:
+		return {}
+	var frame_sample := maxf(0.0, gait_seconds * float(animation.fps))
+	var frame_position := maxi(0, int(floor(frame_sample)))
+	var frame_alpha := frame_sample - float(frame_position)
+	if frame_alpha >= 1.0 - 0.5 / FRAME_KEY_STEPS:
+		frame_position += 1
+		frame_alpha = 0.0
+	elif frame_alpha <= 0.5 / FRAME_KEY_STEPS:
+		frame_alpha = 0.0
+	var frame_index := frame_position % frame_count
+	var next_frame_index := (frame_index + 1) % frame_count
+	return {
+		"animation": animation,
+		"positions": animation.positions,
+		"frame_index": frame_index,
+		"next_frame_index": next_frame_index,
+		"current_offset": _pose_float_offset(template, animation, frame_index, 0),
+		"next_offset": _pose_float_offset(template, animation, next_frame_index, 0),
+		"frame_alpha": frame_alpha,
+		"mask": template.lower_mask,
+		"key": "%s:%d:%d:%d" % [
+			gait_state,
 			frame_index,
 			next_frame_index,
-			frame_alpha,
-			blend_low,
-			blend_high,
-			blend_alpha,
-		)
-	return frame_key
+			int(round(frame_alpha * FRAME_KEY_STEPS)),
+		],
+	}
 
 
 func _locomotion_state() -> String:
@@ -456,6 +1110,12 @@ static func _create_instance(instance_name: String, template: Dictionary) -> Mes
 	instance.name = instance_name
 	instance.mesh = ArrayMesh.new()
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	# Every combatant owns its own material copies (textures stay shared) so
+	# the GoldSrc-style whole-model light modulate never leaks across players.
+	var materials: Array[StandardMaterial3D] = []
+	for group: Dictionary in template.groups:
+		materials.append((group.material as StandardMaterial3D).duplicate())
+	instance.set_meta("group_materials", materials)
 	_render_frame(instance, template, template.positions, 0)
 	return instance
 
@@ -527,16 +1187,41 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 	for group_data in parsed.get("groups", []):
 		var material := StandardMaterial3D.new()
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		# GoldSrc renders studio models with backface culling; keeping culling
+		# on hides interior vest/strap triangles that otherwise poke through
+		# at the neck and shoulders.
+		material.cull_mode = BaseMaterial3D.CULL_BACK
 		material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
 		var texture_name := str(group_data.get("texture", ""))
 		if not texture_name.is_empty():
-			material.albedo_texture = load(path.get_base_dir().path_join(texture_name))
+			var texture_path := path.get_base_dir().path_join(texture_name)
+			if texture_name.contains("knifeskin"):
+				# The p_knife blade is a GoldSrc CHROME env-map (silver); the
+				# converted sheet carries the raw teal palette instead. Rebuild
+				# it as neutral chrome so the blade reads as polished steel.
+				material.albedo_texture = _chrome_texture(texture_path)
+			else:
+				material.albedo_texture = load(texture_path)
 		groups.append({
 			"start": int(group_data.get("vert_start", 0)),
 			"count": int(group_data.get("vert_count", 0)),
 			"material": material,
 		})
+
+	# Vertices below the belt line of the reference pose approximate the bones
+	# GoldSrc hands to the gait sequence (pelvis + legs). Classified once here;
+	# vertex order is identical across every animation tape of the template.
+	var lower_mask := PackedByteArray()
+	lower_mask.resize(positions.size() / 3)
+	var reference_minimum_y := INF
+	for index in range(1, positions.size(), 3):
+		reference_minimum_y = minf(reference_minimum_y, positions[index])
+	for vertex in range(lower_mask.size()):
+		lower_mask[vertex] = (
+			1
+			if positions[vertex * 3 + 1] < reference_minimum_y + LOWER_BODY_SPLIT
+			else 0
+		)
 
 	return {
 		"positions": positions,
@@ -544,7 +1229,44 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		"vertex_float_count": positions.size(),
 		"groups": groups,
 		"animations": animation_map,
+		"lower_mask": lower_mask,
 	}
+
+
+static var _chrome_texture_cache: Dictionary = {}
+
+
+static func _chrome_texture(texture_path: String) -> Texture2D:
+	if _chrome_texture_cache.has(texture_path):
+		return _chrome_texture_cache[texture_path]
+	var source := load(texture_path) as Texture2D
+	if source == null:
+		return null
+	var image := source.get_image()
+	if image == null:
+		_chrome_texture_cache[texture_path] = source
+		return source
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	for y in range(image.get_height()):
+		for x in range(image.get_width()):
+			var pixel := image.get_pixel(x, y)
+			# Luma with a chrome-style highlight lift and a faint steel-blue
+			# cast; dark handle texels stay dark.
+			var luma := (
+				pixel.r * 0.299 + pixel.g * 0.587 + pixel.b * 0.114
+			)
+			var value := clampf(luma * 1.55 + 0.04, 0.0, 1.0)
+			image.set_pixel(
+				x,
+				y,
+				Color(value, value, minf(value * 1.06, 1.0), pixel.a),
+			)
+	image.generate_mipmaps()
+	var chrome := ImageTexture.create_from_image(image)
+	_chrome_texture_cache[texture_path] = chrome
+	return chrome
 
 
 static func _render_frame(
@@ -594,13 +1316,28 @@ static func _render_interpolated_frame(
 	next_high_float_offset: int,
 	frame_alpha: float,
 	blend_alpha: float,
+	lower_overlay: Dictionary = {},
 ) -> void:
 	if not is_instance_valid(instance):
 		return
 	var mesh := instance.mesh as ArrayMesh
 	mesh.clear_surfaces()
 	var uvs: PackedFloat32Array = template.uvs
-	for group: Dictionary in template.groups:
+	var instance_materials: Array = instance.get_meta("group_materials", [])
+	var has_overlay := not lower_overlay.is_empty()
+	var overlay_mask := PackedByteArray()
+	var overlay_positions := PackedFloat32Array()
+	var overlay_current_base := 0
+	var overlay_next_base := 0
+	var overlay_alpha := 0.0
+	if has_overlay:
+		overlay_mask = lower_overlay.mask
+		overlay_positions = lower_overlay.positions
+		overlay_current_base = int(lower_overlay.current_offset)
+		overlay_next_base = int(lower_overlay.next_offset)
+		overlay_alpha = float(lower_overlay.frame_alpha)
+	for group_index in range(template.groups.size()):
+		var group: Dictionary = template.groups[group_index]
 		var start := int(group.start)
 		var count := int(group.count)
 		if count <= 0:
@@ -611,6 +1348,31 @@ static func _render_interpolated_frame(
 		texture_uvs.resize(count)
 		for local_index in range(count):
 			var vertex_index := start + local_index
+			texture_uvs[local_index] = Vector2(
+				uvs[vertex_index * 2],
+				uvs[vertex_index * 2 + 1],
+			)
+			if has_overlay and overlay_mask[vertex_index] != 0:
+				var overlay_current := overlay_current_base + vertex_index * 3
+				var overlay_next := overlay_next_base + vertex_index * 3
+				vertices[local_index] = Vector3(
+					lerpf(
+						overlay_positions[overlay_current],
+						overlay_positions[overlay_next],
+						overlay_alpha,
+					),
+					lerpf(
+						overlay_positions[overlay_current + 1],
+						overlay_positions[overlay_next + 1],
+						overlay_alpha,
+					),
+					lerpf(
+						overlay_positions[overlay_current + 2],
+						overlay_positions[overlay_next + 2],
+						overlay_alpha,
+					),
+				)
+				continue
 			var current_low_offset := current_low_float_offset + vertex_index * 3
 			var current_high_offset := current_high_float_offset + vertex_index * 3
 			var next_low_offset := next_low_float_offset + vertex_index * 3
@@ -656,13 +1418,14 @@ static func _render_interpolated_frame(
 					frame_alpha,
 				),
 			)
-			texture_uvs[local_index] = Vector2(
-				uvs[vertex_index * 2],
-				uvs[vertex_index * 2 + 1],
-			)
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = vertices
 		arrays[Mesh.ARRAY_TEX_UV] = texture_uvs
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, group.material)
+		mesh.surface_set_material(
+			mesh.get_surface_count() - 1,
+			instance_materials[group_index]
+			if group_index < instance_materials.size()
+			else group.material,
+		)

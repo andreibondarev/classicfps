@@ -18,6 +18,7 @@ const CAPTURE_STATES := [
 	"team_briefing_end",
 	"class_t",
 	"class_ct",
+	"buy",
 	"buy_t_pistols",
 	"buy_t_shotguns",
 	"buy_t_smg",
@@ -77,6 +78,26 @@ func _make_backdrop() -> Control:
 	var backdrop := Control.new()
 	backdrop.name = "CaptureBackdrop"
 	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Menus in CS 1.6 overlay the live textured map. Reuse the freshly captured
+	# HUD-FREE in-game frame (produced by game:capture just before this harness
+	# runs) as the backdrop so every menu screenshot sits over real dust2
+	# texturing. The frame must not carry a baked HUD: this harness renders its
+	# own live HUD, and a second baked copy double-exposes digits under menus.
+	var frame_path := ProjectSettings.globalize_path(
+		"res://artifacts/protocol47-menu-backdrop-1280x720.png"
+	)
+	var frame_image := Image.load_from_file(frame_path)
+	if frame_image == null or frame_image.is_empty():
+		push_warning("HUD-free menu backdrop missing; run game:capture first")
+	if frame_image != null and not frame_image.is_empty():
+		var scene_rect := TextureRect.new()
+		scene_rect.name = "CapturedMapFrame"
+		scene_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		scene_rect.texture = ImageTexture.create_from_image(frame_image)
+		scene_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		scene_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		backdrop.add_child(scene_rect)
+		return backdrop
 	var sky := ColorRect.new()
 	sky.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	sky.color = Color("#7f98a0")
@@ -161,6 +182,8 @@ func _configure_state(state: String) -> void:
 			hud.show_scoreboard(players, "Counter-Strike 1.6", "de_dust2", 12, 11)
 		"scoreboard_voice":
 			hud.show_scoreboard(_scoreboard_fixture(10, true), "Counter-Strike 1.6", "de_dust2", 5, 4)
+		"buy":
+			hud.show_buy_menu(2, 10000)
 		"escape":
 			hud.set_paused_visible(true)
 		"accessibility":
@@ -244,6 +267,14 @@ func _run() -> void:
 	hud.update_ammo(30, 90, false)
 	hud.update_match(6, "live", 84.0, 5, 4, 3350)
 	hud.update_objective("")
+	# Populate the radar with a plausible squad snapshot so any state that
+	# keeps the gameplay HUD visible (scoreboard) shows live blips.
+	var radar_contacts: Array[Dictionary] = [
+		{"id": "SpawN", "position": Vector3(4.0, 0.0, -6.0), "alive": true},
+		{"id": "HeatoN", "position": Vector3(-5.0, 1.4, -3.0), "alive": true},
+		{"id": "Potti", "position": Vector3(2.5, -1.6, 5.0), "alive": true},
+	]
+	hud.update_tactical_display(Vector3.ZERO, 0.0, radar_contacts, [])
 	output_root = ProjectSettings.globalize_path("res://artifacts")
 	DirAccess.make_dir_recursive_absolute(output_root)
 	var passed := true

@@ -3,10 +3,39 @@ extends CombatController
 
 const BotTacticsScript = preload("res://scripts/cs16_bot_tactics.gd")
 const BotPerceptionScript = preload("res://scripts/cs16_bot_perception.gd")
+const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const AK47_RANGE_METERS := 81.92
 const BODY_PROBE_SIDE_HU := 12.0
 const BODY_PROBE_CHEST_HU := 40.0
 const BODY_PROBE_FEET_HU := 2.0
+## Teammate clearance around a planned burst, per grenade kind. HE cannot hurt
+## allies through Combatant's damage filter, but a flashbang blinds everyone.
+const GRENADE_TEAM_CLEARANCE_METERS := {
+	"hegrenade": 6.0,
+	"flashbang": 12.0,
+	"smokegrenade": 3.0,
+}
+## Minimum throw distance per kind. The flashbang floor also keeps the thrower
+## itself out of the worst of its own burst.
+const GRENADE_MIN_THROW_METERS := {
+	"hegrenade": 4.5,
+	"flashbang": 9.0,
+	"smokegrenade": 5.0,
+}
+## Local avoidance stays off for determinism, so two hulls that meet head-on
+## push into each other forever. These drive the deterministic replacement.
+const UNWEDGE_MIN_SPEED := 0.5
+const UNWEDGE_TRAVEL_FRACTION := 0.25
+const UNWEDGE_TRIGGER_TICKS := 20
+## A world obstruction gets longer: the actor's own walk resolution must have
+## its chance to step or jump the obstacle before the bot gives up on the line.
+const UNWEDGE_WORLD_TICKS := 45
+const UNWEDGE_DURATION_TICKS := 30
+## A bot with right of way keeps pushing this long before it yields too, so a
+## standoff the priority rule cannot break still resolves.
+const UNWEDGE_PATIENCE_TICKS := 70
+## Two 32 HU hulls in contact are 0.32 m apart; allow for the resolution skin.
+const UNWEDGE_CONTACT_METERS := 0.85
 
 var navigation_agent: NavigationAgent3D
 var current_enemy: Combatant
@@ -40,6 +69,10 @@ var _objective_route_target := Vector3.INF
 var _objective_visibility_next_tick := 0
 var _patrol_target := Vector3.INF
 var _patrol_generation := 0
+var _unwedge_blocked_ticks := 0
+var _unwedge_until_tick := -1
+var _unwedge_velocity := Vector3.ZERO
+var _unwedge_last_position := Vector3.INF
 
 
 func configure(
@@ -61,6 +94,24 @@ func configure(
 		Callable(self, "_perception_probe_smoked"),
 		AK47_RANGE_METERS,
 	)
+	# Seeded per bot rather than rolled, so a rear hit produces the same turn
+	# delay in every replay of the same tick stream.
+	perception.damage_reaction_ticks = 18 + (index * 7) % 13
+
+
+func configure_weapon(weapon_name: String) -> bool:
+	if not is_instance_valid(tactics) or not tactics.configure_weapon(weapon_name):
+		return false
+	var definition := WeaponRegistryScript.definition(weapon_name)
+	perception.configure(
+		Callable(self, "_perception_candidates"),
+		Callable(self, "_perception_probe_visible"),
+		Callable(self, "_perception_is_blind"),
+		Callable(self, "_perception_probe_smoked"),
+		float(definition.range_meters),
+	)
+	tactics.reset(0xC516 + bot_index * 977, 0.88)
+	return true
 
 
 func reset_tactics() -> void:
@@ -79,6 +130,10 @@ func reset_tactics() -> void:
 	_objective_visibility_next_tick = 0
 	_patrol_target = Vector3.INF
 	_patrol_generation = 0
+	_unwedge_blocked_ticks = 0
+	_unwedge_until_tick = -1
+	_unwedge_velocity = Vector3.ZERO
+	_unwedge_last_position = Vector3.INF
 	if is_instance_valid(tactics):
 		tactics.reset(0xC516 + bot_index * 977, 0.88)
 	if is_instance_valid(perception):
@@ -103,12 +158,23 @@ func gather_command(delta: float) -> Dictionary:
 		perception_output.get("tick_samples", []),
 	)
 	command = _apply_tactics_clock(command, tactics_output)
+	command = _apply_grenade_intent(command, tactics_output)
 	current_enemy = perception_output.get("target") as Combatant
 	if not is_instance_valid(current_enemy):
 		objective = _apply_plant_patience(objective, false)
 		if not objective.is_empty():
-			return _apply_objective(command, objective, delta)
-		return _apply_patrol(command, delta)
+			command = _apply_objective(command, objective, delta)
+		else:
+			command = _apply_patrol(command, delta)
+		if bool(perception_output.get("investigating", false)):
+			# Shot from an unseen angle: keep the current route but face the hit
+			# so the attacker enters the vision cone the normal way.
+			command.investigating = true
+			command.look_target = perception_output.get(
+				"damage_position",
+				command.get("look_target", Vector3.INF),
+			)
+		return _apply_unwedge(command, delta)
 
 	var sees_enemy := bool(perception_output.get("visible", false))
 	objective = _apply_plant_patience(objective, sees_enemy)
@@ -143,7 +209,7 @@ func gather_command(delta: float) -> Dictionary:
 		command.look_target = remembered_position
 	command.world_velocity = desired_velocity
 	command.enemy = current_enemy if sees_enemy else null
-	return command
+	return _apply_unwedge(command, delta)
 
 
 func _advance_tactics_from_perception(samples: Array) -> Dictionary:
@@ -192,6 +258,196 @@ func _apply_tactics_clock(command: Dictionary, tactics_output: Dictionary) -> Di
 	command.fire_events = tactics_output.fire_events
 	command.reload_ticks = tactics_output.reload_ticks
 	return command
+
+
+func _apply_unwedge(command: Dictionary, delta: float) -> Dictionary:
+	## Deterministic stand-in for local avoidance. NavigationAgent RVO stays
+	## disabled, so nothing here may consult it: the escape is a pure function of
+	## the objective tick, the actor indices/names, and the physical hulls.
+	if not is_instance_valid(actor):
+		return command
+	var desired: Vector3 = command.get("world_velocity", Vector3.ZERO)
+	desired.y = 0.0
+	var travel := 0.0
+	if _unwedge_last_position != Vector3.INF:
+		var moved := actor.global_position - _unwedge_last_position
+		moved.y = 0.0
+		travel = moved.length()
+	_unwedge_last_position = actor.global_position
+	if _objective_tick < _unwedge_until_tick:
+		command.world_velocity = _unwedge_velocity
+		command.unwedging = true
+		return command
+	if desired.length() < UNWEDGE_MIN_SPEED:
+		_unwedge_blocked_ticks = 0
+		return command
+	var expected := desired.length() * maxf(delta, 0.001)
+	if travel < expected * UNWEDGE_TRAVEL_FRACTION:
+		_unwedge_blocked_ticks += 1
+	else:
+		_unwedge_blocked_ticks = 0
+	var blocker := _unwedge_blocking_combatant(desired)
+	var trigger := (
+		UNWEDGE_TRIGGER_TICKS if blocker != null else UNWEDGE_WORLD_TICKS
+	)
+	if _unwedge_blocked_ticks < trigger:
+		return command
+	if (
+		blocker != null
+		and not _unwedge_yields_to(blocker)
+		and _unwedge_blocked_ticks < UNWEDGE_PATIENCE_TICKS
+	):
+		# Right of way: the lower-index actor holds its line for a moment so the
+		# pair cannot sidestep into each other symmetrically.
+		return command
+	_unwedge_velocity = _unwedge_escape_velocity(desired, blocker)
+	_unwedge_until_tick = _objective_tick + UNWEDGE_DURATION_TICKS
+	_unwedge_blocked_ticks = 0
+	# The corridor the route picked is occupied; force a fresh one on the way out.
+	_objective_route = PackedVector3Array()
+	_objective_route_target = Vector3.INF
+	_patrol_target = Vector3.INF
+	command.world_velocity = _unwedge_velocity
+	command.unwedging = true
+	return command
+
+
+func _unwedge_blocking_combatant(desired: Vector3) -> Combatant:
+	var direction := desired.normalized()
+	var nearest: Combatant = null
+	var nearest_distance := UNWEDGE_CONTACT_METERS
+	for node in actor.get_tree().get_nodes_in_group("combatants"):
+		var other := node as Combatant
+		if other == null or other == actor or not other.alive:
+			continue
+		var offset := other.global_position - actor.global_position
+		if absf(offset.y) >= Combatant.STANDING_HEAD_HEIGHT:
+			continue
+		offset.y = 0.0
+		var distance := offset.length()
+		if distance <= 0.000001 or distance >= nearest_distance:
+			continue
+		# Only a body actually in the way counts; a bot walking alongside another
+		# must not start sidestepping.
+		if offset.normalized().dot(direction) < 0.5:
+			continue
+		nearest = other
+		nearest_distance = distance
+	return nearest
+
+
+func _unwedge_yields_to(blocker: Combatant) -> bool:
+	var other_index := int(blocker.get("index")) if blocker.get("index") != null else -1
+	if other_index != bot_index:
+		return bot_index > other_index
+	# Same per-team index on opposite teams: fall back to the stable node name.
+	return str(actor.name) > str(blocker.name)
+
+
+func _unwedge_escape_velocity(desired: Vector3, blocker: Combatant) -> Vector3:
+	var direction := desired.normalized()
+	var speed := desired.length()
+	var side := Vector3(-direction.z, 0.0, direction.x)
+	var sign := -1.0 if bot_index % 2 == 0 else 1.0
+	if blocker != null:
+		var offset := blocker.global_position - actor.global_position
+		offset.y = 0.0
+		var lateral := side.dot(offset)
+		if absf(lateral) > 0.001:
+			# Step out on the side the blocker is not standing on.
+			sign = -1.0 if lateral > 0.0 else 1.0
+	var escape := side * sign * speed * 0.9 - direction * speed * 0.25
+	if _unwedge_step_is_blocked(escape):
+		escape = side * -sign * speed * 0.9 - direction * speed * 0.25
+		if _unwedge_step_is_blocked(escape):
+			escape = -direction * speed * 0.6
+	return escape
+
+
+func _unwedge_step_is_blocked(escape: Vector3) -> bool:
+	if not actor is CharacterBody3D:
+		return false
+	# Same 120 ms hull sweep the combat sidestep uses, against the world only:
+	# the blocking player is what the bot is trying to get away from.
+	var body := actor as CharacterBody3D
+	var previous_mask := body.collision_mask
+	body.collision_mask = 1
+	var world_blocked := body.test_move(
+		body.global_transform,
+		escape * 0.12,
+		null,
+		0.015,
+	)
+	body.collision_mask = previous_mask
+	return world_blocked
+
+
+func notice_damage(attacker: Combatant, _hit_position: Vector3) -> void:
+	## Damage from an opponent the bot cannot see is the only stimulus that can
+	## look outside the vision cone. The attacker sample is frozen here; the
+	## perception clock owns the reaction delay and the memory window.
+	if not is_instance_valid(actor) or not is_instance_valid(perception):
+		return
+	if not is_instance_valid(attacker) or not actor.is_opponent(attacker):
+		return
+	perception.note_damage(
+		attacker,
+		attacker.aim_point(),
+		str(attacker.name),
+	)
+
+
+func _apply_grenade_intent(
+	command: Dictionary,
+	tactics_output: Dictionary,
+) -> Dictionary:
+	var events: Array = tactics_output.get("grenade_events", [])
+	if events.is_empty():
+		return command
+	var request: Dictionary = events[0]
+	var kind := str(request.kind)
+	var target: Vector3 = request.target
+	if not _grenade_throw_is_safe(kind, target):
+		tactics.defer_grenade_throw()
+		return command
+	command.throw_grenade = {"kind": kind, "target": target}
+	# One deliberate action per tick: a bot never sprays and lobs together.
+	command.fire = false
+	command.fire_ticks = []
+	command.fire_events = []
+	tactics.confirm_grenade_throw(kind)
+	return command
+
+
+func _grenade_throw_is_safe(kind: String, target: Vector3) -> bool:
+	if not is_instance_valid(actor) or not actor.is_inside_tree():
+		return false
+	var minimum: float = float(GRENADE_MIN_THROW_METERS.get(kind, 4.5))
+	if actor.global_position.distance_to(target) < minimum:
+		return false
+	# Refuse a throw that would bounce off a wall a step in front of the bot.
+	var query := PhysicsRayQueryParameters3D.create(
+		actor.aim_point(),
+		target,
+		1,
+		[actor.get_rid()],
+	)
+	query.collide_with_areas = false
+	if not actor.get_world_3d().direct_space_state.intersect_ray(query).is_empty():
+		return false
+	var clearance: float = float(GRENADE_TEAM_CLEARANCE_METERS.get(kind, 6.0))
+	for node in actor.get_tree().get_nodes_in_group("combatants"):
+		var other := node as Combatant
+		if (
+			other == null
+			or other == actor
+			or not other.alive
+			or actor.is_opponent(other)
+		):
+			continue
+		if other.global_position.distance_to(target) < clearance:
+			return false
+	return true
 
 
 func _resolve_objective_site(objective: Dictionary) -> Dictionary:
@@ -330,30 +586,44 @@ func _objective_context() -> Dictionary:
 	return context if context is Dictionary else {}
 
 
+var _snap_raw_target := Vector3.INF
+var _snap_polygon := -1
+
+
+func _snap_objective_target(raw_target: Vector3) -> Vector3:
+	## Deterministic replacement for NavigationServer3D.map_get_closest_point.
+	## The server merges region polygons on the render loop, so the physics tick
+	## at which its projection stops returning Vector3.ZERO (empty map) depends
+	## on the render frame rate — and the determinism gate replays the same
+	## match at --fixed-fps 30 and 240. Project onto the same baked polygons the
+	## objective graph already extracted; that data is available synchronously.
+	if not _ensure_objective_graph():
+		return raw_target
+	if raw_target.distance_squared_to(_snap_raw_target) > 0.0625:
+		_snap_polygon = _nearest_objective_polygon(raw_target)
+		_snap_raw_target = raw_target
+	if _snap_polygon < 0:
+		return raw_target
+	return _closest_point_on_objective_polygon(raw_target, _snap_polygon)
+
+
 func _apply_objective(
 	command: Dictionary,
 	objective: Dictionary,
 	delta: float,
 ) -> Dictionary:
 	var target: Vector3 = objective.get("target", actor.global_position)
-	if is_instance_valid(navigation_agent):
-		var navigation_map := navigation_agent.get_navigation_map()
-		if (
-			navigation_map.is_valid()
-			and NavigationServer3D.map_get_iteration_id(navigation_map) > 0
-		):
-			target = NavigationServer3D.map_get_closest_point(
-				navigation_map,
-				target,
-			)
+	target = _snap_objective_target(target)
 	var stop_radius := maxf(0.0, float(objective.get("stop_radius", 0.42)))
 	var distance := actor.global_position.distance_to(target)
 	var objective_action := str(objective.get("action", ""))
 	command.state = str(objective.get("state", "objective"))
 	command.objective_action = objective_action
+	command.objective_id = str(objective.get("objective_id", ""))
 	command.objective_target = target
 	command.c4_equipped = bool(objective.get("equip_c4", false))
 	command.crouch = bool(objective.get("crouch", false))
+	command.use = bool(objective.get("use", false))
 	command.look_target = objective.get("look_target", target)
 	command.world_velocity = (
 		Vector3.ZERO

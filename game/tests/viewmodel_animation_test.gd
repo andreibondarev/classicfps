@@ -35,6 +35,12 @@ func _run() -> void:
 		and viewmodel._model_instance.mesh.get_surface_count() == 11,
 		"AK-47 renders all original MDL texture groups",
 	)
+	for group: Dictionary in viewmodel._template.groups:
+		var material := group.material as StandardMaterial3D
+		_check(
+			material != null and not material.no_depth_test,
+			"AK-47 texture groups retain self-depth instead of material-order overpaint",
+		)
 
 	viewmodel.play_action("fire")
 	_check(viewmodel._animation_name.begins_with("shoot"), "fire selects an MDL shoot sequence")
@@ -49,11 +55,34 @@ func _run() -> void:
 	_check(viewmodel._frame_key.begins_with("reload"), "reload advances original MDL frames")
 
 	_check(viewmodel.load_weapon("knife"), "animated knife viewmodel loads")
+	for group: Dictionary in viewmodel._template.groups:
+		var material := group.material as StandardMaterial3D
+		_check(
+			material != null and not material.no_depth_test,
+			"knife texture groups retain self-depth",
+		)
 	viewmodel.play_action("knife")
 	_check(
 		viewmodel._animation_name in ["slash1", "slash2", "stab", "midslash1", "midslash2"],
 		"knife attack selects an original knife sequence",
 	)
+
+	_check(viewmodel.load_weapon("glock18"), "animated Glock viewmodel loads")
+	_check(
+		viewmodel.base_position == MdlViewModel.GLOCK_BASE_POSITION,
+		"Glock uses its measured bottom-edge camera-space placement",
+	)
+	_check(
+		is_instance_valid(viewmodel._model_instance)
+		and viewmodel._model_instance.mesh.get_surface_count() == 7,
+		"Glock renders all original MDL texture groups",
+	)
+	for group: Dictionary in viewmodel._template.groups:
+		var material := group.material as StandardMaterial3D
+		_check(
+			material != null and not material.no_depth_test,
+			"Glock texture groups retain self-depth",
+		)
 
 	_check(viewmodel.load_weapon("c4"), "animated C4 viewmodel loads")
 	_check(

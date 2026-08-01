@@ -1,6 +1,8 @@
 class_name CS16RoundState
 extends RefCounted
 
+const ScenarioRulesScript = preload("res://scripts/cs16_scenario_rules.gd")
+
 # Integer-tick round/objective/economy model based on CHalfLifeMultiplay,
 # CBasePlayer::CanPlayerBuy, CWeaponC4, and CGrenade::C4Think/Use.
 const TICK_RATE := 100
@@ -25,6 +27,10 @@ const BOMB_EXPLODED := "exploded"
 const START_MONEY := 800
 const MAX_MONEY := 16000
 const KILL_REWARD := 300
+# RR_BOMB_PLANTED is paid by Target_Defused only: multiplay_gamerules.cpp adds it
+# to m_iAccountTerrorist at round end, never at plant time. A planted round can
+# only end by defuse, explosion (RR_TARGET_BOMB) or a CT wipe, so the defuse path
+# is the sole case where the planting team is compensated.
 const REWARD_BOMB_PLANTED := 800
 const REWARD_TARGET_BOMB := 3500
 const REWARD_BOMB_DEFUSED := 3250
@@ -33,17 +39,22 @@ const REWARD_TARGET_SAVED := 3250
 const REWARD_TEAM_WIN := 3000
 const LOSER_BONUS_DEFAULT := 1400
 const LOSER_BONUS_MIN := 1500
+# REWARD_LOSER_BONUS_MAX in ReGameDLL_CS gamerules.h is 3000; the 3400 ceiling
+# belongs to Source-era Counter-Strike, not to the 1.6 game rules.
 const LOSER_BONUS_MAX := 3000
 const LOSER_BONUS_ADD := 500
 const DEFUSE_USE_REFRESH_TICKS := 50
 const C4_DAMAGE := 500.0
 # RadiusDamage's C4 overload expands m_flBombRadius (500) by 3.5.
 const C4_RADIUS_HU := 1750.0
+# Restrictions mirror CS16WeaponRegistry's `team` field and the shipped VGUI buy
+# menus. Both pistol menus list glock and usp, so neither is team-restricted; the
+# starting sidearm is a spawn loadout rule, not a purchase rule.
 const T_ONLY_ITEMS := [
-	"glock18", "elite", "mac10", "galil", "ak47", "sg552", "g3sg1",
+	"elite", "mac10", "galil", "ak47", "sg552", "g3sg1",
 ]
 const CT_ONLY_ITEMS := [
-	"usp", "fiveseven", "tmp", "famas", "m4a1", "aug", "sg550",
+	"fiveseven", "tmp", "famas", "m4a1", "aug", "sg550",
 	"shield", "defuser",
 ]
 
@@ -57,11 +68,15 @@ var config := {
 	"defuse_ticks": 10 * TICK_RATE,
 	"buy_ticks": 90 * TICK_RATE,
 	"max_rounds": 0,
+	"win_limit": 0,
 	"halftime": false,
+	"scenario": ScenarioRulesScript.SCENARIO_BOMB,
 }
 
 var tick := 0
 var round_number := 0
+var rounds_played := 0
+var halftime_done := false
 var phase := PHASE_DEPLOY
 var phase_started_tick := 0
 var deadline_tick := -1
@@ -122,6 +137,8 @@ func register_player(
 func start_match() -> void:
 	tick = 0
 	round_number = 0
+	rounds_played = 0
+	halftime_done = false
 	ct_score = 0
 	terrorist_score = 0
 	loss_streak = {TEAM_T: 0, TEAM_CT: 0}
@@ -140,11 +157,19 @@ func advance_tick(command := {}) -> Array[Dictionary]:
 				_set_phase(PHASE_LIVE, int(config.round_ticks))
 				_emit("round_freeze_end")
 		PHASE_LIVE:
-			_update_plant(command.get("plant", {}))
+			if _is_bomb_scenario():
+				_update_plant(command.get("plant", {}))
 			if phase == PHASE_LIVE:
 				_check_elimination()
 			if phase == PHASE_LIVE and tick >= deadline_tick:
-				_end_round(TEAM_CT, "target_saved", REWARD_TARGET_SAVED)
+				var timeout: Dictionary = ScenarioRulesScript.timeout_result(
+					str(config.scenario)
+				)
+				_end_round(
+					str(timeout.winner),
+					str(timeout.reason),
+					int(timeout.team_reward),
+				)
 		PHASE_BOMB:
 			# C4Think processes expiry before accepting a new +use. The narrow
 			# ReGameDLL exception is an already-running defuse whose countdown
@@ -225,6 +250,53 @@ func grant_kill(player_id: String) -> void:
 	})
 
 
+func adjust_player_money(player_id: String, amount: int, reason: String) -> int:
+	if not players.has(player_id) or amount == 0:
+		return 0
+	var player: Dictionary = players[player_id]
+	var before := int(player.money)
+	player.money = clampi(before + amount, 0, MAX_MONEY)
+	players[player_id] = player
+	var applied := int(player.money) - before
+	if applied != 0:
+		_emit("money", {
+			"player_id": player_id,
+			"amount": applied,
+			"reason": reason,
+			"balance": player.money,
+		})
+	return applied
+
+
+func add_pending_team_account(team: String, amount: int, reason: String) -> bool:
+	if team not in [TEAM_T, TEAM_CT] or amount == 0:
+		return false
+	pending_team_accounts[team] = int(pending_team_accounts[team]) + amount
+	_emit("team_account", {
+		"team": team,
+		"amount": amount,
+		"reason": reason,
+		"pending": int(pending_team_accounts[team]),
+	})
+	return true
+
+
+func resolve_scenario_objective(
+	winner: String,
+	reason: String,
+	team_reward: int,
+	team_supplements := {},
+) -> bool:
+	if (
+		phase not in [PHASE_LIVE, PHASE_BOMB]
+		or winner not in [TEAM_T, TEAM_CT]
+		or reason.is_empty()
+	):
+		return false
+	_end_round(winner, reason, maxi(0, team_reward), team_supplements)
+	return true
+
+
 func pickup_bomb(player_id: String, position := Vector3.ZERO) -> bool:
 	if (
 		bomb_state != BOMB_DROPPED
@@ -279,7 +351,9 @@ func can_buy(
 	var player: Dictionary = players[player_id]
 	if not bool(player.alive):
 		return {"allowed": false, "reason": "dead"}
-	if phase not in [PHASE_FREEZE, PHASE_LIVE]:
+	# CanPlayerBuy gates on alive + buy zone + mp_buytime only; a planted bomb
+	# never closes the buy menu, so PHASE_BOMB stays purchasable.
+	if phase not in [PHASE_FREEZE, PHASE_LIVE, PHASE_BOMB]:
 		return {"allowed": false, "reason": "round_inactive"}
 	# `inside_team_buy_zone` is the authoritative caller signal for either a
 	# func_buyzone hull touch or OLD_CheckBuyZone's 200-HU spawn fallback.
@@ -418,12 +492,14 @@ func _start_round(distribute_accounts := true) -> void:
 		if not survived_previous_round:
 			player.has_defuser = false
 		players[player_id] = player
-	_assign_bomb()
+	if _is_bomb_scenario():
+		_assign_bomb()
 	round_started_tick = tick
 	_set_phase(PHASE_FREEZE, int(config.freeze_ticks))
 	_emit("round_start", {
 		"round": round_number,
 		"bomb_owner": bomb_owner,
+		"scenario": str(config.scenario),
 		"scoreboard": scoreboard_snapshot(),
 	})
 
@@ -659,21 +735,36 @@ func _check_elimination() -> void:
 		return
 	var alive_t := _alive_count(TEAM_T)
 	var alive_ct := _alive_count(TEAM_CT)
+	if alive_ct == 0 and alive_t == 0:
+		# TeamExterminationCheck: with both sides populated the CT-wipe branch
+		# carries no alive-T guard, so a same-tick mutual wipe awards Terrorists.
+		# Only an unpopulated side falls through to WINSTATUS_DRAW, which scores
+		# nothing and queues no account.
+		if _team_size(TEAM_T) > 0 and _team_size(TEAM_CT) > 0:
+			_end_round(
+				TEAM_T,
+				"terrorists_win",
+				REWARD_BOMB_EXPLODED if _is_bomb_scenario() else REWARD_TEAM_WIN,
+			)
+		else:
+			_end_round("", "round_draw", 0)
+		return
 	if alive_ct == 0 and alive_t > 0:
 		_end_round(
 			TEAM_T,
 			"terrorists_win",
-			# This state model is the bomb-target ruleset (it assigns C4 every
-			# round), where Terrorists_Win uses RR_BOMB_EXPLODED even before a
-			# plant. Non-bomb scenarios need their own objective ruleset.
-			REWARD_BOMB_EXPLODED,
+			REWARD_BOMB_EXPLODED if _is_bomb_scenario() else REWARD_TEAM_WIN,
 		)
 	elif alive_t == 0 and alive_ct > 0 and bomb_state != BOMB_PLANTED:
 		_end_round(
 			TEAM_CT,
 			"cts_win",
-			REWARD_BOMB_DEFUSED,
+			REWARD_BOMB_DEFUSED if _is_bomb_scenario() else REWARD_TEAM_WIN,
 		)
+
+
+func _is_bomb_scenario() -> bool:
+	return str(config.scenario) == ScenarioRulesScript.SCENARIO_BOMB
 
 
 func _end_round(
@@ -688,11 +779,15 @@ func _end_round(
 	_cancel_defuse("round_end")
 	round_winner = winner
 	round_reason = reason
+	rounds_played += 1
 	if winner == TEAM_T:
 		terrorist_score += 1
 	elif winner == TEAM_CT:
 		ct_score += 1
-	_queue_round_money(winner, winner_reward, team_supplements)
+	# A WINSTATUS_DRAW round pays nothing and leaves the loser-bonus ladder and
+	# the consecutive-loss counters untouched.
+	if winner in [TEAM_T, TEAM_CT]:
+		_queue_round_money(winner, winner_reward, team_supplements)
 	_set_phase(PHASE_POST, int(config.restart_ticks))
 	_emit("round_end", {
 		"winner": winner,
@@ -761,24 +856,63 @@ func _distribute_pending_round_money() -> void:
 func _apply_halftime_if_needed() -> void:
 	var max_rounds := int(config.max_rounds)
 	if (
-		not bool(config.halftime)
+		halftime_done
+		or not bool(config.halftime)
 		or max_rounds <= 0
 		or round_number != max_rounds / 2
 	):
 		return
+	halftime_done = true
 	for player_id: String in players:
 		var player: Dictionary = players[player_id]
+		# SwapAllPlayers iterates joined players only; spectators keep their slot.
+		if str(player.team) not in [TEAM_T, TEAM_CT]:
+			continue
 		player.team = TEAM_CT if str(player.team) == TEAM_T else TEAM_T
+		# SwapAllPlayers only switches sides; league half-time additionally
+		# restarts the economy, so every player returns to mp_startmoney.
+		var before := int(player.money)
+		player.money = START_MONEY
 		players[player_id] = player
+		if before != START_MONEY:
+			_emit("money", {
+				"player_id": player_id,
+				"amount": START_MONEY - before,
+				"reason": "halftime_reset",
+				"balance": player.money,
+			})
+	# The second half starts from a clean economy: the shared loser bonus and
+	# both consecutive-loss counters restart with the sides.
+	loss_streak = {TEAM_T: 0, TEAM_CT: 0}
+	loser_bonus = LOSER_BONUS_DEFAULT
+	pending_team_accounts = {TEAM_T: 0, TEAM_CT: 0}
 	var old_ct := ct_score
 	ct_score = terrorist_score
 	terrorist_score = old_ct
-	_emit("halftime", {"round": round_number})
+	_emit("halftime", {
+		"round": round_number,
+		"ct_score": ct_score,
+		"terrorist_score": terrorist_score,
+		"start_money": START_MONEY,
+	})
 
 
 func _match_limit_reached() -> bool:
+	# CheckWinLimit (mp_winlimit) fires before CheckMaxRounds (mp_maxrounds):
+	# an MR15 match ends the moment a side reaches 16 wins.
+	var win_limit := int(config.win_limit)
+	if win_limit > 0 and (ct_score >= win_limit or terrorist_score >= win_limit):
+		return true
 	var max_rounds := int(config.max_rounds)
-	return max_rounds > 0 and ct_score + terrorist_score >= max_rounds
+	return max_rounds > 0 and rounds_played >= max_rounds
+
+
+func _team_size(team: String) -> int:
+	var count := 0
+	for player: Dictionary in players.values():
+		if str(player.team) == team:
+			count += 1
+	return count
 
 
 func _alive_count(team: String) -> int:

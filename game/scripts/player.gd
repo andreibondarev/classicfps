@@ -5,6 +5,8 @@ signal health_changed(health: int, armor: int)
 signal ammo_changed(clip: int, reserve: int, reloading: bool)
 signal weapon_changed(weapon_name: String, fire_mode: String)
 signal hit_confirmed(headshot: bool)
+signal flash_blinded(seconds: float)
+signal weapon_drop_requested(weapon_name: String, dropped_clip: int, dropped_reserve: int)
 signal died
 
 # GoldSrc BSP coordinates are imported at one Godot unit per 100 GoldSrc units.
@@ -14,6 +16,8 @@ const WORLD_SCALE := 0.01
 const CLASSIC_TICK_RATE := 100.0
 const STAND_HEIGHT := 72.0 * WORLD_SCALE
 const CROUCH_HEIGHT := 50.0 * WORLD_SCALE
+# GoldSrc's air-duck raises the hull bottom by the duck-hull offset (18 HU).
+const AIR_DUCK_FOOT_LIFT := 18.0 * WORLD_SCALE
 const HULL_WIDTH := 32.0 * WORLD_SCALE
 const CAPSULE_RADIUS := 16.0 * WORLD_SCALE # Compatibility alias; the hull is now a box.
 const STAND_EYE := 53.0 * WORLD_SCALE # -36 hull minimum + CS 17-unit view offset.
@@ -72,10 +76,17 @@ const RECOIL_PATTERN := [
 ]
 
 var controls_enabled := false
+# Freeze time keeps movement and weapons locked but, as in CS 1.6, the
+# player can still look around.
+var look_enabled := false
+# While a radio menu is open, digit keys select radio lines instead of
+# weapon slots (game.gd owns the menu; this flag just mutes the latches).
+var radio_menu_open := false
 var objective_movement_locked := false
 var objective_lock_origin := Vector3.ZERO
 var objective_crouch_locked := false
 var active_weapon := "ak47"
+var previous_weapon := ""
 var clip := 30
 var reserve := 90
 var reloading := false
@@ -175,6 +186,7 @@ func _configure_input() -> void:
 	_ensure_key_action("weapon_secondary", KEY_2)
 	_ensure_key_action("weapon_melee", KEY_3)
 	_ensure_key_action("weapon_grenade", KEY_4)
+	_ensure_key_action("weapon_last", KEY_Q)
 	_ensure_mouse_action("fire", MOUSE_BUTTON_LEFT)
 
 
@@ -225,7 +237,9 @@ func _build_viewmodel() -> void:
 
 	muzzle_light = OmniLight3D.new()
 	muzzle_light.name = "MuzzleFlash"
-	muzzle_light.position = Vector3(0.16, -0.10, -0.62)
+	# Matches the re-based authentic viewmodel muzzle (lower-right, converging
+	# on the crosshair) instead of the old bottom-center placement.
+	muzzle_light.position = Vector3(0.08, -0.03, -0.34)
 	muzzle_light.light_color = Color("#ffd27a")
 	muzzle_light.light_energy = 3.2
 	muzzle_light.omni_range = 4.0
@@ -234,9 +248,14 @@ func _build_viewmodel() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not controls_enabled or not alive:
+	if not alive:
 		return
-	combat_controller.ingest_input(event)
+	if radio_menu_open and event is InputEventKey:
+		return
+	if controls_enabled:
+		combat_controller.ingest_input(event)
+	elif look_enabled and event is InputEventMouseMotion:
+		combat_controller.ingest_input(event)
 
 
 func _apply_mouse_look(relative: Vector2) -> void:
@@ -290,6 +309,11 @@ func _physics_process(delta: float) -> void:
 	if not controls_enabled or not alive:
 		velocity = Vector3.ZERO
 		last_command = {}
+		if look_enabled and alive and is_instance_valid(combat_controller):
+			var idle_command := combat_controller.gather_command(delta)
+			var idle_look: Vector2 = idle_command.get("look_delta", Vector2.ZERO)
+			if not idle_look.is_zero_approx():
+				_apply_mouse_look(idle_look)
 		return
 
 	var command := combat_controller.gather_command(delta)
@@ -367,6 +391,8 @@ func _physics_process(delta: float) -> void:
 		_try_fire()
 	if command.reload:
 		_start_reload()
+	if bool(command.get("drop", false)):
+		_try_drop_active_weapon()
 
 
 func _advance_weapon_simulation_tick(count := 1) -> void:
@@ -387,6 +413,8 @@ func _consume_weapon_clock_events(events: Array[String]) -> void:
 		match event:
 			WeaponClockScript.EVENT_RELOAD_COMPLETE:
 				_complete_reload()
+			WeaponClockScript.EVENT_RELOAD_SHELL:
+				_insert_reload_shell()
 			WeaponClockScript.EVENT_GRENADE_THROW:
 				_spawn_thrown_grenade()
 			WeaponClockScript.EVENT_GRENADE_RETIRE:
@@ -528,8 +556,18 @@ func set_objective_movement_locked(locked: bool, force_crouch := false) -> void:
 
 func _update_crouch(delta: float, wants_crouch: bool) -> void:
 	if not wants_crouch:
-		if not _standing and not _can_use_standing_hull():
-			return
+		if not _standing:
+			if _is_air_ducking():
+				# Air unduck reverses the crouch-jump leg tuck: the feet drop
+				# back 18 HU, which needs clear space below and around.
+				var drop := Vector3.DOWN * AIR_DUCK_FOOT_LIFT
+				if not movement_kernel.can_fit_box(
+					Vector3(HULL_WIDTH, STAND_HEIGHT, HULL_WIDTH), drop
+				):
+					return
+				global_position += drop
+			elif not _can_use_standing_hull():
+				return
 		_standing = true
 		_duck_elapsed = 0.0
 		_apply_hull(STAND_HEIGHT)
@@ -545,7 +583,7 @@ func _update_crouch(delta: float, wants_crouch: bool) -> void:
 	# PM_SplineFraction over TIME_TO_DUCK, changing to hull 1 at completion.
 	_duck_elapsed = (
 		DUCK_TIME
-		if not _movement_grounded
+		if _is_air_ducking()
 		else minf(DUCK_TIME, _duck_elapsed + delta)
 	)
 	var fraction := _spline_fraction(_duck_elapsed / DUCK_TIME)
@@ -554,6 +592,32 @@ func _update_crouch(delta: float, wants_crouch: bool) -> void:
 		_standing = false
 		_apply_hull(CROUCH_HEIGHT)
 		camera.position.y = CROUCH_EYE
+		if _is_air_ducking():
+			# GoldSrc air-duck keeps the origin height and raises the hull
+			# bottom 18 HU — the legs tuck up. This is what lets a jump+duck
+			# clear crates a plain jump cannot (the crouch-jump).
+			global_position.y += AIR_DUCK_FOOT_LIFT
+
+
+## PM_CategorizePosition's two-unit sweep reports no contact for a hull that
+## rests exactly on the floor, so the per-tick ground flag flickers while the
+## player stands still. Applying the air-duck leg tuck in that state would
+## launch a grounded player 18 HU (and abort a bomb plant), so confirm real
+## airtime with an explicit floor probe. Objective actors (plant/defuse) crouch
+## on the ground by definition and never air-duck.
+func _is_air_ducking() -> bool:
+	if _movement_grounded or objective_movement_locked or is_on_floor():
+		return false
+	if not is_inside_tree() or get_world_3d() == null:
+		return true
+	var from := global_position + Vector3.UP * FLOOR_CATEGORIZE_DISTANCE
+	var query := PhysicsRayQueryParameters3D.create(
+		from,
+		from + Vector3.DOWN * FLOOR_CATEGORIZE_DISTANCE * 2.0,
+	)
+	query.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	return hit.is_empty() or float(hit.normal.y) < FLOOR_NORMAL_MINIMUM
 
 
 func _spline_fraction(value: float) -> float:
@@ -706,7 +770,7 @@ func _emit_due_audio() -> void:
 
 
 func _try_fire(burst_followup := false) -> void:
-	if reloading:
+	if reloading and not _interrupt_shell_reload():
 		return
 	if active_weapon == "c4":
 		# The authoritative 100 Hz round state consumes held primary attack.
@@ -772,7 +836,7 @@ func _try_fire(burst_followup := false) -> void:
 		combat_effects.spawn_weapon_shot(
 			active_weapon,
 			effect_sequence,
-			origin,
+			first_person_shot_effect_origin(),
 			direction,
 			camera.global_transform.basis.x,
 			camera.global_transform.basis.y,
@@ -803,6 +867,25 @@ func _try_fire(burst_followup := false) -> void:
 		)
 	else:
 		viewmodel.play_action("fire")
+
+
+func first_person_shot_effect_origin() -> Vector3:
+	## Camera-space origin for the first-person shot effects. The combat
+	## effects muzzle anchor is authored relative to this origin; the offset
+	## re-bases it onto the authentic viewmodel barrel tip so the flash sprite
+	## renders exactly at the muzzle instead of floating mid-receiver. The tip
+	## itself is read from the rendered v_ model pose, so every weapon (and
+	## every recoil frame) anchors its flash at its own barrel end.
+	var view := camera.global_transform.basis
+	var muzzle := (
+		viewmodel.muzzle_point_world()
+		if is_instance_valid(viewmodel)
+		else camera.global_position + view.x * 0.07 + view.y * -0.04 + -view.z * 0.30
+	)
+	# CS16CombatEffects.spawn_weapon_shot places the flash at
+	# origin + forward*0.72 + right*0.235 - up*0.155; subtract that authored
+	# anchor so the sprite lands on the real barrel tip.
+	return muzzle - (-view.z * 0.72 + view.x * 0.235 - view.y * 0.155)
 
 
 func _try_secondary() -> void:
@@ -1000,7 +1083,7 @@ func _fire_cs_bullet(
 		var query := PhysicsRayQueryParameters3D.create(
 			trace_origin,
 			end,
-			1 | 2 | 4,
+			1 | 2 | 4 | 16,
 			exclusions,
 		)
 		query.collide_with_areas = false
@@ -1030,12 +1113,7 @@ func _fire_cs_bullet(
 			damage_modifier,
 		)
 		if damageable:
-			var hit_group := Ballistics.HitGroup.CHEST
-			if (
-				hit_collider.has_method("head_height")
-				and hit.position.y >= float(hit_collider.call("head_height"))
-			):
-				hit_group = Ballistics.HitGroup.HEAD
+			var hit_group := _hit_group_for_impact(hit_collider, hit.position)
 			hit_collider.call(
 				"receive_bullet_damage",
 				int(step.damage_at_hit),
@@ -1089,10 +1167,47 @@ func _fire_cs_bullet(
 	return trace_end
 
 
+func _hit_group_for_impact(
+	hit_collider: Object,
+	hit_position: Vector3,
+) -> int:
+	if (
+		not hit_collider is Node3D
+		or not hit_collider.has_method("head_height")
+	):
+		return Ballistics.HitGroup.GENERIC
+	var victim := hit_collider as Node3D
+	var relative_hu := (
+		(hit_position - victim.global_position) / GOLDSRC_UNIT
+	)
+	if hit_position.y >= float(hit_collider.call("head_height")):
+		return Ballistics.HitGroup.HEAD
+	if relative_hu.y < 30.0:
+		return (
+			Ballistics.HitGroup.LEFT_LEG
+			if relative_hu.x < 0.0
+			else Ballistics.HitGroup.RIGHT_LEG
+		)
+	if relative_hu.y < 42.0:
+		return Ballistics.HitGroup.STOMACH
+	if absf(relative_hu.x) >= 11.0:
+		return (
+			Ballistics.HitGroup.LEFT_ARM
+			if relative_hu.x < 0.0
+			else Ballistics.HitGroup.RIGHT_ARM
+		)
+	return Ballistics.HitGroup.CHEST
+
+
 func _fire_knife(stab := false) -> void:
 	var origin := camera.global_position
-	var range_meters := (32.0 if stab else 48.0) * WORLD_SCALE
-	var end := origin - camera.global_transform.basis.z * range_meters
+	var range_units := (
+		Ballistics.KNIFE_STAB_DISTANCE_UNITS
+		if stab
+		else Ballistics.KNIFE_SWING_DISTANCE_UNITS
+	)
+	var forward := -camera.global_transform.basis.z
+	var end := origin + forward * range_units * WORLD_SCALE
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 | 2, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	if not weapon_clock.begin_primary_attack(not hit.is_empty()):
@@ -1107,21 +1222,42 @@ func _fire_knife(stab := false) -> void:
 	if hit.is_empty():
 		return
 	var hit_collider: Object = hit.collider
-	if hit_collider and hit_collider.has_method("apply_damage"):
+	var base_damage := int(WEAPONS.knife.stab_damage if stab else WEAPONS.knife.damage)
+	if hit_collider and hit_collider.has_method("receive_melee_damage"):
+		# The knife shares the bullet damage path so armor, the knife armor
+		# ratio and hit groups apply; only stabs carry the backstab bonus.
+		var backstab := stab and Ballistics.is_backstab(
+			forward,
+			hit_collider.call("facing_direction"),
+		)
+		var hit_group := _hit_group_for_impact(hit_collider, hit.position)
 		_emit_audio("knife.hit", AudioRouterScript.CHAN_ITEM)
 		hit_collider.call(
-			"apply_damage",
-			float(WEAPONS.knife.stab_damage if stab else WEAPONS.knife.damage),
+			"receive_melee_damage",
+			base_damage,
+			hit_group,
+			"knife",
 			hit.position,
-			false,
 			self,
+			backstab,
 		)
 		if is_instance_valid(combat_effects):
 			combat_effects.spawn_blood_impact(
 				hit.position,
-				-camera.global_transform.basis.z,
+				forward,
 				_shot_sequence,
 			)
+		hit_confirmed.emit(hit_group == Ballistics.HitGroup.HEAD)
+	elif hit_collider and hit_collider.has_method("apply_damage"):
+		# Breakables and other world props keep the generic damage entry point.
+		_emit_audio("knife.hit", AudioRouterScript.CHAN_ITEM)
+		hit_collider.call(
+			"apply_damage",
+			float(base_damage),
+			hit.position,
+			false,
+			self,
+		)
 		hit_confirmed.emit(false)
 	else:
 		_emit_audio("knife.hit_wall", AudioRouterScript.CHAN_ITEM)
@@ -1182,12 +1318,48 @@ func _complete_reload() -> void:
 	ammo_changed.emit(clip, reserve, reloading)
 
 
+## DefaultShotgunReload seats one shell per insert interval, so the HUD ammo
+## counter climbs shell by shell and the loop can end as soon as the magazine
+## is full or the reserve is dry.
+func _insert_reload_shell() -> void:
+	if not reloading or not alive:
+		return
+	var magazine := int(WEAPONS[active_weapon].magazine)
+	if clip < magazine and reserve > 0:
+		clip += 1
+		reserve -= 1
+		_store_active_ammunition()
+		ammo_changed.emit(clip, reserve, reloading)
+	if clip >= magazine or reserve <= 0:
+		_finish_shell_reload()
+
+
+func _finish_shell_reload() -> void:
+	weapon_clock.finish_shell_reload()
+	reloading = false
+	_store_active_ammunition()
+	ammo_changed.emit(clip, reserve, reloading)
+
+
+## 1.6 aborts a shotgun reload the moment the player attacks with a seated
+## shell; the pending shells simply stay in reserve.
+func _interrupt_shell_reload() -> bool:
+	if not weapon_clock.can_interrupt_reload() or clip <= 0 or not alive:
+		return false
+	weapon_clock.cancel_reload()
+	reloading = false
+	_audio_schedule.clear()
+	ammo_changed.emit(clip, reserve, reloading)
+	return true
+
+
 func switch_weapon(weapon: String) -> void:
 	if not WEAPONS.has(weapon) or not owns_weapon(weapon) or weapon == active_weapon:
 		return
 	_store_active_ammunition()
 	reloading = false
 	_audio_schedule.clear()
+	previous_weapon = active_weapon
 	active_weapon = weapon
 	_burst_shots_remaining = 0
 	_next_burst_tick = -1
@@ -1214,8 +1386,75 @@ func switch_weapon(weapon: String) -> void:
 	ammo_changed.emit(clip, reserve, false)
 
 
+func _is_droppable_gun(weapon: String) -> bool:
+	if not WEAPONS.has(weapon):
+		return false
+	return str(WEAPONS[weapon].category) not in ["melee", "grenade", "objective"]
+
+
+func _try_drop_active_weapon() -> void:
+	# CS 1.6 `drop`: only guns leave the inventory; knife/grenades/C4 keep the
+	# key inert (the carried C4 has its own drop contract in game.gd).
+	if not _is_droppable_gun(active_weapon):
+		return
+	_store_active_ammunition()
+	var dropped := active_weapon
+	var dropped_ammo: Dictionary = ammunition.get(dropped, {})
+	var dropped_clip := int(dropped_ammo.get("clip", 0))
+	var dropped_reserve := int(dropped_ammo.get("reserve", 0))
+	owned_weapons.erase(dropped)
+	ammunition.erase(dropped)
+	switch_weapon(_best_owned_weapon())
+	weapon_drop_requested.emit(dropped, dropped_clip, dropped_reserve)
+
+
+func death_drop_weapon() -> String:
+	# CS 1.6 drops the held gun on death; a knife/grenade/C4 holder drops the
+	# best carried gun instead (primary first, else pistol).
+	_store_active_ammunition()
+	if _is_droppable_gun(active_weapon):
+		return active_weapon
+	for slot in [1, 2]:
+		for weapon_name: String in owned_weapons.keys():
+			if (
+				bool(owned_weapons[weapon_name])
+				and _is_droppable_gun(weapon_name)
+				and int(WEAPONS[weapon_name].slot) == slot
+			):
+				return weapon_name
+	return ""
+
+
 func owns_weapon(weapon: String) -> bool:
 	return bool(owned_weapons.get(weapon.to_lower(), false))
+
+
+func best_owned_weapon_in_slot(slot: int) -> String:
+	# CS 1.6 slot keys select whatever the player actually carries in that
+	# slot (1 primary, 2 pistol, 3 knife, 4 grenades), not a fixed weapon.
+	# Repeated presses of the grenade key cycle HE -> flash -> smoke.
+	var candidates: Array[String] = []
+	var slot_order := (
+		["hegrenade", "flashbang", "smokegrenade"]
+		if slot == 4
+		else owned_weapons.keys()
+	)
+	for weapon_name: String in slot_order:
+		if not bool(owned_weapons.get(weapon_name, false)) or not WEAPONS.has(weapon_name):
+			continue
+		if int(WEAPONS[weapon_name].slot) != slot:
+			continue
+		if slot == 4:
+			var grenade_ammo: Dictionary = ammunition.get(weapon_name, {})
+			if int(grenade_ammo.get("clip", 0)) <= 0:
+				continue
+		candidates.append(weapon_name)
+	if candidates.is_empty():
+		return ""
+	var active_index := candidates.find(active_weapon)
+	if active_index >= 0:
+		return candidates[(active_index + 1) % candidates.size()]
+	return candidates[0]
 
 
 func _best_owned_weapon() -> String:

@@ -8,14 +8,29 @@ const SOURCE_CONTRACT := {
 	"run": ["run", 60.0, 37, true, 1],
 	"crouchidle": ["crouch_idle", 10.0, 31, true, 1],
 	"crouchrun": ["crouchrun", 30.0, 31, true, 1],
-	"crouchshoot": ["crouch_shoot_ak47", 30.0, 5, false, 9],
-	"shoot": ["ref_shoot_ak47", 30.0, 6, false, 9],
-	"crouchreload": ["crouch_reload_ak47", 30.0, 91, false, 1],
-	"reload": ["ref_reload_ak47", 30.0, 91, false, 1],
+	# The AK-47 samples the carbine activity family: the standing
+	# ref_aim_ak47/ref_shoot_ak47 tapes in the stock player MDLs decode with
+	# the torso 90 degrees off the gait facing (see WEAPON_FAMILIES).
+	"crouchshoot": ["crouch_shoot_carbine", 15.0, 5, false, 9],
+	"shoot": ["ref_shoot_carbine", 15.0, 5, false, 9],
+	"crouchreload": ["crouch_reload_carbine", 30.0, 61, false, 1],
+	"reload": ["ref_reload_carbine", 30.0, 61, false, 1],
 	"die": ["death1", 30.0, 36, false, 1],
 }
 const SOURCE_QUANT_STEP := 0.0001
 const FOOT_TOLERANCE := 2.0 * 0.01
+# Upper-body action tapes composite their legs from the gait tape (GoldSrc
+# gaitsequence split); their below-belt vertices render locomotion geometry.
+const COMPOSITE_STATES := ["shoot", "reload", "crouchshoot", "crouchreload"]
+# Locomotion states composite the other way: the aim layer (ref_shoot frame 0
+# with the XR pitch blend) renders above the pelvis while the locomotion tape
+# keeps the legs and the authoritative clock.
+const AIM_LAYER_FOR := {
+	"idle": "shoot",
+	"run": "shoot",
+	"crouchidle": "crouchshoot",
+	"crouchrun": "crouchshoot",
+}
 
 var _failures: Array[String] = []
 
@@ -105,10 +120,9 @@ func _assert_metadata(model: MdlCharacterModel, skin: String) -> void:
 			)
 
 
-func _expected_frames(skin: String, state: String, default_frames: int) -> int:
-	# Valve's four CT meshes author one additional crouched AK firing frame.
-	if state == "crouchshoot" and skin in ["urban", "gsg9", "sas", "gign"]:
-		return 6
+func _expected_frames(_skin: String, _state: String, default_frames: int) -> int:
+	# The carbine family tapes are authored identically across all eight
+	# original player MDLs (unlike the ak47 tapes' CT crouch extra frame).
 	return default_frames
 
 
@@ -163,27 +177,87 @@ func _source_pose_bounds(
 		blend_high,
 	)
 	var positions: PackedFloat32Array = animation.positions
-	var first := Vector3(
-		lerpf(positions[low_offset], positions[high_offset], alpha),
-		lerpf(positions[low_offset + 1], positions[high_offset + 1], alpha),
-		lerpf(positions[low_offset + 2], positions[high_offset + 2], alpha),
-	)
-	var minimum := first
-	var maximum := first
-	for offset in range(3, int(model._body_template.vertex_float_count), 3):
-		var point := Vector3(
-			lerpf(positions[low_offset + offset], positions[high_offset + offset], alpha),
-			lerpf(
-				positions[low_offset + offset + 1],
-				positions[high_offset + offset + 1],
-				alpha,
-			),
-			lerpf(
-				positions[low_offset + offset + 2],
-				positions[high_offset + offset + 2],
-				alpha,
-			),
+	# GoldSrc gaitsequence split: upper-body action tapes render locomotion
+	# geometry below the belt. With the fixture reset (_animation_time == 0,
+	# stationary) the expected gait sample is frame 0, blend 0.
+	var composite := state in COMPOSITE_STATES
+	var mask: PackedByteArray = model._body_template.get("lower_mask", PackedByteArray())
+	var gait_positions := PackedFloat32Array()
+	if composite:
+		var gait_state := (
+			"crouchidle" if state.begins_with("crouch") or model._crouched else "idle"
 		)
+		gait_positions = model._body_template.animations[gait_state].positions
+	# Locomotion states hold the aim layer (ref_shoot frame 0, pitch blend)
+	# above the pelvis; only masked (leg) vertices render the state tape.
+	var aim_composite: bool = AIM_LAYER_FOR.has(state)
+	var aim_positions := PackedFloat32Array()
+	var aim_low_offset := 0
+	var aim_high_offset := 0
+	var aim_alpha := 0.0
+	if aim_composite:
+		var aim_animation: Dictionary = (
+			model._body_template.animations[AIM_LAYER_FOR[state]]
+		)
+		aim_positions = aim_animation.positions
+		var aim_blend := model._blend_position(aim_animation)
+		var aim_blend_low := int(floor(aim_blend))
+		var aim_blend_high := int(ceil(aim_blend))
+		aim_alpha = aim_blend - float(aim_blend_low)
+		aim_low_offset = model._pose_float_offset(
+			model._body_template,
+			aim_animation,
+			0,
+			aim_blend_low,
+		)
+		aim_high_offset = model._pose_float_offset(
+			model._body_template,
+			aim_animation,
+			0,
+			aim_blend_high,
+		)
+	var minimum := Vector3.INF
+	var maximum := -Vector3.INF
+	for offset in range(0, int(model._body_template.vertex_float_count), 3):
+		var point := Vector3.ZERO
+		if composite and mask[offset / 3] != 0:
+			point = Vector3(
+				gait_positions[offset],
+				gait_positions[offset + 1],
+				gait_positions[offset + 2],
+			)
+		elif aim_composite and mask[offset / 3] == 0:
+			point = Vector3(
+				lerpf(
+					aim_positions[aim_low_offset + offset],
+					aim_positions[aim_high_offset + offset],
+					aim_alpha,
+				),
+				lerpf(
+					aim_positions[aim_low_offset + offset + 1],
+					aim_positions[aim_high_offset + offset + 1],
+					aim_alpha,
+				),
+				lerpf(
+					aim_positions[aim_low_offset + offset + 2],
+					aim_positions[aim_high_offset + offset + 2],
+					aim_alpha,
+				),
+			)
+		else:
+			point = Vector3(
+				lerpf(positions[low_offset + offset], positions[high_offset + offset], alpha),
+				lerpf(
+					positions[low_offset + offset + 1],
+					positions[high_offset + offset + 1],
+					alpha,
+				),
+				lerpf(
+					positions[low_offset + offset + 2],
+					positions[high_offset + offset + 2],
+					alpha,
+				),
+			)
 		minimum = minimum.min(point)
 		maximum = maximum.max(point)
 	return AABB(minimum, maximum - minimum)
@@ -269,6 +343,13 @@ func _assert_every_vertex_matches_source_lerp(
 	var next_low := model._pose_float_offset(template, animation, 1, blend_low)
 	var next_high := model._pose_float_offset(template, animation, 1, blend_high)
 	var positions: PackedFloat32Array = animation.positions
+	# Body vertices below the belt render the gait tape during action states
+	# (fixture is stationary with _animation_time 0 -> idle frame 0, blend 0).
+	var composite := instance == model.body_instance and state in COMPOSITE_STATES
+	var mask: PackedByteArray = template.get("lower_mask", PackedByteArray())
+	var gait_positions := PackedFloat32Array()
+	if composite:
+		gait_positions = template.animations.idle.positions
 	var mesh := instance.mesh as ArrayMesh
 	var maximum_error := 0.0
 	var rendered_count := 0
@@ -280,6 +361,18 @@ func _assert_every_vertex_matches_source_lerp(
 		for local_index in range(vertices.size()):
 			var vertex_index := int(group.start) + local_index
 			var float_index := vertex_index * 3
+			if composite and mask[vertex_index] != 0:
+				var gait_expected := Vector3(
+					gait_positions[float_index],
+					gait_positions[float_index + 1],
+					gait_positions[float_index + 2],
+				)
+				maximum_error = maxf(
+					maximum_error,
+					vertices[local_index].distance_to(gait_expected),
+				)
+				rendered_count += 1
+				continue
 			var expected := Vector3.ZERO
 			for component in range(3):
 				var current := lerpf(
@@ -373,7 +466,7 @@ func _assert_100hz_transition_tape(model: MdlCharacterModel) -> void:
 	_check(
 		model.animation_state == "crouchshoot"
 		and int(shoot_fields[1]) == 0
-		and absf(float(shoot_fields[3]) / model.FRAME_KEY_STEPS - 0.3) < 0.001,
+		and absf(float(shoot_fields[3]) / model.FRAME_KEY_STEPS - 0.15) < 0.001,
 		"shoot transition resets its authored one-shot clock",
 	)
 
@@ -392,9 +485,13 @@ func _assert_100hz_transition_tape(model: MdlCharacterModel) -> void:
 	model.play_death()
 	_record_tape(tape, 14, model)
 	_check(
-		model._body_frame_key.begins_with("die:0:1:0:")
-		and model._weapon_frame_key.begins_with("die:0:1:0:"),
+		model._body_frame_key.begins_with("die:0:1:0:"),
 		"death transition begins on the exact authored first frame",
+	)
+	_check(
+		not model.weapon_instance.visible
+		and is_instance_valid(model.dropped_weapon_instance),
+		"death detaches the p_ model and spawns the dropped ground weapon",
 	)
 	for tick in range(15, 150):
 		model.advance_animation(0.01)
@@ -425,17 +522,35 @@ func _assert_100hz_transition_tape(model: MdlCharacterModel) -> void:
 
 
 func _record_tape(tape: Array[Dictionary], tick: int, model: MdlCharacterModel) -> void:
+	# The p_ model shares the body's source sample while attached; the trailing
+	# key field is the body-only gait overlay and death detaches the weapon
+	# entirely (CS 1.6 corpses are empty-handed).
+	var clock_match := (
+		_shared_clock_key(model._body_frame_key)
+		== _shared_clock_key(model._weapon_frame_key)
+	)
 	tape.append({
 		"tick": tick,
 		"state": model.animation_state,
 		"body_frame_key": model._body_frame_key,
 		"weapon_frame_key": model._weapon_frame_key,
-		"body_weapon_clock_match": model._body_frame_key == model._weapon_frame_key,
+		"body_weapon_clock_match": clock_match or model._dead,
 	})
+	if model._dead:
+		_check(
+			not model.weapon_instance.visible,
+			"100 Hz tick %d keeps the p_ model detached after death" % tick,
+		)
+		return
 	_check(
-		model._body_frame_key == model._weapon_frame_key,
+		clock_match,
 		"100 Hz tick %d keeps body and attached weapon on the same source sample" % tick,
 	)
+
+
+static func _shared_clock_key(frame_key: String) -> String:
+	var fields := frame_key.split(":")
+	return ":".join(fields.slice(0, mini(7, fields.size())))
 
 
 func _assert_death_freeze(model: MdlCharacterModel) -> void:

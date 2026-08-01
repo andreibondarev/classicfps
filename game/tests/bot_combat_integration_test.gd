@@ -48,6 +48,8 @@ func _run() -> void:
 	_test_aim_error_controls_actual_ray()
 	_test_damage_armor_and_hitgroups()
 	_test_actor_render_schedule_equivalence()
+	_test_rear_damage_reaction()
+	_test_grenade_carry_and_throw()
 
 	scene.queue_free()
 	await process_frame
@@ -203,6 +205,87 @@ func _test_damage_armor_and_hitgroups() -> void:
 	_check(
 		int(head.health_damage) >= 100 and not victim.alive,
 		"helmeted AK headshot uses the four-times hitgroup path and can kill",
+	)
+
+
+func _test_rear_damage_reaction() -> void:
+	_prepare_duel(30, 90)
+	# The victim keeps its spawn rotation (forward -Z) while the shooter sits at
+	# +Z: the attacker is squarely outside the 90-degree vision cone.
+	var controller := victim.combat_controller as BotCombatController
+	controller.reset_tactics()
+	for ignored in range(60):
+		controller.gather_command(0.01)
+	_check(
+		not is_instance_valid(controller.current_enemy),
+		"a bot cannot see an enemy standing directly behind it",
+	)
+	victim.receive_damage(20.0, victim.global_position, false, shooter)
+	var investigated := false
+	var reaction_ticks := 0
+	for tick in range(400):
+		var command := controller.gather_command(0.01)
+		if bool(command.get("investigating", false)):
+			investigated = true
+		if is_instance_valid(controller.current_enemy):
+			reaction_ticks = tick + 1
+			break
+	_check(
+		investigated,
+		"a bot shot from behind first turns toward the damage source",
+	)
+	_check(
+		controller.current_enemy == shooter,
+		"a bot shot from behind acquires its attacker as a target",
+	)
+	_check(
+		reaction_ticks > 10 and reaction_ticks < 100,
+		"the rear-damage reaction is delayed but resolves within a second (%d ticks)"
+		% reaction_ticks,
+	)
+	victim.reset_target(Vector3(0.0, 0.0, -10.0))
+	victim.set_physics_process(false)
+	victim.active = false
+
+
+func _test_grenade_carry_and_throw() -> void:
+	var controller := _prepare_duel(30, 90)
+	_check(
+		shooter.configure_weapon("hegrenade"),
+		"a bot can be granted a grenade through the round buy applier",
+	)
+	_check(
+		shooter.grenade_count("hegrenade") == 1
+		and shooter.active_weapon_name == "ak47",
+		"the grenade joins the utility inventory without replacing the primary",
+	)
+	var throw_command := {}
+	for ignored in range(2000):
+		var command := _drive_tick(controller, 0.01)
+		var request: Dictionary = command.get("throw_grenade", {})
+		if not request.is_empty():
+			throw_command = request
+			break
+	_check(
+		not throw_command.is_empty()
+		and str(throw_command.get("kind", "")) == "hegrenade",
+		"an engaged bot holding an HE eventually throws it",
+	)
+	_check(
+		shooter.grenade_trace.size() == 1
+		and shooter.grenade_count("hegrenade") == 0,
+		"the thrown grenade leaves the inventory exactly once",
+	)
+	var live_grenades := 0
+	for child in scene.get_children():
+		if child is HEGrenade:
+			live_grenades += 1
+	_check(live_grenades == 1, "the throw spawns one real grenade entity")
+	for ignored in range(400):
+		_drive_tick(controller, 0.01)
+	_check(
+		shooter.grenade_trace.size() == 1,
+		"a bot without utility left cannot throw again",
 	)
 
 

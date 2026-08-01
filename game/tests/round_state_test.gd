@@ -24,6 +24,11 @@ func _run() -> void:
 	_assert_economy()
 	_assert_round_reset_clears_dead_hud_state()
 	_assert_halftime_and_maxrounds()
+	_assert_competitive_match_limits()
+	_assert_pistols_are_team_neutral()
+	_assert_post_plant_buying()
+	_assert_simultaneous_wipe()
+	_assert_bomb_planted_accounting()
 	_assert_render_rate_independence()
 	_write_trace_artifact()
 	if failures.is_empty():
@@ -479,6 +484,203 @@ func _assert_halftime_and_maxrounds() -> void:
 	_check(
 		state.phase == "intermission",
 		"maxrounds hook enters intermission after configured rounds",
+	)
+
+
+func _assert_competitive_match_limits() -> void:
+	var state := _fixture({
+		"freeze_ticks": 1,
+		"restart_ticks": 1,
+		"max_rounds": 30,
+		"win_limit": 16,
+		"halftime": true,
+	})
+	for player_id: String in state.players:
+		state.adjust_player_money(player_id, 16000, "test_seed")
+	var halftime_events := 0
+	var match_end_events := 0
+	var swapped_at_round := 0
+	var money_at_second_half := -1
+	var bonus_at_second_half := -1
+	var streaks_at_second_half := -1
+	for round_index in 30:
+		if state.phase == "intermission":
+			break
+		state.advance_tick()
+		# Terrorists take the first half, counter-terrorists the second, so the
+		# match must end on the win limit before the round limit is reached.
+		var loser_team := "CT" if round_index < 16 else "T"
+		for player_id: String in state.players:
+			if str(state.players[player_id].team) == loser_team:
+				state.set_player_alive(player_id, false)
+		for event: Dictionary in state.advance_tick():
+			if str(event.type) == "halftime":
+				halftime_events += 1
+				swapped_at_round = int(event.round)
+				money_at_second_half = int(state.players.t1.money)
+				bonus_at_second_half = int(state.loser_bonus)
+				streaks_at_second_half = (
+					int(state.loss_streak.T) + int(state.loss_streak.CT)
+				)
+			elif str(event.type) == "match_end":
+				match_end_events += 1
+	_check(
+		halftime_events == 1 and swapped_at_round == 15,
+		"MR15 configuration swaps sides exactly once, after round 15",
+	)
+	_check(
+		money_at_second_half == RoundStateScript.START_MONEY,
+		"half-time restarts every account at $800",
+	)
+	_check(
+		bonus_at_second_half == RoundStateScript.LOSER_BONUS_DEFAULT
+		and streaks_at_second_half == 0,
+		"half-time restarts the shared loser-bonus ladder",
+	)
+	_check(
+		match_end_events == 1 and state.phase == "intermission",
+		"MR15 match ends once a side reaches the 16-win limit",
+	)
+	_check(
+		maxi(int(state.ct_score), int(state.terrorist_score)) == 16
+		and int(state.rounds_played) < 30,
+		"win limit ends the match before the 30-round limit",
+	)
+
+	var swapped_teams: Array[String] = []
+	for player_id: String in ["t1", "ct1"]:
+		swapped_teams.append(str(state.players[player_id].team))
+	_check(
+		swapped_teams == ["CT", "T"],
+		"half-time leaves the roster on the opposite sides",
+	)
+
+
+func _assert_pistols_are_team_neutral() -> void:
+	var state := _fixture()
+	_check(
+		bool(state.purchase_item("t1", "usp", 500, true, true).allowed),
+		"Terrorist may buy the USP listed in BuyPistols_TER.kv",
+	)
+	_check(
+		bool(state.purchase_item("ct1", "glock18", 400, true, true).allowed),
+		"Counter-Terrorist may buy the Glock listed in BuyPistols_CT.kv",
+	)
+	_check(
+		state.purchase_item("t1", "fiveseven", 750, true, true).reason == "wrong_team",
+		"Five-SeveN stays CT-only",
+	)
+	_check(
+		state.purchase_item("ct1", "elite", 800, true, true).reason == "wrong_team",
+		"dual Elites stay T-only",
+	)
+
+
+func _assert_post_plant_buying() -> void:
+	var state := _planted_fixture(false, 4500)
+	_check(state.phase == "bomb", "planted fixture reaches the bomb phase")
+	_check(
+		bool(state.can_buy("t1", true, true).allowed)
+		and bool(state.can_buy("ct1", true, true).allowed),
+		"a planted bomb does not close the buy menu",
+	)
+	state.adjust_player_money("ct1", 3100, "test_seed")
+	var balance_before := int(state.players.ct1.money)
+	_check(
+		bool(state.purchase_item("ct1", "m4a1", 3100, true, true).allowed)
+		and int(state.players.ct1.money) == balance_before - 3100,
+		"post-plant purchases still debit the account",
+	)
+	state.set_player_alive("ct2", false)
+	_check(
+		state.can_buy("ct2", true, true).reason == "dead",
+		"post-plant buying still requires a living buyer",
+	)
+	state.configure({"buy_ticks": 200})
+	_advance(state, 300)
+	_check(state.phase == "bomb", "bomb keeps ticking through the buy deadline")
+	_check(
+		state.can_buy("t1", true, true).reason == "buy_time_expired",
+		"mp_buytime still closes buying during the bomb phase",
+	)
+
+
+func _assert_simultaneous_wipe() -> void:
+	var state := _fixture({"freeze_ticks": 1, "round_ticks": 2000})
+	state.advance_tick()
+	state.players.t1.alive = false
+	state.players.t2.alive = false
+	state.players.ct1.alive = false
+	state.set_player_alive("ct2", false)
+	_check(
+		state.phase == "post",
+		"a same-tick mutual wipe ends the round instead of running to timeout",
+	)
+	_check(
+		state.round_winner == "T" and state.round_reason == "terrorists_win",
+		"TeamExterminationCheck order awards a mutual wipe to the Terrorists",
+	)
+
+	var one_sided: RefCounted = RoundStateScript.new()
+	one_sided.configure({"freeze_ticks": 1, "round_ticks": 2000})
+	one_sided.register_player("t1", RoundStateScript.TEAM_T)
+	one_sided.start_match()
+	one_sided.advance_tick()
+	one_sided.set_player_alive("t1", false)
+	_check(
+		one_sided.phase == "post"
+		and one_sided.round_winner == ""
+		and one_sided.round_reason == "round_draw",
+		"an unpopulated side falls through to a scoreless round draw",
+	)
+	_check(
+		int(one_sided.ct_score) == 0
+		and int(one_sided.terrorist_score) == 0
+		and int(one_sided.pending_team_accounts.T) == 0
+		and int(one_sided.pending_team_accounts.CT) == 0,
+		"a drawn round scores nothing and queues no team account",
+	)
+
+
+func _assert_bomb_planted_accounting() -> void:
+	# ReGameDLL pays RR_BOMB_PLANTED ($800) in Target_Defused and grants the
+	# planter's +3 frags in CGrenade::C4Think, i.e. both are round-end awards.
+	var defused := _planted_fixture(true, 4500)
+	var planter := str(defused.bomb_planter_id)
+	_check(
+		int(defused.players[planter].kills) == 0,
+		"planting alone grants no objective score",
+	)
+	var t_balance_before := int(defused.players.t1.money)
+	var request := {
+		"player_id": "ct1",
+		"use": true,
+		"grounded": true,
+		"in_range": true,
+		"facing": true,
+	}
+	_advance(defused, 501, {"defuse": request})
+	_check(
+		defused.bomb_state == "defused" and int(defused.players.ct1.kills) == 3,
+		"the defuser receives the +3 objective score",
+	)
+	_check(
+		int(defused.players[planter].kills) == 0,
+		"a defused bomb leaves the planter without the explosion score",
+	)
+	_check(
+		int(defused.pending_team_accounts.T)
+		== RoundStateScript.REWARD_BOMB_PLANTED + int(defused.loser_bonus),
+		"a defused bomb pays the planting team $800 on top of the loser bonus",
+	)
+	defused.advance_tick()
+	_advance(defused, int(defused.config.restart_ticks))
+	_check(
+		int(defused.players.t1.money)
+		== t_balance_before
+		+ RoundStateScript.REWARD_BOMB_PLANTED
+		+ RoundStateScript.LOSER_BONUS_DEFAULT,
+		"the $800 plant bonus is distributed exactly once at RestartRound",
 	)
 
 

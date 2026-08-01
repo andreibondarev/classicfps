@@ -1,6 +1,8 @@
 class_name CS16BotTactics
 extends RefCounted
 
+const WeaponRegistry := preload("res://scripts/cs16_weapon_registry.gd")
+
 ## Deterministic 100 Hz combat decision clock for offline CS-style bots.
 ##
 ## Navigation and collision stay in the actor/controller layer. This class owns
@@ -13,6 +15,18 @@ const AK_RESERVE_SIZE := 90
 const AK_FIRE_TICKS := 10
 const AK_RELOAD_TICKS := 245
 const VISUAL_MEMORY_TICKS := 180
+
+## Grenade usage window. Below the minimum a 1.6 bot shoots instead of cooking a
+## grenade at its own feet; above the maximum the throw cannot reach.
+const GRENADE_MIN_RANGE_HU := 450.0
+const GRENADE_MAX_RANGE_HU := 1400.0
+## Ticks before the same bot considers another grenade after actually throwing.
+const GRENADE_COOLDOWN_TICKS := 800
+## Ticks before re-evaluating an opportunity that was passed up or vetoed.
+const GRENADE_RETRY_TICKS := 150
+## Roll denominator for a single opportunity: grenades stay occasional.
+const GRENADE_ROLL_SIDES := 4
+const GRENADE_PRIORITY := ["hegrenade", "flashbang"]
 
 const STATE_HUNT := "hunt"
 const STATE_REACT := "react"
@@ -32,9 +46,20 @@ var next_fire_tick := 0
 var reload_complete_tick := -1
 var burst_remaining := 0
 var shots_fired := 0
+var weapon_name := "ak47"
+var magazine_size := AK_CLIP_SIZE
+var initial_reserve := AK_RESERVE_SIZE
+var fire_interval_ticks := AK_FIRE_TICKS
+var reload_duration_ticks := AK_RELOAD_TICKS
+var grenade_counts := {}
 
 var _reaction_ticks := 22
 var _rng := RandomNumberGenerator.new()
+# Grenade decisions draw from their own stream so carrying utility can never
+# shift the shooting trace of an identical replay.
+var _grenade_rng := RandomNumberGenerator.new()
+var _next_grenade_tick := 0
+var _grenade_events: Array[Dictionary] = []
 var _second_accumulator := 0.0
 var _fire_pulse := false
 var _reload_pulse := false
@@ -44,11 +69,33 @@ var _fire_events: Array[Dictionary] = []
 var _reload_ticks: Array[int] = []
 
 
+func configure_weapon(requested_weapon: String) -> bool:
+	var definition := WeaponRegistry.definition(requested_weapon)
+	if definition.is_empty() or str(definition.category) in ["melee", "objective"]:
+		return false
+	if str(definition.category) == "grenade":
+		# Grenades are carried, not equipped: they join the utility inventory
+		# and leave the shooting clock (magazine, cadence, reload) untouched.
+		return add_grenade(str(definition.weapon))
+	weapon_name = str(definition.weapon)
+	magazine_size = int(definition.magazine)
+	initial_reserve = int(definition.reserve)
+	fire_interval_ticks = maxi(
+		1,
+		int(round(float(definition.primary_seconds) * float(TICK_RATE))),
+	)
+	reload_duration_ticks = maxi(
+		1,
+		int(round(float(definition.reload_seconds) * float(TICK_RATE))),
+	)
+	return true
+
+
 func reset(seed: int, skill := 1.0) -> void:
 	tick = 0
 	state = STATE_HUNT
-	clip = AK_CLIP_SIZE
-	reserve = AK_RESERVE_SIZE
+	clip = magazine_size
+	reserve = initial_reserve
 	last_seen_tick = -VISUAL_MEMORY_TICKS - 1
 	last_seen_position = Vector3.ZERO
 	last_seen_velocity = Vector3.ZERO
@@ -64,7 +111,11 @@ func reset(seed: int, skill := 1.0) -> void:
 	_fire_ticks.clear()
 	_fire_events.clear()
 	_reload_ticks.clear()
+	_grenade_events.clear()
+	grenade_counts.clear()
+	_next_grenade_tick = 0
 	_rng.seed = seed
+	_grenade_rng.seed = seed ^ 0x9E3779B9
 	_reaction_ticks = clampi(
 		int(round(34.0 - clampf(skill, 0.0, 1.0) * 18.0)),
 		16,
@@ -80,12 +131,44 @@ func advance_seconds(delta: float, observation: Dictionary) -> Dictionary:
 	return advance_ticks(elapsed_ticks, observation)
 
 
+func add_grenade(kind: String, count := 1) -> bool:
+	if kind not in GRENADE_PRIORITY and kind != "smokegrenade":
+		return false
+	grenade_counts[kind] = int(grenade_counts.get(kind, 0)) + maxi(1, count)
+	return true
+
+
+func set_grenade_inventory(counts: Dictionary) -> void:
+	grenade_counts.clear()
+	for raw_kind: Variant in counts:
+		var kind := str(raw_kind)
+		var count := int(counts[raw_kind])
+		if count > 0:
+			grenade_counts[kind] = count
+
+
+func confirm_grenade_throw(kind: String) -> void:
+	## The controller owns the world checks, so it — not this clock — decides a
+	## request became a real throw.
+	if int(grenade_counts.get(kind, 0)) <= 0:
+		return
+	grenade_counts[kind] = int(grenade_counts[kind]) - 1
+	if int(grenade_counts[kind]) <= 0:
+		grenade_counts.erase(kind)
+	_next_grenade_tick = tick + GRENADE_COOLDOWN_TICKS
+
+
+func defer_grenade_throw() -> void:
+	_next_grenade_tick = tick + GRENADE_RETRY_TICKS
+
+
 func advance_ticks(count: int, observation: Dictionary) -> Dictionary:
 	_fire_pulse = false
 	_reload_pulse = false
 	_fire_ticks.clear()
 	_fire_events.clear()
 	_reload_ticks.clear()
+	_grenade_events.clear()
 	for ignored in range(maxi(0, count)):
 		_advance_tick(observation)
 	return snapshot()
@@ -100,7 +183,7 @@ func _advance_tick(observation: Dictionary) -> void:
 	var distance_hu := maxf(0.0, float(observation.get("distance_hu", INF)))
 
 	if reload_complete_tick >= 0 and tick >= reload_complete_tick:
-		var loaded := mini(AK_CLIP_SIZE - clip, reserve)
+		var loaded := mini(magazine_size - clip, reserve)
 		clip += loaded
 		reserve -= loaded
 		reload_complete_tick = -1
@@ -132,6 +215,7 @@ func _advance_tick(observation: Dictionary) -> void:
 
 	if visible:
 		state = STATE_ENGAGE
+		_request_grenade(distance_hu)
 		if clip <= 0:
 			_start_reload()
 			return
@@ -149,7 +233,7 @@ func _advance_tick(observation: Dictionary) -> void:
 				"clip_after": clip,
 				"reserve_after": reserve,
 			})
-			next_fire_tick = tick + AK_FIRE_TICKS
+			next_fire_tick = tick + fire_interval_ticks
 			if burst_remaining <= 0:
 				next_fire_tick += _rng.randi_range(18, 38)
 		return
@@ -168,11 +252,34 @@ func _advance_tick(observation: Dictionary) -> void:
 		burst_remaining = 0
 
 
+func _request_grenade(distance_hu: float) -> void:
+	if grenade_counts.is_empty() or tick < _next_grenade_tick:
+		return
+	if distance_hu < GRENADE_MIN_RANGE_HU or distance_hu > GRENADE_MAX_RANGE_HU:
+		return
+	var kind := ""
+	for candidate: String in GRENADE_PRIORITY:
+		if int(grenade_counts.get(candidate, 0)) > 0:
+			kind = candidate
+			break
+	if kind.is_empty():
+		return
+	if _grenade_rng.randi_range(0, GRENADE_ROLL_SIDES - 1) != 0:
+		_next_grenade_tick = tick + GRENADE_RETRY_TICKS
+		return
+	_grenade_events.append({
+		"tick": tick,
+		"kind": kind,
+		"target": last_seen_position,
+	})
+	_next_grenade_tick = tick + GRENADE_RETRY_TICKS
+
+
 func _start_reload() -> void:
 	if reserve <= 0 or reload_complete_tick >= 0:
 		return
 	state = STATE_RELOAD
-	reload_complete_tick = tick + AK_RELOAD_TICKS
+	reload_complete_tick = tick + reload_duration_ticks
 	burst_remaining = 0
 	_reload_pulse = true
 	_reload_ticks.append(tick)
@@ -218,4 +325,7 @@ func snapshot() -> Dictionary:
 		"clip": clip,
 		"reserve": reserve,
 		"shots_fired": shots_fired,
+		"weapon": weapon_name,
+		"grenade_events": _grenade_events.duplicate(true),
+		"grenades": grenade_counts.duplicate(),
 	}

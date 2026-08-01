@@ -36,6 +36,8 @@ func _run() -> void:
 		Vector3.ZERO,
 	)
 	var planter_ok := await _capture_planter_grid()
+	var planted_ok := await _capture_planted_artifact()
+	var explosion_ok := await _capture_c4_explosion_artifact()
 	if (
 		transform_ok
 		and viewmodel_ok
@@ -43,6 +45,8 @@ func _run() -> void:
 		and world_side_ok
 		and world_top_ok
 		and planter_ok
+		and planted_ok
+		and explosion_ok
 	):
 		print(
 			"GAME_C4_VISUAL_CAPTURE_PASS "
@@ -51,7 +55,10 @@ func _run() -> void:
 			+ "/tmp/protocol47-c4-world-side.png "
 			+ "/tmp/protocol47-c4-world-top.png "
 			+ "/tmp/protocol47-c4-planter-pose-grid.png "
-			+ "/tmp/protocol47-c4-transform-grid.png"
+			+ "/tmp/protocol47-c4-transform-grid.png "
+			+ ProjectSettings.globalize_path("res://artifacts/protocol47-c4-planted.png")
+			+ " "
+			+ ProjectSettings.globalize_path("res://artifacts/protocol47-c4-explosion.png")
 		)
 		quit(0)
 	else:
@@ -61,47 +68,50 @@ func _run() -> void:
 func _capture_transform_grid() -> bool:
 	var candidates := [
 		{
-			"label": "A  p(.36,.18,-.52)  s(-2.2,3.5,-3.5)",
+			"label": (
+				"SELECTED A  p(.36,.18,-.52) s(-2.2,3.5,-3.5) "
+				+ "· ref device 12–22% frame · hands exit lower-right"
+			),
 			"position": Vector3(0.36, 0.18, -0.52),
 			"scale": Vector3(-2.2, 3.5, -3.5),
 		},
 		{
-			"label": "B  p(.39,.18,-.56)  s(-2.4,3.8,-3.8)",
+			"label": "B · upper scale bound",
 			"position": Vector3(0.39, 0.18, -0.56),
 			"scale": Vector3(-2.4, 3.8, -3.8),
 		},
 		{
-			"label": "C  p(.42,.18,-.60)  s(-2.6,4.1,-4.1)",
+			"label": "C · rejected clipped/overlarge",
 			"position": Vector3(0.42, 0.18, -0.60),
 			"scale": Vector3(-2.6, 4.1, -4.1),
 		},
 		{
-			"label": "D  p(.36,.22,-.52)  s(-2.2,3.5,-3.5)",
+			"label": "D · high framing bound",
 			"position": Vector3(0.36, 0.22, -0.52),
 			"scale": Vector3(-2.2, 3.5, -3.5),
 		},
 		{
-			"label": "E  p(.39,.22,-.56)  s(-2.4,3.8,-3.8)",
+			"label": "E · high/large reference",
 			"position": Vector3(0.39, 0.22, -0.56),
 			"scale": Vector3(-2.4, 3.8, -3.8),
 		},
 		{
-			"label": "F  p(.42,.22,-.60)  s(-2.6,4.1,-4.1)",
+			"label": "F · rejected high/overlarge",
 			"position": Vector3(0.42, 0.22, -0.60),
 			"scale": Vector3(-2.6, 4.1, -4.1),
 		},
 		{
-			"label": "G  p(.36,.26,-.52)  s(-2.2,3.5,-3.5)",
+			"label": "G · upper framing rejection",
 			"position": Vector3(0.36, 0.26, -0.52),
 			"scale": Vector3(-2.2, 3.5, -3.5),
 		},
 		{
-			"label": "H  p(.39,.26,-.56)  s(-2.4,3.8,-3.8)",
+			"label": "H · upper/large rejection",
 			"position": Vector3(0.39, 0.26, -0.56),
 			"scale": Vector3(-2.4, 3.8, -3.8),
 		},
 		{
-			"label": "I  p(.42,.26,-.60)  s(-2.6,4.1,-4.1)",
+			"label": "I · upper clipping rejection",
 			"position": Vector3(0.42, 0.26, -0.60),
 			"scale": Vector3(-2.6, 4.1, -4.1),
 		},
@@ -129,9 +139,9 @@ func _capture_viewmodel_grid() -> bool:
 		["draw start", "draw", 0.0],
 		["draw mid", "draw", 0.53],
 		["idle", "idle1", 0.0],
-		["arm start", "pressbutton", 0.0],
-		["arm keypad", "pressbutton", 0.50],
-		["arm late", "pressbutton", 0.86],
+		["arm acquire · 18%", "pressbutton", 0.18],
+		["arm keypad · 48%", "pressbutton", 0.48],
+		["arm confirm · 78%", "pressbutton", 0.78],
 		["drop start", "drop", 0.0],
 		["drop mid", "drop", 0.50],
 		["drop end", "drop", 0.98],
@@ -289,9 +299,16 @@ func _capture_world(
 
 
 func _capture_planter_grid() -> bool:
+	# Sample the exact production action clock. The previous force_pose call
+	# derived time from the base player's very short generic attack sequence,
+	# leaving the much longer original p_c4 plant strip near frame zero.
 	var views := [
-		["Terrorist planter · front", Vector3(0.0, 0.55, -2.1)],
-		["Terrorist planter · side", Vector3(2.1, 0.55, 0.0)],
+		["T planter · early 0.75 s · front", Vector3(0.0, 0.55, -2.1), 0.75],
+		["T planter · early 0.75 s · side", Vector3(2.1, 0.55, 0.0), 0.75],
+		["T planter · keypad 2.00 s · front", Vector3(0.0, 0.55, -2.1), 2.00],
+		["T planter · keypad 2.00 s · side", Vector3(2.1, 0.55, 0.0), 2.00],
+		["T planter · release 3.25 s · front", Vector3(0.0, 0.55, -2.1), 3.25],
+		["T planter · release 3.25 s · side", Vector3(2.1, 0.55, 0.0), 3.25],
 	]
 	var images: Array[Image] = []
 	for index in views.size():
@@ -306,7 +323,9 @@ func _capture_planter_grid() -> bool:
 		scene.add_child(model)
 		model.load_character("terror", "c4")
 		model.process_mode = Node.PROCESS_MODE_DISABLED
-		model.force_pose("crouchshoot", 0.52, 0.0)
+		model.set_locomotion(false, true, true)
+		model.play_action("shoot")
+		model.advance_animation(float(view[2]))
 		var camera := Camera3D.new()
 		camera.fov = 36.0
 		camera.current = true
@@ -373,13 +392,14 @@ func _add_environment(parent: Node) -> void:
 	environment.background_color = BACKGROUND
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.ambient_light_color = Color.WHITE
-	environment.ambient_light_energy = 1.15
+	environment.ambient_light_energy = 0.58
 	environment_node.environment = environment
 	parent.add_child(environment_node)
 	var key_light := DirectionalLight3D.new()
 	key_light.rotation_degrees = Vector3(-52.0, -28.0, 0.0)
-	key_light.light_energy = 1.25
+	key_light.light_energy = 1.65
 	key_light.shadow_enabled = true
+	key_light.directional_shadow_max_distance = 8.0
 	parent.add_child(key_light)
 
 
@@ -394,6 +414,141 @@ func _add_floor(parent: Node, size: Vector3) -> void:
 	floor.mesh = mesh
 	floor.position.y = -size.y * 0.5
 	parent.add_child(floor)
+
+
+func _make_bombsite_scene() -> Dictionary:
+	## Stages the real de_dust2 map and returns {scene, site} where site is a
+	## floor point inside the first func_bomb_target region.
+	const BspMapScript := preload("res://scripts/bsp_map.gd")
+	root.size = Vector2i(1280, 720)
+	root.content_scale_size = Vector2i(1280, 720)
+	var scene := Node3D.new()
+	root.add_child(scene)
+	var environment_node := WorldEnvironment.new()
+	var environment := Environment.new()
+	environment.background_mode = Environment.BG_COLOR
+	environment.background_color = Color("#26303a")
+	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_color = Color("#c8d0ce")
+	environment.ambient_light_energy = 0.78
+	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	environment_node.environment = environment
+	scene.add_child(environment_node)
+	var sun := DirectionalLight3D.new()
+	sun.rotation_degrees = Vector3(-52.0, -28.0, 0.0)
+	sun.light_energy = 1.1
+	scene.add_child(sun)
+	var map: BspMap = BspMapScript.new()
+	scene.add_child(map)
+	if not map.load_map("res://generated/de_dust2/map.json"):
+		push_error("C4 capture could not load de_dust2")
+		return {}
+	var regions := map.brush_entity_regions("func_bomb_target")
+	if regions.is_empty():
+		push_error("de_dust2 exposes no func_bomb_target region")
+		return {}
+	var bounds: AABB = regions[0].bounds
+	var site := Vector3(
+		bounds.position.x + bounds.size.x * 0.5,
+		bounds.position.y + 0.005,
+		bounds.position.z + bounds.size.z * 0.5,
+	)
+	return {"scene": scene, "site": site}
+
+
+func _capture_planted_artifact() -> bool:
+	## Required review artifact: the planted C4 in-world with its red blinking
+	## LED lit, on the real dust2 bombsite floor.
+	var staged := _make_bombsite_scene()
+	if staged.is_empty():
+		return false
+	var scene: Node3D = staged.scene
+	var site: Vector3 = staged.site
+	var planted := C4WorldScript.create_planted_visual()
+	scene.add_child(planted)
+	planted.global_position = site
+	planted.rotation.y = -PI * 0.35
+	# Freeze the blink cycle at its lit phase for a deterministic capture; the
+	# LED starts on and _process is what advances the pulse.
+	planted.process_mode = Node.PROCESS_MODE_DISABLED
+	var camera := Camera3D.new()
+	camera.fov = 50.0
+	camera.near = 0.01
+	scene.add_child(camera)
+	camera.current = true
+	camera.look_at_from_position(
+		site + Vector3(0.26, 0.17, 0.34),
+		site + Vector3.UP * 0.05,
+		Vector3.UP,
+	)
+	var artifact_root := ProjectSettings.globalize_path("res://artifacts")
+	DirAccess.make_dir_recursive_absolute(artifact_root)
+	var ok := await _settle_and_capture(
+		artifact_root.path_join("protocol47-c4-planted.png")
+	)
+	scene.queue_free()
+	await process_frame
+	return ok
+
+
+func _capture_c4_explosion_artifact() -> bool:
+	## Required review artifact: the C4 detonation multi-sprite fireball chain
+	## with its scorch decal, on the real dust2 bombsite.
+	const CombatEffectsScript := preload("res://scripts/cs16_combat_effects.gd")
+	var staged := _make_bombsite_scene()
+	if staged.is_empty():
+		return false
+	var scene: Node3D = staged.scene
+	var site: Vector3 = staged.site
+	var effects: CS16CombatEffects = CombatEffectsScript.new()
+	effects.set_physics_process(false)
+	scene.add_child(effects)
+	# Entering the tree re-enables physics processing; freeze the clock so the
+	# advance_tick(105) below selects the exact mid-detonation frame.
+	effects.process_mode = Node.PROCESS_MODE_DISABLED
+	var camera := Camera3D.new()
+	camera.fov = 62.0
+	camera.near = 0.02
+	scene.add_child(camera)
+	camera.current = true
+	# Keep the camera inside the (enclosed) bombsite: clamp the desired offset
+	# against world geometry so the fireball chain is not shot through a wall.
+	for frame in range(4):
+		await physics_frame
+	var desired_offset := Vector3(5.8, 2.2, 6.6)
+	var space := scene.get_world_3d().direct_space_state
+	var occluder := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+		site + Vector3.UP * 1.2,
+		site + Vector3.UP * 1.2 + desired_offset,
+		1,
+	))
+	var camera_position := site + Vector3.UP * 1.2 + desired_offset
+	if not occluder.is_empty():
+		var free_span: float = (
+			Vector3(occluder.position).distance_to(site + Vector3.UP * 1.2)
+		)
+		camera_position = (
+			site + Vector3.UP * 1.2
+			+ desired_offset.normalized() * maxf(free_span - 0.3, 1.2)
+		)
+	camera.look_at_from_position(
+		camera_position,
+		site + Vector3.UP * 1.3,
+		Vector3.UP,
+	)
+	effects.spawn_c4_explosion(site + Vector3.UP * 0.04, Vector3.UP)
+	# Mid-animation: developed flame tongues (fexplo frames 6-8 at 15 fps),
+	# past the white birth flash but before the sparse ember/noise tail that
+	# read as speckle over the background.
+	effects.advance_tick(50)
+	var artifact_root := ProjectSettings.globalize_path("res://artifacts")
+	DirAccess.make_dir_recursive_absolute(artifact_root)
+	var ok := await _settle_and_capture(
+		artifact_root.path_join("protocol47-c4-explosion.png")
+	)
+	scene.queue_free()
+	await process_frame
+	return ok
 
 
 func _settle_and_capture(path: String) -> bool:

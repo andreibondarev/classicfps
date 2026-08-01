@@ -47,6 +47,7 @@ struct MipTex {
 struct Model {
     mins: Vec3,
     maxs: Vec3,
+    origin: Vec3,
     first_face: i32,
     num_faces: i32,
 }
@@ -385,9 +386,20 @@ impl<'a> BspParser<'a> {
                     .read_f32::<LittleEndian>()
                     .map_err(|e| e.to_string())?,
             );
-            // Skip origin(12) + headnodes[4](16) + visleafs(4)
+            let origin = Vec3::new(
+                self.data
+                    .read_f32::<LittleEndian>()
+                    .map_err(|e| e.to_string())?,
+                self.data
+                    .read_f32::<LittleEndian>()
+                    .map_err(|e| e.to_string())?,
+                self.data
+                    .read_f32::<LittleEndian>()
+                    .map_err(|e| e.to_string())?,
+            );
+            // Skip headnodes[4](16) + visleafs(4).
             self.data
-                .seek(SeekFrom::Current(32))
+                .seek(SeekFrom::Current(20))
                 .map_err(|e| e.to_string())?;
             let first_face = self
                 .data
@@ -401,6 +413,7 @@ impl<'a> BspParser<'a> {
             models.push(Model {
                 mins,
                 maxs,
+                origin,
                 first_face,
                 num_faces,
             });
@@ -794,7 +807,11 @@ impl<'a> BspParser<'a> {
             normals: Vec<f32>,
             colors: Vec<f32>,
             uvs: Vec<f32>,
+            // Raw atlas luxel coordinates; normalized once atlas height is known.
+            uv2s: Vec<f32>,
         }
+        let mut atlas = LightmapAtlas::new(1024);
+        let mut fullbright_block: Option<(u32, u32)> = None;
         // Keep brush submodels separate from the world. A texture-only bucket
         // baked doors, trains, and fans permanently into model 0, making it
         // impossible for the renderer to replay their entity transforms.
@@ -866,39 +883,58 @@ impl<'a> BspParser<'a> {
                     })
                     .collect();
 
-                // Lightmap sample (same math as untextured path)
-                let lit: Vec<(f32, f32, f32)> = if face.lightmap_offset >= 0 && !lighting.is_empty()
-                {
-                    let (mut min_u, mut max_u, mut min_v, mut max_v) =
-                        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-                    for &(u, v) in &uv {
-                        min_u = min_u.min(u);
-                        max_u = max_u.max(u);
-                        min_v = min_v.min(v);
-                        max_v = max_v.max(v);
-                    }
-                    let bmin_u = (min_u / 16.0).floor();
-                    let bmin_v = (min_v / 16.0).floor();
-                    let w = ((max_u / 16.0).ceil() - bmin_u) as i32 + 1;
-                    let h = ((max_v / 16.0).ceil() - bmin_v) as i32 + 1;
-                    uv.iter()
-                        .map(|&(u, v)| {
-                            let lx = ((u / 16.0 - bmin_u) as i32).clamp(0, w - 1);
-                            let ly = ((v / 16.0 - bmin_v) as i32).clamp(0, h - 1);
-                            let idx = face.lightmap_offset as usize + ((ly * w + lx) as usize) * 3;
-                            if idx + 2 < lighting.len() {
-                                let lr = (lighting[idx] as f32 / 255.0 * 2.0).min(1.5);
-                                let lg = (lighting[idx + 1] as f32 / 255.0 * 2.0).min(1.5);
-                                let lb = (lighting[idx + 2] as f32 / 255.0 * 2.0).min(1.5);
-                                (lr.min(1.0), lg.min(1.0), lb.min(1.0))
-                            } else {
-                                (0.85, 0.85, 0.85)
-                            }
-                        })
-                        .collect()
-                } else {
-                    vec![(0.85, 0.85, 0.85); face_verts.len()]
-                };
+                // Lightmap sample (same math as untextured path) + per-face
+                // atlas block so the renderer can sample crisp luxels via UV2.
+                let (lit, uv2): (Vec<(f32, f32, f32)>, Vec<(f32, f32)>) =
+                    if face.lightmap_offset >= 0 && !lighting.is_empty() {
+                        let (mut min_u, mut max_u, mut min_v, mut max_v) =
+                            (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                        for &(u, v) in &uv {
+                            min_u = min_u.min(u);
+                            max_u = max_u.max(u);
+                            min_v = min_v.min(v);
+                            max_v = max_v.max(v);
+                        }
+                        let bmin_u = (min_u / 16.0).floor();
+                        let bmin_v = (min_v / 16.0).floor();
+                        let w = ((max_u / 16.0).ceil() - bmin_u) as i32 + 1;
+                        let h = ((max_v / 16.0).ceil() - bmin_v) as i32 + 1;
+                        let (block_x, block_y) =
+                            atlas.alloc(w as u32, h as u32, face.lightmap_offset as i64);
+                        let lit = uv
+                            .iter()
+                            .map(|&(u, v)| {
+                                let lx = ((u / 16.0 - bmin_u) as i32).clamp(0, w - 1);
+                                let ly = ((v / 16.0 - bmin_v) as i32).clamp(0, h - 1);
+                                let idx =
+                                    face.lightmap_offset as usize + ((ly * w + lx) as usize) * 3;
+                                if idx + 2 < lighting.len() {
+                                    let lr = (lighting[idx] as f32 / 255.0 * 2.0).min(1.5);
+                                    let lg = (lighting[idx + 1] as f32 / 255.0 * 2.0).min(1.5);
+                                    let lb = (lighting[idx + 2] as f32 / 255.0 * 2.0).min(1.5);
+                                    (lr.min(1.0), lg.min(1.0), lb.min(1.0))
+                                } else {
+                                    (0.85, 0.85, 0.85)
+                                }
+                            })
+                            .collect();
+                        let uv2 = uv
+                            .iter()
+                            .map(|&(u, v)| {
+                                let lx = (u / 16.0 - bmin_u).clamp(0.0, (w - 1) as f32);
+                                let ly = (v / 16.0 - bmin_v).clamp(0.0, (h - 1) as f32);
+                                (block_x as f32 + lx + 0.5, block_y as f32 + ly + 0.5)
+                            })
+                            .collect();
+                        (lit, uv2)
+                    } else {
+                        let (fx, fy) = *fullbright_block
+                            .get_or_insert_with(|| atlas.alloc(2, 2, -1));
+                        (
+                            vec![(0.85, 0.85, 0.85); face_verts.len()],
+                            vec![(fx as f32 + 1.0, fy as f32 + 1.0); face_verts.len()],
+                        )
+                    };
 
                 let bucket = buckets
                     .entry((model_index, mip_idx))
@@ -907,6 +943,7 @@ impl<'a> BspParser<'a> {
                         normals: Vec::new(),
                         colors: Vec::new(),
                         uvs: Vec::new(),
+                        uv2s: Vec::new(),
                     });
                 let has_tex = mips.get(mip_idx).map(|m| m.3.is_some()).unwrap_or(false);
                 for j in 1..face_verts.len() - 1 {
@@ -933,6 +970,8 @@ impl<'a> BspParser<'a> {
                         } else {
                             bucket.uvs.extend_from_slice(&[0.0, 0.0]);
                         }
+                        let (lu, lv) = uv2[k];
+                        bucket.uv2s.extend_from_slice(&[lu, lv]);
                     }
                 }
             }
@@ -956,17 +995,30 @@ impl<'a> BspParser<'a> {
                         model.maxs.z * scale,
                         -model.mins.y * scale,
                     ),
+                    origin: Vec3::new(
+                        model.origin.x * scale,
+                        model.origin.z * scale,
+                        -model.origin.y * scale,
+                    ),
                 })
                 .collect(),
             positions: Vec::new(),
             normals: Vec::new(),
             colors: Vec::new(),
             uvs: Vec::new(),
+            uv2s: Vec::new(),
             pixels: Vec::new(),
+            lightmap_pixels: Vec::new(),
+            lightmap_width: 0,
+            lightmap_height: 0,
             entities,
             bounds_min: Vec3::new(0.0, 0.0, 0.0),
             bounds_max: Vec3::new(0.0, 0.0, 0.0),
         };
+        let (atlas_pixels, atlas_width, atlas_height) = atlas.compose(&lighting);
+        out.lightmap_pixels = atlas_pixels;
+        out.lightmap_width = atlas_width;
+        out.lightmap_height = atlas_height;
         if let Some(world) = models.first() {
             out.bounds_min = Vec3::new(
                 world.mins.x * scale,
@@ -1000,6 +1052,10 @@ impl<'a> BspParser<'a> {
             out.normals.extend_from_slice(&bucket.normals);
             out.colors.extend_from_slice(&bucket.colors);
             out.uvs.extend_from_slice(&bucket.uvs);
+            for pair in bucket.uv2s.chunks_exact(2) {
+                out.uv2s.push(pair[0] / atlas_width as f32);
+                out.uv2s.push(pair[1] / atlas_height as f32);
+            }
             out.groups.push(TexGroup {
                 model_index: model_index as u32,
                 name,
@@ -1030,6 +1086,7 @@ pub struct TexturedModelBounds {
     pub model_index: u32,
     pub mins: Vec3,
     pub maxs: Vec3,
+    pub origin: Vec3,
 }
 
 pub struct TexturedBsp {
@@ -1039,10 +1096,87 @@ pub struct TexturedBsp {
     pub normals: Vec<f32>,
     pub colors: Vec<f32>,
     pub uvs: Vec<f32>,
+    /// Per-vertex normalized coordinates into the packed lightmap atlas.
+    pub uv2s: Vec<f32>,
     pub pixels: Vec<u8>, // concatenated RGBA blocks addressed by pix_offset
+    /// Packed per-face lightmap atlas (RGBA, raw GoldSrc luxel values —
+    /// the renderer applies the engine's x2 overbright).
+    pub lightmap_pixels: Vec<u8>,
+    pub lightmap_width: u32,
+    pub lightmap_height: u32,
     pub entities: Vec<BspEntity>,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
+}
+
+/// Simple shelf packer for GoldSrc face lightmap blocks (max 17x17 luxels).
+struct LightmapAtlas {
+    width: u32,
+    cursor_x: u32,
+    cursor_y: u32,
+    shelf_height: u32,
+    /// (x, y, w, h, lighting byte offset or -1 for fullbright fill)
+    blocks: Vec<(u32, u32, u32, u32, i64)>,
+}
+
+impl LightmapAtlas {
+    fn new(width: u32) -> Self {
+        Self {
+            width,
+            cursor_x: 0,
+            cursor_y: 0,
+            shelf_height: 0,
+            blocks: Vec::new(),
+        }
+    }
+
+    /// Allocates a w x h block (plus a 1-luxel guard gap) and returns (x, y).
+    fn alloc(&mut self, w: u32, h: u32, lighting_offset: i64) -> (u32, u32) {
+        let w = w.min(self.width);
+        if self.cursor_x + w > self.width {
+            self.cursor_x = 0;
+            self.cursor_y += self.shelf_height;
+            self.shelf_height = 0;
+        }
+        let position = (self.cursor_x, self.cursor_y);
+        self.cursor_x += w + 1;
+        self.shelf_height = self.shelf_height.max(h + 1);
+        self.blocks.push((position.0, position.1, w, h, lighting_offset));
+        position
+    }
+
+    fn used_height(&self) -> u32 {
+        (self.cursor_y + self.shelf_height).max(1)
+    }
+
+    /// Composes the RGBA atlas from the raw BSP lighting lump.
+    fn compose(&self, lighting: &[u8]) -> (Vec<u8>, u32, u32) {
+        let height = self.used_height();
+        let mut rgba = vec![0u8; (self.width * height * 4) as usize];
+        for &(bx, by, bw, bh, offset) in &self.blocks {
+            for row in 0..bh {
+                for col in 0..bw {
+                    let dst = (((by + row) * self.width + bx + col) * 4) as usize;
+                    let (r, g, b) = if offset >= 0 {
+                        let src = offset as usize + ((row * bw + col) as usize) * 3;
+                        if src + 2 < lighting.len() {
+                            (lighting[src], lighting[src + 1], lighting[src + 2])
+                        } else {
+                            (108, 108, 108)
+                        }
+                    } else {
+                        // Fullbright fallback block (~0.85 after x2 overbright)
+                        (108, 108, 108)
+                    };
+                    rgba[dst] = r;
+                    rgba[dst + 1] = g;
+                    rgba[dst + 2] = b;
+                    rgba[dst + 3] = 255;
+                }
+            }
+        }
+        (rgba, self.width, height)
+    }
 }
 
 /// Decode a miptex (BSP-embedded or WAD lump) into RGBA. `data` starts at the

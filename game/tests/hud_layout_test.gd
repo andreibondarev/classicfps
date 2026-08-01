@@ -28,6 +28,14 @@ func _run() -> void:
 	_check(hud_root != null, "HUD root exists")
 	_check(hud_root.get_node_or_null("MatchBar") == null, "modern match card is absent")
 	_check(hud_root.get_node_or_null("ClassicRadar") != null, "radar is upper-left")
+	_check(
+		hud_root.get_node_or_null("ClassicRadarContacts") != null,
+		"radar has a live client contact layer",
+	)
+	_check(
+		hud_root.get_node_or_null("ClassicHostageStatus") != null,
+		"hostage objective has a source-sprite status row",
+	)
 	_check(hud_root.get_node_or_null("ClassicVitals") != null, "vitals are lower-left")
 	_check(hud_root.get_node_or_null("ClassicTimer") != null, "timer is lower-center")
 	_check(hud_root.get_node_or_null("ClassicAmmo") != null, "ammo is lower-right")
@@ -49,6 +57,21 @@ func _run() -> void:
 	_check(
 		hud.ammo_label.get_theme_color("font_color") == GameHUD.CLASSIC_RED,
 		"low ammo switches to classic red",
+	)
+	hud.update_tactical_display(
+		Vector3.ZERO,
+		0.0,
+		[{"id": "ally", "position": Vector3(0.0, 0.0, -1.0), "alive": true}],
+		[
+			{"id": "h1", "alive": true, "rescued": false},
+			{"id": "h2", "alive": false, "rescued": false},
+			{"id": "h3", "alive": true, "rescued": true},
+		],
+	)
+	_check(hud.radar_display.contacts.size() == 1, "radar receives live teammate contacts")
+	_check(
+		hud.hostage_status_group.get_child_count() == 3,
+		"hostage row reflects authoritative objective count",
 	)
 
 	hud.show_hitmarker(true)

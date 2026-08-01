@@ -39,6 +39,18 @@ const SURFACE_TILE := "tile"
 const SURFACE_COMPUTER := "computer"
 const SURFACE_WOOD := "wood"
 
+## weapons.h knife constants. CKnife::Stab multiplies its damage by
+## KNIFE_BACKSTAB_MULTIPLIER when the 2D dot product of the attacker's forward
+## vector with the victim's forward vector exceeds 0.8 - i.e. both players face
+## the same way, so the blade lands in the victim's back.
+const KNIFE_STAB_DAMAGE := 65
+const KNIFE_SWING_DAMAGE := 15
+const KNIFE_SWING_DAMAGE_FAST := 20
+const KNIFE_BACKSTAB_MULTIPLIER := 3.0
+const KNIFE_BACKSTAB_DOT := 0.8
+const KNIFE_STAB_DISTANCE_UNITS := 32.0
+const KNIFE_SWING_DISTANCE_UNITS := 48.0
+
 const HE_FUSE_SECONDS := 1.5
 const HE_BASE_DAMAGE := 100.0
 const HE_RADIUS_UNITS := 350.0
@@ -232,6 +244,26 @@ static func is_hitgroup_armored(hit_group: HitGroup, armor_type: ArmorType) -> b
 			return true
 		_:
 			return false
+
+
+## CKnife::Stab backstab test, flattened to the ground plane exactly as
+## Vector::Make2D does before the dot product.
+static func is_backstab(attacker_forward: Vector3, victim_forward: Vector3) -> bool:
+	var attacker_2d := Vector2(attacker_forward.x, attacker_forward.z)
+	var victim_2d := Vector2(victim_forward.x, victim_forward.z)
+	if attacker_2d.length_squared() <= 0.0 or victim_2d.length_squared() <= 0.0:
+		return false
+	return attacker_2d.normalized().dot(victim_2d.normalized()) > KNIFE_BACKSTAB_DOT
+
+
+## Stabs are the only knife attack with a backstab bonus in 1.6; swings keep
+## their flat damage no matter where they land.
+static func knife_damage(stab: bool, backstab: bool) -> int:
+	if not stab:
+		return KNIFE_SWING_DAMAGE
+	if backstab:
+		return int(float(KNIFE_STAB_DAMAGE) * KNIFE_BACKSTAB_MULTIPLIER)
+	return KNIFE_STAB_DAMAGE
 
 
 static func weapon_armor_ratio(weapon_name: String) -> float:

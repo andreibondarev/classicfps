@@ -164,21 +164,23 @@ func _run() -> void:
 	Input.action_release("walk")
 
 	Input.action_press("crouch")
-	var control_click := InputEventMouseButton.new()
-	control_click.button_index = MOUSE_BUTTON_RIGHT
-	control_click.ctrl_pressed = true
-	control_click.pressed = true
-	game.player.combat_controller.ingest_input(control_click)
-	var crouch_fire_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
-	_check(crouch_fire_command.crouch, "holding Control requests crouch")
-	_check(crouch_fire_command.fire, "macOS Control-click still requests fire")
-	_check(crouch_fire_command.fire_pressed, "macOS Control-click preserves the fire edge")
-	control_click.ctrl_pressed = false
-	control_click.pressed = false
-	game.player.combat_controller.ingest_input(control_click)
+	var crouched_rmb := InputEventMouseButton.new()
+	crouched_rmb.button_index = MOUSE_BUTTON_RIGHT
+	crouched_rmb.ctrl_pressed = true
+	crouched_rmb.pressed = true
+	game.player.combat_controller.ingest_input(crouched_rmb)
+	var crouch_secondary_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
+	_check(crouch_secondary_command.crouch, "holding Control requests crouch")
+	_check(
+		not crouch_secondary_command.fire and bool(crouch_secondary_command.secondary_pressed),
+		"crouched right-click requests the weapon secondary, never fire",
+	)
+	crouched_rmb.ctrl_pressed = false
+	crouched_rmb.pressed = false
+	game.player.combat_controller.ingest_input(crouched_rmb)
 	Input.action_release("crouch")
 	var released_command: Dictionary = game.player.combat_controller.gather_command(1.0 / 100.0)
-	_check(not released_command.fire, "Control-click fire releases cleanly")
+	_check(not released_command.fire, "right-click releases cleanly")
 
 	game.player._walking = true
 	game.player._standing = true
@@ -330,6 +332,75 @@ func _run() -> void:
 	await process_frame
 	_check(game.player.ammunition.hegrenade.clip == 0, "HE grenade is consumed on throw")
 	_check(game.get_node_or_null("HEGrenade") != null, "HE grenade projectile spawns")
+
+	# Shotguns reload one shell at a time (DefaultShotgunReload), so the magazine
+	# climbs shell by shell and firing a seated shell aborts the loop.
+	_check(game.player.grant_item("m3"), "buy API grants a shotgun")
+	_check(game.player.grant_item("ammo_buckshot", 4), "buy API grants buckshot")
+	game.player.switch_weapon("m3")
+	game.player._advance_weapon_simulation_tick(75)
+	game.player.clip = 0
+	game.player.reserve = 32
+	game.player._store_active_ammunition()
+	game.player._start_reload()
+	_check(game.player.reloading, "M3 enters the per-shell reload state")
+	game.player._advance_weapon_simulation_tick(99)
+	_check(game.player.clip == 0, "no M3 shell is seated during the 0.55 second start delay")
+	game.player._advance_weapon_simulation_tick()
+	_check(
+		game.player.clip == 1 and game.player.reserve == 31,
+		"the first M3 shell seats 0.55 + 0.45 seconds in",
+	)
+	game.player._advance_weapon_simulation_tick(45)
+	_check(game.player.clip == 2, "M3 seats one further shell every 0.45 seconds")
+	game.player._try_fire()
+	await process_frame
+	_check(not game.player.reloading, "firing a seated shell interrupts the M3 reload")
+	_check(game.player.clip == 1, "the interrupting shot consumes the seated shell")
+	game.player._advance_weapon_simulation_tick(88)
+	game.player._start_reload()
+	_check(game.player.reloading, "M3 can restart its shell reload after firing")
+	game.player._advance_weapon_simulation_tick(369)
+	_check(game.player.clip == 7, "seven shells are seated after 55 + 7 x 45 ticks")
+	game.player._advance_weapon_simulation_tick()
+	_check(
+		game.player.clip == 8 and not game.player.reloading,
+		"the M3 shell loop ends exactly when the eight shell magazine is full",
+	)
+
+	# Knife: CKnife::Stab backstab and the shared bullet armor branch.
+	game.player.switch_weapon("knife")
+	game.player._advance_weapon_simulation_tick(75)
+	game.player.rotation.y = 0.0
+	game.player.camera.rotation.x = 0.0
+	var stab_target: TargetActor = game.targets[1]
+	var stab_position: Vector3 = game.player.global_position + Vector3(0.0, 0.0, -0.35)
+	stab_target.reset_target(stab_position)
+	stab_target.active = false
+	stab_target.armor = 100
+	stab_target.has_helmet = true
+	stab_target.rotation.y = PI
+	# A repositioned idle body reaches the physics server one step later.
+	await physics_frame
+	await physics_frame
+	game.player._fire_knife(true)
+	_check(
+		stab_target.health == 45,
+		"a front stab through kevlar+helmet deals 55, not a flat unarmored 65",
+	)
+	game.player._advance_weapon_simulation_tick(110)
+	stab_target.reset_target(stab_position)
+	stab_target.active = false
+	stab_target.armor = 100
+	stab_target.has_helmet = true
+	stab_target.rotation.y = 0.0
+	await physics_frame
+	await physics_frame
+	game.player._fire_knife(true)
+	_check(
+		not stab_target.alive,
+		"a stab from behind triples to 195 and kills a full health armored player",
+	)
 
 	game._plant_bomb(game.bomb_sites[0])
 	_check(game.phase == "bomb", "planting transitions to the bomb phase")

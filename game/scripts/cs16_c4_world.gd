@@ -162,4 +162,155 @@ static func _load_static_template(model_path: String) -> Dictionary:
 
 
 static func create_planted_visual() -> Node3D:
-	return create_source_model(PLANTED_MODEL, "PlantedC4Model")
+	var visual := PlantedC4Visual.new()
+	visual.name = "PlantedC4Model"
+	# The converted w_c4.mdl surfaces (c4base satchel, c4timer keypad face with
+	# its red 0:00 digits, c4wires) render with their unmodified source texels
+	# and nearest filtering — no albedo tint: the earlier down-tint flattened
+	# the bevel shading painted into c4base.bmp until the satchel read as an
+	# untextured gray-box primitive.
+	var body := create_source_model(PLANTED_MODEL, "PlantedC4Body")
+	# The shared MDL pipeline ships unshaded meshes without normals, which
+	# rendered the satchel as one uniform unlit olive slab — a soap bar. The
+	# GoldSrc studiomodel renderer lambert-lights each facet, which is what
+	# makes w_c4's hard low-poly bevels and the black detonator unit read.
+	# Rebuild the planted body with flat per-facet normals and diffuse-only
+	# shading (roughness 1, no specular — studio models have no highlight).
+	_apply_studio_lambert_shading(body)
+	visual.add_child(body)
+	return visual
+
+
+static func _apply_studio_lambert_shading(node: Node) -> void:
+	if node is MeshInstance3D:
+		var mesh_instance := node as MeshInstance3D
+		var source := mesh_instance.mesh as ArrayMesh
+		if source != null and source.get_surface_count() > 0:
+			var rebuilt := ArrayMesh.new()
+			for surface in range(source.get_surface_count()):
+				var tool := SurfaceTool.new()
+				tool.create_from(source, surface)
+				# Deindex first: on indexed geometry generate_normals() averages
+				# across shared vertices, which melted the satchel's hard bevels
+				# into a smooth rounded soap-bar. Unindexed triangles get true
+				# per-facet normals, matching the low-poly studio silhouette.
+				tool.deindex()
+				tool.generate_normals()
+				var material := source.surface_get_material(surface)
+				if material is StandardMaterial3D:
+					var shaded := (material as StandardMaterial3D).duplicate()
+					shaded.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+					shaded.roughness = 1.0
+					shaded.metallic = 0.0
+					shaded.metallic_specular = 0.0
+					material = shaded
+				tool.set_material(material)
+				tool.commit(rebuilt)
+			mesh_instance.mesh = rebuilt
+	for child in node.get_children():
+		_apply_studio_lambert_shading(child)
+
+
+class PlantedC4Visual:
+	extends Node3D
+
+	## Planted C4 with the CS 1.6 red status LED: a small bright light sprite
+	## that pulses, accelerating as the bomb timer runs down (mirrors the
+	## grenade.cpp C4Think blink cadence).
+
+	const LED_ON_SECONDS := 0.12
+	const LED_COLOR := Color8(255, 44, 32)
+
+	var total_seconds := 45.0
+	var seconds_remaining := 45.0
+	var _cycle_clock := 0.0
+	var _led: Sprite3D
+	var _led_core: Sprite3D
+	var _led_light: OmniLight3D
+
+	func _ready() -> void:
+		# A Sprite3D deliberately: the planted bomb contract exposes exactly the
+		# three source w_c4 mesh surfaces; the LED is a light sprite, not a
+		# fourth model surface.
+		_led = Sprite3D.new()
+		_led.name = "C4BlinkLed"
+		_led.texture = _led_glow_texture()
+		_led.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_led.shaded = false
+		_led.transparent = true
+		_led.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+		_led.render_priority = 2
+		_led.modulate = LED_COLOR
+		# A small SOFT glow: CS 1.6's blink is a tiny round additive glow sprite
+		# at the LED, never a spiky lens-flare streak — but it must genuinely
+		# READ as a lit diode at review distance, so a hot near-white core sits
+		# inside the red halo.
+		_led.pixel_size = 0.0018
+		_led.position = Vector3(0.045, 0.082, 0.012)
+		add_child(_led)
+		_led_core = Sprite3D.new()
+		_led_core.name = "C4BlinkLedCore"
+		_led_core.texture = _led_glow_texture()
+		_led_core.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_led_core.shaded = false
+		_led_core.transparent = true
+		_led_core.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+		_led_core.render_priority = 3
+		_led_core.modulate = Color(1.0, 0.62, 0.5)
+		_led_core.pixel_size = 0.0007
+		_led_core.position = _led.position
+		add_child(_led_core)
+		_led_light = OmniLight3D.new()
+		_led_light.name = "C4BlinkLight"
+		_led_light.light_color = LED_COLOR
+		_led_light.light_energy = 0.3
+		_led_light.omni_range = 0.16
+		# The diode itself must not floodlight the (lambert-shaded) satchel
+		# red — in CS 1.6 the blink is only the glow sprite. Restrict the
+		# light to render layer 2, which no world/prop mesh occupies.
+		_led_light.light_cull_mask = 1 << 1
+		_led_light.shadow_enabled = false
+		_led_light.position = _led.position + Vector3(0.0, 0.02, 0.0)
+		add_child(_led_light)
+		_set_led(true)
+
+	func set_countdown(total: float, remaining: float) -> void:
+		total_seconds = maxf(total, 0.001)
+		seconds_remaining = clampf(remaining, 0.0, total_seconds)
+
+	func blink_interval() -> float:
+		# ~0.75 s pulses right after the plant, accelerating toward a rapid
+		# ~0.1 s strobe in the final seconds.
+		var fraction := clampf(seconds_remaining / total_seconds, 0.0, 1.0)
+		return lerpf(0.09, 0.75, fraction)
+
+	func _process(delta: float) -> void:
+		seconds_remaining = maxf(seconds_remaining - delta, 0.0)
+		_cycle_clock += delta
+		var interval := blink_interval()
+		while _cycle_clock >= interval:
+			_cycle_clock -= interval
+		_set_led(_cycle_clock < LED_ON_SECONDS)
+
+	func _set_led(lit: bool) -> void:
+		if is_instance_valid(_led):
+			_led.visible = lit
+		if is_instance_valid(_led_core):
+			_led_core.visible = lit
+		if is_instance_valid(_led_light):
+			_led_light.visible = lit
+
+	static func _led_glow_texture() -> Texture2D:
+		# Tiny radial falloff so the LED reads as a bright sprite point, not a
+		# hard-edged quad. Generated once; no external asset dependency.
+		var size := 32
+		var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
+		for y in range(size):
+			for x in range(size):
+				var distance := Vector2(x - size * 0.5 + 0.5, y - size * 0.5 + 0.5).length()
+				var intensity := clampf(1.0 - distance / (size * 0.5), 0.0, 1.0)
+				# Steeper falloff: a round soft diode glow with no visible quad
+				# edge and no streaky arms.
+				intensity = pow(intensity, 2.4)
+				image.set_pixel(x, y, Color(1.0, 1.0, 1.0, intensity))
+		return ImageTexture.create_from_image(image)

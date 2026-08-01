@@ -40,7 +40,26 @@ func _run() -> void:
 	_check(game.imported_map != null, "Dust2 map node exists")
 	if game.imported_map != null:
 		_check(game.imported_map.surface_count >= 70, "all Dust2 material surfaces loaded")
-		_check(game.imported_map.collision_face_count >= 9500, "solid Dust2 collision mesh loaded")
+		_check(
+			game.imported_map.world_collision_face_count == 9476,
+			"Dust2 WorldCollision contains only immutable model 0 faces",
+		)
+		_check(
+			game.imported_map.submodel_collision_face_count == 120,
+			"Dust2 solid brush models use independent collision proxies",
+		)
+		_check(
+			game.imported_map.collision_face_count == 9596,
+			"all solid Dust2 collision faces loaded without WorldCollision duplication",
+		)
+		_check(
+			game.imported_map.runtime_model_indices().size() == 42,
+			"Dust2 creates one transform root for every nonzero BSP model",
+		)
+		_check(
+			game.imported_map.collision_body_for_model(1) is AnimatableBody3D,
+			"Dust2 breakable model 1 has an independently movable collision proxy",
+		)
 		_check(game.imported_map.navigation_region != null, "Dust2 navigation region created")
 		_check(
 			game.imported_map.navigation_region.navigation_mesh.get_vertices().size() > 100,

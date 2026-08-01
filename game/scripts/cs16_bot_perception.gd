@@ -14,6 +14,11 @@ const HALF_FOV_DEGREES := 45.0
 const HALF_FOV_DOT := 0.7071067811865476
 const DEFAULT_MAX_RANGE := 8192.0 * 0.01
 const DISTANCE_EPSILON := 0.000001
+## A hit from outside the vision cone is a stimulus, not an acquisition: the bot
+## needs this long before it starts turning toward the damage source.
+const DAMAGE_REACTION_TICKS := 22
+## How long the stimulus keeps steering the bot when nothing is acquired.
+const DAMAGE_MEMORY_TICKS := 400
 
 var tick := 0
 var current_target: Object
@@ -24,6 +29,10 @@ var last_seen_velocity := Vector3.ZERO
 var last_seen_tick := -1
 var occluded_tick := -1
 var scan_count := 0
+var damage_source_position := Vector3.ZERO
+var damage_source_tick := -1
+var damage_source_id := ""
+var damage_reaction_ticks := DAMAGE_REACTION_TICKS
 
 var _second_accumulator := 0.0
 var _next_scan_tick := SCAN_INTERVAL_TICKS
@@ -34,6 +43,7 @@ var _smoke_predicate := Callable()
 var _events: Array[Dictionary] = []
 var _tick_samples: Array[Dictionary] = []
 var _max_range := DEFAULT_MAX_RANGE
+var _damage_source: Object
 
 
 func configure(
@@ -60,10 +70,43 @@ func reset() -> void:
 	last_seen_tick = -1
 	occluded_tick = -1
 	scan_count = 0
+	damage_source_position = Vector3.ZERO
+	damage_source_tick = -1
+	damage_source_id = ""
+	_damage_source = null
 	_second_accumulator = 0.0
 	_next_scan_tick = SCAN_INTERVAL_TICKS
 	_events.clear()
 	_tick_samples.clear()
+
+
+func note_damage(
+	attacker: Object,
+	attacker_position: Vector3,
+	attacker_id := "",
+) -> void:
+	## Records where a hit came from on the perception clock. The stimulus never
+	## reads the attacker's live transform again: this frozen sample is what the
+	## bot turns toward until it sees something for itself.
+	if not is_instance_valid(attacker):
+		return
+	_damage_source = attacker
+	damage_source_id = attacker_id
+	damage_source_position = attacker_position
+	damage_source_tick = tick
+
+
+func damage_stimulus_active() -> bool:
+	return (
+		is_instance_valid(_damage_source)
+		and damage_source_tick >= 0
+		and tick - damage_source_tick >= damage_reaction_ticks
+		and tick - damage_source_tick <= DAMAGE_MEMORY_TICKS
+	)
+
+
+func is_investigating() -> bool:
+	return damage_stimulus_active() and not is_instance_valid(current_target)
 
 
 func advance_seconds(
@@ -95,12 +138,16 @@ func advance_ticks(
 
 
 func snapshot() -> Dictionary:
-	var state := "patrol"
+	var investigating := is_investigating()
+	var state := "investigate" if investigating else "patrol"
 	if is_instance_valid(current_target):
 		state = "visible" if visible else "search"
 	return {
 		"tick": tick,
 		"state": state,
+		"investigating": investigating,
+		"damage_position": damage_source_position,
+		"damage_tick": damage_source_tick,
 		"target": current_target,
 		"target_id": current_target_id,
 		"visible": visible,
@@ -165,6 +212,7 @@ func _scan(observer_origin: Vector3, observer_forward: Vector3) -> void:
 	if is_instance_valid(current_target) or blind:
 		return
 
+	var stimulus_active := damage_stimulus_active()
 	var best: Dictionary = {}
 	var best_distance := INF
 	var best_id := ""
@@ -177,11 +225,17 @@ func _scan(observer_origin: Vector3, observer_forward: Vector3) -> void:
 		var candidate_target: Object = candidate.get("target")
 		if not is_instance_valid(candidate_target):
 			continue
+		# A bot that has just been shot may acquire its attacker outside the
+		# vision cone — it is turning toward the hit — but line of sight is
+		# still required, so cover keeps working.
+		var require_fov := not (
+			stimulus_active and candidate_target == _damage_source
+		)
 		if not _candidate_is_visible(
 			candidate,
 			observer_origin,
 			observer_forward,
-			true,
+			require_fov,
 		):
 			continue
 		var position: Vector3 = candidate.get("position", Vector3.ZERO)

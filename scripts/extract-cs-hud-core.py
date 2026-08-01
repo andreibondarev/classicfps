@@ -135,7 +135,12 @@ def main() -> int:
         for row in range(y, y + height):
             for column in range(x, x + width):
                 red, green, blue = palette[pixels[row * sheet_width + column]]
-                alpha = max(red, green, blue)
+                # GoldSrc pushes these additive sprites through its hardware
+                # gamma ramp (texgamma 2.2), which lifts the dim glyph fills
+                # well above their raw palette values. Bake that response into
+                # the mask so digits read solid like the in-game HUD instead of
+                # hollow outlines.
+                alpha = round(255.0 * (max(red, green, blue) / 255.0) ** (1.0 / 2.2))
                 rgba.extend((255, 255, 255, alpha))
         output_path = args.output / f"{name}.png"
         write_png(output_path, width, height, bytes(rgba))

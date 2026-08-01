@@ -26,6 +26,7 @@ func _run() -> void:
 	_test_source_constants()
 	_test_primary_and_reload_boundaries()
 	_test_deploy_idle_and_grenade_states()
+	_test_shotgun_shell_reload()
 	_test_render_rate_independent_tapes()
 	_test_recoil_tape()
 
@@ -126,6 +127,86 @@ func _test_deploy_idle_and_grenade_states() -> void:
 	_check(
 		clock.take_events().has(WeaponClock.EVENT_GRENADE_THROW),
 		"release after pin-ready throws immediately on the current tick",
+	)
+
+
+func _test_shotgun_shell_reload() -> void:
+	# DefaultShotgunReload(M3_RELOAD, M3_START_RELOAD, 0.45, 0.55): a 0.55 second
+	# start delay, then one shell every 0.45 seconds until the loop is stopped.
+	var clock := WeaponClock.new()
+	clock.reset("m3")
+	var profile := WeaponClock.timing("m3")
+	_near(float(profile.reload_seconds), 0.55, 0.000001, "M3 start delay is 0.55 seconds")
+	_near(float(profile.reload_insert_seconds), 0.45, 0.000001, "M3 inserts one shell per 0.45 seconds")
+	_check(clock.begin_reload(), "M3 shell reload starts when ready")
+	_check(clock.is_shell_reloading(), "M3 uses the per-shell reload loop")
+	_check(not clock.can_interrupt_reload(), "M3 cannot be interrupted during the start delay")
+	var events := clock.advance_tick(99)
+	_check(not events.has(WeaponClock.EVENT_RELOAD_SHELL), "no M3 shell is seated before tick 100")
+	events = clock.advance_tick()
+	_check(events.has(WeaponClock.EVENT_RELOAD_SHELL), "first M3 shell seats at tick 100 (0.55 + 0.45)")
+	_check(clock.can_interrupt_reload(), "a seated shell makes the M3 reload interruptible")
+	_check(
+		not clock.advance_tick(44).has(WeaponClock.EVENT_RELOAD_SHELL),
+		"the second M3 shell waits the full insert interval",
+	)
+	_check(
+		clock.advance_tick().has(WeaponClock.EVENT_RELOAD_SHELL),
+		"the second M3 shell seats at tick 145",
+	)
+
+	# A full eight shell magazine is 0.55 + 8 x 0.45 = 4.15 seconds, never 0.55.
+	clock.reset("m3")
+	_check(clock.begin_reload(), "M3 restarts its shell reload")
+	var shells := 0
+	var shell_ticks: Array[int] = []
+	while shells < 8:
+		for event in clock.advance_tick():
+			if event == WeaponClock.EVENT_RELOAD_SHELL:
+				shells += 1
+				shell_ticks.append(clock.tick)
+	_check(clock.tick == 415, "eight M3 shells take 415 ticks (4.15 seconds)")
+	_check(
+		shell_ticks == [100, 145, 190, 235, 280, 325, 370, 415],
+		"M3 shells seat on an exact 45 tick cadence",
+	)
+	clock.finish_shell_reload()
+	_check(clock.state == WeaponClock.STATE_READY, "a finished shell reload returns the clock to ready")
+	_check(not clock.is_shell_reloading(), "finishing clears the shell reload loop")
+
+	# XM1014: 0.55 + 7 x 0.3 = 2.65 seconds for its seven shell magazine.
+	clock.reset("xm1014")
+	_check(clock.begin_reload(), "XM1014 shell reload starts when ready")
+	shells = 0
+	while shells < 7:
+		for event in clock.advance_tick():
+			if event == WeaponClock.EVENT_RELOAD_SHELL:
+				shells += 1
+	_check(clock.tick == 265, "seven XM1014 shells take 265 ticks (2.65 seconds)")
+
+	# Interrupting mid-loop frees the weapon on the same tick, as pressing fire
+	# does in 1.6; the AK keeps its single-completion reload untouched.
+	clock.reset("m3")
+	clock.begin_reload()
+	clock.advance_tick(100)
+	_check(not clock.can_primary_attack(), "the M3 cannot fire while the reload state is live")
+	clock.cancel_reload()
+	_check(clock.can_primary_attack(), "an interrupted M3 reload can fire immediately")
+	_check(not clock.is_shell_reloading(), "interrupting clears the shell reload loop")
+
+	clock.reset("ak47")
+	_check(clock.begin_reload(), "AK reload still starts")
+	_check(not clock.is_shell_reloading(), "magazine weapons keep the single-completion reload")
+	_check(
+		not clock.advance_tick(245).has(WeaponClock.EVENT_RELOAD_SHELL),
+		"magazine weapons never emit shell events",
+	)
+
+	clock.reset("m249")
+	clock.begin_reload()
+	_check(
+		clock.advance_tick(470).has(WeaponClock.EVENT_RELOAD_COMPLETE),
+		"M249 keeps its verified 4.70 second reload",
 	)
 
 

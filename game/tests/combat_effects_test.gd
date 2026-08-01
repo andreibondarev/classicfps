@@ -60,7 +60,7 @@ func _has_authored_decal_pixel(image: Image) -> bool:
 func _test_source_profiles() -> void:
 	var ak := CombatEffects.shot_profile("ak47", 0)
 	var deagle := CombatEffects.shot_profile("deagle", 0)
-	_check(str(ak.muzzle) == "muzzleflash3", "AK uses the original muzzleflash3 sprite")
+	_check(str(ak.muzzle) == "muzzleflash2", "AK uses the round-core muzzleflash2 sprite")
 	_check(str(ak.shell) == "rshell", "AK ejects the original rifle shell model")
 	_check(str(deagle.muzzle) == "muzzleflash2", "Deagle uses the original muzzleflash2 sprite")
 	_check(str(deagle.shell) == "pshell", "Deagle ejects the original pistol shell model")
@@ -164,9 +164,9 @@ func _test_weapon_event_tape() -> void:
 		],
 		"AK effect event ordering is deterministic",
 	)
-	_check(str(manager.event_log[0].asset) == "muzzleflash3", "AK muzzle event names original asset")
+	_check(str(manager.event_log[0].asset) == "muzzleflash2", "AK muzzle event names original asset")
 	_check(str(manager.event_log[1].asset) == "rifle_smoke1", "AK first shot uses rifle_smoke1")
-	_check(int(manager.event_log[1].start_tick) == 2, "weapon smoke starts two fixed ticks later")
+	_check(int(manager.event_log[1].start_tick) == 4, "weapon smoke trails the flash by fixed ticks")
 	_check(str(manager.event_log[2].asset) == "rshell", "AK shell event names original asset")
 	_check(
 		int(manager.event_log[2].expire_tick) == CombatEffects.SHELL_LIFETIME_TICKS,
@@ -327,9 +327,9 @@ func _test_he_event_tape() -> void:
 	var sounds := _events_of_type(manager.event_log, CombatEffects.EVENT_SOUND)
 	_check(fireballs.size() == 2, "HE explosion emits the two original fireball temp entities")
 	_check(str(fireballs[0].asset) == "fexplo", "HE first fireball uses fexplo.spr")
-	_check(is_equal_approx(float(fireballs[0].scale), 2.5), "fexplo uses GoldSrc scale 25")
+	_check(is_equal_approx(float(fireballs[0].scale), 1.9), "fexplo sized to a player-height fireball")
 	_check(str(fireballs[1].asset) == "eexplo", "HE second fireball uses eexplo.spr")
-	_check(is_equal_approx(float(fireballs[1].scale), 3.0), "eexplo uses GoldSrc scale 30")
+	_check(is_equal_approx(float(fireballs[1].scale), 2.2), "eexplo sized to a player-height fireball")
 	_check(smoke.size() == 1 and str(smoke[0].asset) == "steam1", "HE delayed smoke uses steam1.spr")
 	_check(int(smoke[0].orientation) == 4, "HE smoke obeys steam1 orientation 4")
 	_check(

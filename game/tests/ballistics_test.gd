@@ -26,6 +26,7 @@ func _near(actual: float, expected: float, tolerance: float, message: String) ->
 func _run() -> void:
 	_test_weapon_constants_and_range()
 	_test_hitgroups_and_armor()
+	_test_knife_backstab_and_armor()
 	_test_penetration()
 	_test_shared_spread()
 	_test_he_grenade_math()
@@ -119,6 +120,85 @@ func _test_hitgroups_and_armor() -> void:
 	)
 	_check(int(armored_leg.health_damage) == 27, "armor never protects legs")
 	_check(not bool(armored_leg.armored), "leg result records that armor was bypassed")
+
+
+func _test_knife_backstab_and_armor() -> void:
+	# weapons.h: KNIFE_STAB_DAMAGE 65, KNIFE_SWING_DAMAGE 15,
+	# KNIFE_BACKSTAB_MULTIPLIER 3, backstab when the 2D dot of the two forward
+	# vectors exceeds 0.8 (CKnife::Stab).
+	_check(Ballistics.KNIFE_STAB_DAMAGE == 65, "knife stab base damage is 65")
+	_check(Ballistics.KNIFE_SWING_DAMAGE == 15, "knife swing base damage is 15")
+	_near(Ballistics.KNIFE_BACKSTAB_MULTIPLIER, 3.0, 0.000001, "backstab multiplier is 3")
+	var forward := Vector3(0.0, 0.0, -1.0)
+	_check(
+		Ballistics.is_backstab(forward, forward),
+		"stabbing a victim who faces the same way is a backstab",
+	)
+	_check(
+		Ballistics.is_backstab(forward, Vector3(0.3, 0.9, -0.95).normalized()),
+		"backstab test ignores pitch, exactly like Make2D",
+	)
+	_check(
+		not Ballistics.is_backstab(forward, Vector3(0.0, 0.0, 1.0)),
+		"stabbing a victim face to face is never a backstab",
+	)
+	_check(
+		not Ballistics.is_backstab(forward, Vector3(1.0, 0.0, 0.0)),
+		"a 90 degree flank is outside the 0.8 backstab cone",
+	)
+	_check(
+		not Ballistics.is_backstab(forward, Vector3(0.7, 0.0, -0.7).normalized()),
+		"a 45 degree flank is outside the 0.8 backstab cone",
+	)
+	_check(Ballistics.knife_damage(true, true) == 195, "backstab deals 195 damage")
+	_check(Ballistics.knife_damage(true, false) == 65, "front stab deals 65 damage")
+	_check(Ballistics.knife_damage(false, true) == 15, "swings carry no backstab bonus")
+
+	# The knife runs through the bullet armor branch with its 1.7 armor ratio.
+	_near(
+		Ballistics.weapon_armor_ratio("knife"),
+		0.85,
+		0.000001,
+		"knife armor ratio is 0.5 x 1.7",
+	)
+	var front := Ballistics.resolve_bullet_damage(
+		65,
+		Ballistics.HitGroup.CHEST,
+		100.0,
+		Ballistics.ArmorType.VEST_HELMET,
+		"knife",
+	)
+	_check(
+		int(front.health_damage) == 55,
+		"front stab through kevlar+helmet deals 55, not the flat 65",
+	)
+	var backstab := Ballistics.resolve_bullet_damage(
+		195,
+		Ballistics.HitGroup.CHEST,
+		100.0,
+		Ballistics.ArmorType.VEST_HELMET,
+		"knife",
+	)
+	_check(
+		int(backstab.health_damage) >= 100,
+		"a backstab kills a full health kevlar+helmet player",
+	)
+	var unarmored := Ballistics.resolve_bullet_damage(
+		195,
+		Ballistics.HitGroup.CHEST,
+		0.0,
+		Ballistics.ArmorType.NONE,
+		"knife",
+	)
+	_check(int(unarmored.health_damage) == 195, "an unarmored backstab deals the full 195")
+	var legs := Ballistics.resolve_bullet_damage(
+		65,
+		Ballistics.HitGroup.LEFT_LEG,
+		0.0,
+		Ballistics.ArmorType.NONE,
+		"knife",
+	)
+	_check(int(legs.health_damage) == 48, "knife hit groups scale like bullets (0.75 leg)")
 
 
 func _test_penetration() -> void:

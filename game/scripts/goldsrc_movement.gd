@@ -146,7 +146,7 @@ func edge_friction_multiplier(source_velocity: Vector3) -> float:
 	return EDGE_FRICTION if hit.is_empty() else 1.0
 
 
-func can_fit_box(size: Vector3) -> bool:
+func can_fit_box(size: Vector3, origin_offset := Vector3.ZERO) -> bool:
 	if not is_instance_valid(body) or not body.is_inside_tree():
 		return true
 	var shape := BoxShape3D.new()
@@ -155,7 +155,7 @@ func can_fit_box(size: Vector3) -> bool:
 	query.shape = shape
 	query.transform = Transform3D(
 		Basis.IDENTITY,
-		body.global_position + Vector3.UP * (size.y * 0.5 + SWEEP_MARGIN),
+		body.global_position + origin_offset + Vector3.UP * (size.y * 0.5 + SWEEP_MARGIN),
 	)
 	query.collision_mask = body.collision_mask
 	query.exclude = [body.get_rid()]
@@ -196,6 +196,12 @@ func _fly_move(source_velocity: Vector3, delta: float) -> Dictionary:
 			planes.clear()
 
 		var normal := collision.get_normal()
+		# GoldSrc hull traces stop DIST_EPSILON short of every surface. A
+		# zero-margin Godot sweep finishes flush instead, and a flush hull
+		# re-reports this plane at fraction 0 on all later parallel sweeps,
+		# draining every bump until velocity is zeroed — the player sticks to
+		# the wall. Restore the epsilon of separation along the contact normal.
+		body.global_position += normal * SWEEP_MARGIN
 		if normal.y > FLOOR_NORMAL_MINIMUM:
 			blocked |= BLOCKED_FLOOR
 			ground_normal = normal

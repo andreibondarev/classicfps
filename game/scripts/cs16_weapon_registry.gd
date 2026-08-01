@@ -128,6 +128,10 @@ static func timing(weapon_name: String) -> Dictionary:
 		"fire_idle_seconds": 2.0,
 		"idle_repeat_seconds": 20.0,
 	}
+	if item.has("reload_insert"):
+		# DefaultShotgunReload: `reload` is the start delay only, then one shell
+		# enters the magazine every `reload_insert` seconds.
+		result.reload_insert_seconds = float(item.reload_insert)
 	if weapon_name == "deagle":
 		result.fire_idle_seconds = 1.8
 		result.idle_repeat_seconds = 3.0625

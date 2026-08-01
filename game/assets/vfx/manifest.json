@@ -1,2583 +1,3192 @@
 {
-  "decal_wad_sha256": "c9e852b60197177f1e6f54992c3f0e886425ab6e6cafe9f1b1e5e6b3bf80850c",
-  "decals": {
-    "blood1": {
-      "height": 48,
-      "name": "{blood1",
-      "texture": "decals/blood1.png",
-      "width": 48
-    },
-    "blood2": {
-      "height": 48,
-      "name": "{blood2",
-      "texture": "decals/blood2.png",
-      "width": 48
-    },
-    "blood3": {
-      "height": 48,
-      "name": "{blood3",
-      "texture": "decals/blood3.png",
-      "width": 48
-    },
-    "blood4": {
-      "height": 48,
-      "name": "{blood4",
-      "texture": "decals/blood4.png",
-      "width": 48
-    },
-    "blood5": {
-      "height": 64,
-      "name": "{blood5",
-      "texture": "decals/blood5.png",
-      "width": 64
-    },
-    "blood6": {
-      "height": 48,
-      "name": "{blood6",
-      "texture": "decals/blood6.png",
-      "width": 48
-    },
-    "scorch1": {
-      "height": 96,
-      "name": "{scorch1",
-      "texture": "decals/scorch1.png",
-      "width": 96
-    },
-    "scorch2": {
-      "height": 96,
-      "name": "{scorch2",
-      "texture": "decals/scorch2.png",
-      "width": 96
-    },
-    "shot1": {
-      "height": 16,
-      "name": "{shot1",
-      "texture": "decals/shot1.png",
-      "width": 16
-    },
-    "shot2": {
-      "height": 16,
-      "name": "{shot2",
-      "texture": "decals/shot2.png",
-      "width": 16
-    },
-    "shot3": {
-      "height": 16,
-      "name": "{shot3",
-      "texture": "decals/shot3.png",
-      "width": 16
-    },
-    "shot4": {
-      "height": 16,
-      "name": "{shot4",
-      "texture": "decals/shot4.png",
-      "width": 16
-    },
-    "shot5": {
-      "height": 16,
-      "name": "{shot5",
-      "texture": "decals/shot5.png",
-      "width": 16
-    }
+ "decal_wad_sha256": "c9e852b60197177f1e6f54992c3f0e886425ab6e6cafe9f1b1e5e6b3bf80850c",
+ "decals": {
+  "blood1": {
+   "height": 48,
+   "name": "{blood1",
+   "texture": "decals/blood1.png",
+   "width": 48
   },
-  "format": "protocol47-goldsrc-vfx",
-  "sprites": {
-    "blood": {
-      "beam_length": 0.0,
-      "bounding_radius": 11.313708305358887,
-      "frame_metadata": [
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/00.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/01.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/02.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/03.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/04.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/05.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/06.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/07.png",
-          "width": 16
-        },
-        {
-          "height": 16,
-          "origin_x": -8,
-          "origin_y": 8,
-          "texture": "sprites/blood/08.png",
-          "width": 16
-        }
-      ],
-      "frames": [
-        "sprites/blood/00.png",
-        "sprites/blood/01.png",
-        "sprites/blood/02.png",
-        "sprites/blood/03.png",
-        "sprites/blood/04.png",
-        "sprites/blood/05.png",
-        "sprites/blood/06.png",
-        "sprites/blood/07.png",
-        "sprites/blood/08.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 16,
-      "max_width": 16,
-      "name": "blood",
-      "orientation": 2,
-      "source_sha256": "42cabfbac848496fde138163bc36de3e71b7e7b4e51926f6f4f9a2ff685f19c8",
-      "sync_type": 1,
-      "texture_format": 3
-    },
-    "bloodspray": {
-      "beam_length": 0.0,
-      "bounding_radius": 45.25483322143555,
-      "frame_metadata": [
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/00.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/01.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/02.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/03.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/04.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/05.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/06.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/07.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/08.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/bloodspray/09.png",
-          "width": 64
-        }
-      ],
-      "frames": [
-        "sprites/bloodspray/00.png",
-        "sprites/bloodspray/01.png",
-        "sprites/bloodspray/02.png",
-        "sprites/bloodspray/03.png",
-        "sprites/bloodspray/04.png",
-        "sprites/bloodspray/05.png",
-        "sprites/bloodspray/06.png",
-        "sprites/bloodspray/07.png",
-        "sprites/bloodspray/08.png",
-        "sprites/bloodspray/09.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 64,
-      "max_width": 64,
-      "name": "bloodspray",
-      "orientation": 2,
-      "source_sha256": "86769469cf458df8114a7239a9c1b5018ecc8cc2e443d679eb43bad5b70efb89",
-      "sync_type": 1,
-      "texture_format": 3
-    },
-    "eexplo": {
-      "beam_length": 0.0,
-      "bounding_radius": 56.56854248046875,
-      "frame_metadata": [
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/00.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/01.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/02.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/03.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/04.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/05.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/06.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/07.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/08.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/09.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/10.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/11.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/12.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/13.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/14.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/15.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/16.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/17.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/18.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/19.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/20.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/21.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/22.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/23.png",
-          "width": 80
-        },
-        {
-          "height": 80,
-          "origin_x": -40,
-          "origin_y": 40,
-          "texture": "sprites/eexplo/24.png",
-          "width": 80
-        }
-      ],
-      "frames": [
-        "sprites/eexplo/00.png",
-        "sprites/eexplo/01.png",
-        "sprites/eexplo/02.png",
-        "sprites/eexplo/03.png",
-        "sprites/eexplo/04.png",
-        "sprites/eexplo/05.png",
-        "sprites/eexplo/06.png",
-        "sprites/eexplo/07.png",
-        "sprites/eexplo/08.png",
-        "sprites/eexplo/09.png",
-        "sprites/eexplo/10.png",
-        "sprites/eexplo/11.png",
-        "sprites/eexplo/12.png",
-        "sprites/eexplo/13.png",
-        "sprites/eexplo/14.png",
-        "sprites/eexplo/15.png",
-        "sprites/eexplo/16.png",
-        "sprites/eexplo/17.png",
-        "sprites/eexplo/18.png",
-        "sprites/eexplo/19.png",
-        "sprites/eexplo/20.png",
-        "sprites/eexplo/21.png",
-        "sprites/eexplo/22.png",
-        "sprites/eexplo/23.png",
-        "sprites/eexplo/24.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 80,
-      "max_width": 80,
-      "name": "eexplo",
-      "orientation": 2,
-      "source_sha256": "cebc88024c092fce37476a0ffac3744af521c8f9ff9808f392b1262d50186502",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "fexplo": {
-      "beam_length": 0.0,
-      "bounding_radius": 62.481998443603516,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/00.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/01.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/02.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/03.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/04.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/05.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/06.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/07.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/08.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/09.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/10.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/11.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/12.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/13.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/14.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/15.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/16.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/17.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/18.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/19.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/20.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/21.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/22.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/23.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/24.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/25.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/26.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/27.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/28.png",
-          "width": 80
-        },
-        {
-          "height": 96,
-          "origin_x": -40,
-          "origin_y": 48,
-          "texture": "sprites/fexplo/29.png",
-          "width": 80
-        }
-      ],
-      "frames": [
-        "sprites/fexplo/00.png",
-        "sprites/fexplo/01.png",
-        "sprites/fexplo/02.png",
-        "sprites/fexplo/03.png",
-        "sprites/fexplo/04.png",
-        "sprites/fexplo/05.png",
-        "sprites/fexplo/06.png",
-        "sprites/fexplo/07.png",
-        "sprites/fexplo/08.png",
-        "sprites/fexplo/09.png",
-        "sprites/fexplo/10.png",
-        "sprites/fexplo/11.png",
-        "sprites/fexplo/12.png",
-        "sprites/fexplo/13.png",
-        "sprites/fexplo/14.png",
-        "sprites/fexplo/15.png",
-        "sprites/fexplo/16.png",
-        "sprites/fexplo/17.png",
-        "sprites/fexplo/18.png",
-        "sprites/fexplo/19.png",
-        "sprites/fexplo/20.png",
-        "sprites/fexplo/21.png",
-        "sprites/fexplo/22.png",
-        "sprites/fexplo/23.png",
-        "sprites/fexplo/24.png",
-        "sprites/fexplo/25.png",
-        "sprites/fexplo/26.png",
-        "sprites/fexplo/27.png",
-        "sprites/fexplo/28.png",
-        "sprites/fexplo/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 80,
-      "name": "fexplo",
-      "orientation": 2,
-      "source_sha256": "b89ee20a8f588ac5517d43d4e73e2d5411b1f6962a057792c4f13741a9419255",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "muzzleflash1": {
-      "beam_length": 0.0,
-      "bounding_radius": 33.941123962402344,
-      "frame_metadata": [
-        {
-          "height": 48,
-          "origin_x": -24,
-          "origin_y": 24,
-          "texture": "sprites/muzzleflash1/00.png",
-          "width": 48
-        }
-      ],
-      "frames": [
-        "sprites/muzzleflash1/00.png"
-      ],
-      "intervals": [
-        0.0
-      ],
-      "max_height": 48,
-      "max_width": 48,
-      "name": "muzzleflash1",
-      "orientation": 2,
-      "source_sha256": "401813604b4888956b880658e22466be9837697b19d635ed0d150e9e0ffb0371",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "muzzleflash2": {
-      "beam_length": 0.0,
-      "bounding_radius": 45.25483322143555,
-      "frame_metadata": [
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/muzzleflash2/00.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/muzzleflash2/01.png",
-          "width": 64
-        },
-        {
-          "height": 64,
-          "origin_x": -32,
-          "origin_y": 32,
-          "texture": "sprites/muzzleflash2/02.png",
-          "width": 64
-        }
-      ],
-      "frames": [
-        "sprites/muzzleflash2/00.png",
-        "sprites/muzzleflash2/01.png",
-        "sprites/muzzleflash2/02.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 64,
-      "max_width": 64,
-      "name": "muzzleflash2",
-      "orientation": 2,
-      "source_sha256": "8d5de8592cd691bd4d228f2922208acfe33d20870406a48863dbb1a3c1bc9693",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "muzzleflash3": {
-      "beam_length": 0.0,
-      "bounding_radius": 50.91168975830078,
-      "frame_metadata": [
-        {
-          "height": 72,
-          "origin_x": -36,
-          "origin_y": 36,
-          "texture": "sprites/muzzleflash3/00.png",
-          "width": 72
-        },
-        {
-          "height": 72,
-          "origin_x": -36,
-          "origin_y": 36,
-          "texture": "sprites/muzzleflash3/01.png",
-          "width": 72
-        },
-        {
-          "height": 72,
-          "origin_x": -36,
-          "origin_y": 36,
-          "texture": "sprites/muzzleflash3/02.png",
-          "width": 72
-        }
-      ],
-      "frames": [
-        "sprites/muzzleflash3/00.png",
-        "sprites/muzzleflash3/01.png",
-        "sprites/muzzleflash3/02.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 72,
-      "max_width": 72,
-      "name": "muzzleflash3",
-      "orientation": 2,
-      "source_sha256": "1240366a4701811cd63eaaa6f4cfadf6619408a9d77995c382f5ae8ae0bd7be5",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "muzzleflash4": {
-      "beam_length": 0.0,
-      "bounding_radius": 33.941123962402344,
-      "frame_metadata": [
-        {
-          "height": 48,
-          "origin_x": -24,
-          "origin_y": 24,
-          "texture": "sprites/muzzleflash4/00.png",
-          "width": 48
-        }
-      ],
-      "frames": [
-        "sprites/muzzleflash4/00.png"
-      ],
-      "intervals": [
-        0.0
-      ],
-      "max_height": 48,
-      "max_width": 48,
-      "name": "muzzleflash4",
-      "orientation": 2,
-      "source_sha256": "d3de5d0f1a35052bc7aa7c6fd7e33cc496a245c29a89e5fd39ad99f061d46aa2",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "pistol_smoke1": {
-      "beam_length": 0.0,
-      "bounding_radius": 80.0,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/00.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/01.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/02.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/03.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/04.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/05.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/06.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/07.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/08.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/09.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/10.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/11.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/12.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/13.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/14.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/15.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/16.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/17.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/18.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/19.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/20.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/21.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/22.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/23.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/24.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/25.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/26.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/27.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/28.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke1/29.png",
-          "width": 128
-        }
-      ],
-      "frames": [
-        "sprites/pistol_smoke1/00.png",
-        "sprites/pistol_smoke1/01.png",
-        "sprites/pistol_smoke1/02.png",
-        "sprites/pistol_smoke1/03.png",
-        "sprites/pistol_smoke1/04.png",
-        "sprites/pistol_smoke1/05.png",
-        "sprites/pistol_smoke1/06.png",
-        "sprites/pistol_smoke1/07.png",
-        "sprites/pistol_smoke1/08.png",
-        "sprites/pistol_smoke1/09.png",
-        "sprites/pistol_smoke1/10.png",
-        "sprites/pistol_smoke1/11.png",
-        "sprites/pistol_smoke1/12.png",
-        "sprites/pistol_smoke1/13.png",
-        "sprites/pistol_smoke1/14.png",
-        "sprites/pistol_smoke1/15.png",
-        "sprites/pistol_smoke1/16.png",
-        "sprites/pistol_smoke1/17.png",
-        "sprites/pistol_smoke1/18.png",
-        "sprites/pistol_smoke1/19.png",
-        "sprites/pistol_smoke1/20.png",
-        "sprites/pistol_smoke1/21.png",
-        "sprites/pistol_smoke1/22.png",
-        "sprites/pistol_smoke1/23.png",
-        "sprites/pistol_smoke1/24.png",
-        "sprites/pistol_smoke1/25.png",
-        "sprites/pistol_smoke1/26.png",
-        "sprites/pistol_smoke1/27.png",
-        "sprites/pistol_smoke1/28.png",
-        "sprites/pistol_smoke1/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 128,
-      "name": "pistol_smoke1",
-      "orientation": 2,
-      "source_sha256": "fadbe48f1276a0fffecd5063ecffed32140262d809a795dbe6f04e777937a2ac",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "pistol_smoke2": {
-      "beam_length": 0.0,
-      "bounding_radius": 80.0,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/00.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/01.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/02.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/03.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/04.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/05.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/06.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/07.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/08.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/09.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/10.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/11.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/12.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/13.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/14.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/15.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/16.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/17.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/18.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/19.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/20.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/21.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/22.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/23.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/24.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/25.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/26.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/27.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/28.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/pistol_smoke2/29.png",
-          "width": 128
-        }
-      ],
-      "frames": [
-        "sprites/pistol_smoke2/00.png",
-        "sprites/pistol_smoke2/01.png",
-        "sprites/pistol_smoke2/02.png",
-        "sprites/pistol_smoke2/03.png",
-        "sprites/pistol_smoke2/04.png",
-        "sprites/pistol_smoke2/05.png",
-        "sprites/pistol_smoke2/06.png",
-        "sprites/pistol_smoke2/07.png",
-        "sprites/pistol_smoke2/08.png",
-        "sprites/pistol_smoke2/09.png",
-        "sprites/pistol_smoke2/10.png",
-        "sprites/pistol_smoke2/11.png",
-        "sprites/pistol_smoke2/12.png",
-        "sprites/pistol_smoke2/13.png",
-        "sprites/pistol_smoke2/14.png",
-        "sprites/pistol_smoke2/15.png",
-        "sprites/pistol_smoke2/16.png",
-        "sprites/pistol_smoke2/17.png",
-        "sprites/pistol_smoke2/18.png",
-        "sprites/pistol_smoke2/19.png",
-        "sprites/pistol_smoke2/20.png",
-        "sprites/pistol_smoke2/21.png",
-        "sprites/pistol_smoke2/22.png",
-        "sprites/pistol_smoke2/23.png",
-        "sprites/pistol_smoke2/24.png",
-        "sprites/pistol_smoke2/25.png",
-        "sprites/pistol_smoke2/26.png",
-        "sprites/pistol_smoke2/27.png",
-        "sprites/pistol_smoke2/28.png",
-        "sprites/pistol_smoke2/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 128,
-      "name": "pistol_smoke2",
-      "orientation": 2,
-      "source_sha256": "e53dcbe0ef346df5517ee76c1b38f3968f380ce390887ebb139ef3a5659e24d3",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "richo1": {
-      "beam_length": 0.0,
-      "bounding_radius": 22.627416610717773,
-      "frame_metadata": [
-        {
-          "height": 32,
-          "origin_x": -16,
-          "origin_y": 16,
-          "texture": "sprites/richo1/00.png",
-          "width": 32
-        }
-      ],
-      "frames": [
-        "sprites/richo1/00.png"
-      ],
-      "intervals": [
-        0.0
-      ],
-      "max_height": 32,
-      "max_width": 32,
-      "name": "richo1",
-      "orientation": 2,
-      "source_sha256": "563229da9238e2bd1c196f5de17a64d558c90eaacc07eb9627cdeb8984742bd9",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "rifle_smoke1": {
-      "beam_length": 0.0,
-      "bounding_radius": 80.0,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/00.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/01.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/02.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/03.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/04.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/05.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/06.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/07.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/08.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/09.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/10.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/11.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/12.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/13.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/14.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/15.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/16.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/17.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/18.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/19.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/20.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/21.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/22.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/23.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/24.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/25.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/26.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/27.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/28.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke1/29.png",
-          "width": 128
-        }
-      ],
-      "frames": [
-        "sprites/rifle_smoke1/00.png",
-        "sprites/rifle_smoke1/01.png",
-        "sprites/rifle_smoke1/02.png",
-        "sprites/rifle_smoke1/03.png",
-        "sprites/rifle_smoke1/04.png",
-        "sprites/rifle_smoke1/05.png",
-        "sprites/rifle_smoke1/06.png",
-        "sprites/rifle_smoke1/07.png",
-        "sprites/rifle_smoke1/08.png",
-        "sprites/rifle_smoke1/09.png",
-        "sprites/rifle_smoke1/10.png",
-        "sprites/rifle_smoke1/11.png",
-        "sprites/rifle_smoke1/12.png",
-        "sprites/rifle_smoke1/13.png",
-        "sprites/rifle_smoke1/14.png",
-        "sprites/rifle_smoke1/15.png",
-        "sprites/rifle_smoke1/16.png",
-        "sprites/rifle_smoke1/17.png",
-        "sprites/rifle_smoke1/18.png",
-        "sprites/rifle_smoke1/19.png",
-        "sprites/rifle_smoke1/20.png",
-        "sprites/rifle_smoke1/21.png",
-        "sprites/rifle_smoke1/22.png",
-        "sprites/rifle_smoke1/23.png",
-        "sprites/rifle_smoke1/24.png",
-        "sprites/rifle_smoke1/25.png",
-        "sprites/rifle_smoke1/26.png",
-        "sprites/rifle_smoke1/27.png",
-        "sprites/rifle_smoke1/28.png",
-        "sprites/rifle_smoke1/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 128,
-      "name": "rifle_smoke1",
-      "orientation": 2,
-      "source_sha256": "aae249f31605fdf3773d0753764dd4865873dca48a58108579923af755122fe5",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "rifle_smoke2": {
-      "beam_length": 0.0,
-      "bounding_radius": 80.0,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/00.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/01.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/02.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/03.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/04.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/05.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/06.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/07.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/08.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/09.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/10.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/11.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/12.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/13.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/14.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/15.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/16.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/17.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/18.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/19.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/20.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/21.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/22.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/23.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/24.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/25.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/26.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/27.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/28.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke2/29.png",
-          "width": 128
-        }
-      ],
-      "frames": [
-        "sprites/rifle_smoke2/00.png",
-        "sprites/rifle_smoke2/01.png",
-        "sprites/rifle_smoke2/02.png",
-        "sprites/rifle_smoke2/03.png",
-        "sprites/rifle_smoke2/04.png",
-        "sprites/rifle_smoke2/05.png",
-        "sprites/rifle_smoke2/06.png",
-        "sprites/rifle_smoke2/07.png",
-        "sprites/rifle_smoke2/08.png",
-        "sprites/rifle_smoke2/09.png",
-        "sprites/rifle_smoke2/10.png",
-        "sprites/rifle_smoke2/11.png",
-        "sprites/rifle_smoke2/12.png",
-        "sprites/rifle_smoke2/13.png",
-        "sprites/rifle_smoke2/14.png",
-        "sprites/rifle_smoke2/15.png",
-        "sprites/rifle_smoke2/16.png",
-        "sprites/rifle_smoke2/17.png",
-        "sprites/rifle_smoke2/18.png",
-        "sprites/rifle_smoke2/19.png",
-        "sprites/rifle_smoke2/20.png",
-        "sprites/rifle_smoke2/21.png",
-        "sprites/rifle_smoke2/22.png",
-        "sprites/rifle_smoke2/23.png",
-        "sprites/rifle_smoke2/24.png",
-        "sprites/rifle_smoke2/25.png",
-        "sprites/rifle_smoke2/26.png",
-        "sprites/rifle_smoke2/27.png",
-        "sprites/rifle_smoke2/28.png",
-        "sprites/rifle_smoke2/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 128,
-      "name": "rifle_smoke2",
-      "orientation": 2,
-      "source_sha256": "8b20f268bb2ec78958b49dfb7426ae49eeec738eedf66895d40c0a1abbfde387",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "rifle_smoke3": {
-      "beam_length": 0.0,
-      "bounding_radius": 80.0,
-      "frame_metadata": [
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/00.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/01.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/02.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/03.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/04.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/05.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/06.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/07.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/08.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/09.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/10.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/11.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/12.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/13.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/14.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/15.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/16.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/17.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/18.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/19.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/20.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/21.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/22.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/23.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/24.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/25.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/26.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/27.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/28.png",
-          "width": 128
-        },
-        {
-          "height": 96,
-          "origin_x": -64,
-          "origin_y": 48,
-          "texture": "sprites/rifle_smoke3/29.png",
-          "width": 128
-        }
-      ],
-      "frames": [
-        "sprites/rifle_smoke3/00.png",
-        "sprites/rifle_smoke3/01.png",
-        "sprites/rifle_smoke3/02.png",
-        "sprites/rifle_smoke3/03.png",
-        "sprites/rifle_smoke3/04.png",
-        "sprites/rifle_smoke3/05.png",
-        "sprites/rifle_smoke3/06.png",
-        "sprites/rifle_smoke3/07.png",
-        "sprites/rifle_smoke3/08.png",
-        "sprites/rifle_smoke3/09.png",
-        "sprites/rifle_smoke3/10.png",
-        "sprites/rifle_smoke3/11.png",
-        "sprites/rifle_smoke3/12.png",
-        "sprites/rifle_smoke3/13.png",
-        "sprites/rifle_smoke3/14.png",
-        "sprites/rifle_smoke3/15.png",
-        "sprites/rifle_smoke3/16.png",
-        "sprites/rifle_smoke3/17.png",
-        "sprites/rifle_smoke3/18.png",
-        "sprites/rifle_smoke3/19.png",
-        "sprites/rifle_smoke3/20.png",
-        "sprites/rifle_smoke3/21.png",
-        "sprites/rifle_smoke3/22.png",
-        "sprites/rifle_smoke3/23.png",
-        "sprites/rifle_smoke3/24.png",
-        "sprites/rifle_smoke3/25.png",
-        "sprites/rifle_smoke3/26.png",
-        "sprites/rifle_smoke3/27.png",
-        "sprites/rifle_smoke3/28.png",
-        "sprites/rifle_smoke3/29.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 96,
-      "max_width": 128,
-      "name": "rifle_smoke3",
-      "orientation": 2,
-      "source_sha256": "04f6e73e49e5bafe7c03fed8b80aad28f4c167f8a8c73bd2bf1fae8cbb154f3e",
-      "sync_type": 1,
-      "texture_format": 1
-    },
-    "steam1": {
-      "beam_length": 0.0,
-      "bounding_radius": 28.844409942626953,
-      "frame_metadata": [
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/00.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/01.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/02.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/03.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/04.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/05.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/06.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/07.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/08.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/09.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/10.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/11.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/12.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/13.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/14.png",
-          "width": 32
-        },
-        {
-          "height": 48,
-          "origin_x": -16,
-          "origin_y": 24,
-          "texture": "sprites/steam1/15.png",
-          "width": 32
-        }
-      ],
-      "frames": [
-        "sprites/steam1/00.png",
-        "sprites/steam1/01.png",
-        "sprites/steam1/02.png",
-        "sprites/steam1/03.png",
-        "sprites/steam1/04.png",
-        "sprites/steam1/05.png",
-        "sprites/steam1/06.png",
-        "sprites/steam1/07.png",
-        "sprites/steam1/08.png",
-        "sprites/steam1/09.png",
-        "sprites/steam1/10.png",
-        "sprites/steam1/11.png",
-        "sprites/steam1/12.png",
-        "sprites/steam1/13.png",
-        "sprites/steam1/14.png",
-        "sprites/steam1/15.png"
-      ],
-      "intervals": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max_height": 48,
-      "max_width": 32,
-      "name": "steam1",
-      "orientation": 4,
-      "source_sha256": "ca839de89f7e47015b451a649a9411fa8827337bddc5712d73ecda311a23a0e3",
-      "sync_type": 1,
-      "texture_format": 2
-    }
+  "blood2": {
+   "height": 48,
+   "name": "{blood2",
+   "texture": "decals/blood2.png",
+   "width": 48
   },
-  "version": 1
+  "blood3": {
+   "height": 48,
+   "name": "{blood3",
+   "texture": "decals/blood3.png",
+   "width": 48
+  },
+  "blood4": {
+   "height": 48,
+   "name": "{blood4",
+   "texture": "decals/blood4.png",
+   "width": 48
+  },
+  "blood5": {
+   "height": 64,
+   "name": "{blood5",
+   "texture": "decals/blood5.png",
+   "width": 64
+  },
+  "blood6": {
+   "height": 48,
+   "name": "{blood6",
+   "texture": "decals/blood6.png",
+   "width": 48
+  },
+  "scorch1": {
+   "height": 96,
+   "name": "{scorch1",
+   "texture": "decals/scorch1.png",
+   "width": 96
+  },
+  "scorch2": {
+   "height": 96,
+   "name": "{scorch2",
+   "texture": "decals/scorch2.png",
+   "width": 96
+  },
+  "shot1": {
+   "height": 16,
+   "name": "{shot1",
+   "texture": "decals/shot1.png",
+   "width": 16
+  },
+  "shot2": {
+   "height": 16,
+   "name": "{shot2",
+   "texture": "decals/shot2.png",
+   "width": 16
+  },
+  "shot3": {
+   "height": 16,
+   "name": "{shot3",
+   "texture": "decals/shot3.png",
+   "width": 16
+  },
+  "shot4": {
+   "height": 16,
+   "name": "{shot4",
+   "texture": "decals/shot4.png",
+   "width": 16
+  },
+  "shot5": {
+   "height": 16,
+   "name": "{shot5",
+   "texture": "decals/shot5.png",
+   "width": 16
+  }
+ },
+ "format": "protocol47-goldsrc-vfx",
+ "sprites": {
+  "black_smoke3": {
+   "beam_length": 0.0,
+   "bounding_radius": 50.91168975830078,
+   "frame_metadata": [
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/00.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/01.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/02.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/03.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/04.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/05.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/06.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/07.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/08.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/09.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/10.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/11.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/12.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/13.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/14.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/15.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/16.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/17.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/18.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/19.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/20.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/21.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/22.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/23.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/24.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/25.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/26.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/27.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/28.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/black_smoke3/29.png",
+     "width": 72
+    }
+   ],
+   "frames": [
+    "sprites/black_smoke3/00.png",
+    "sprites/black_smoke3/01.png",
+    "sprites/black_smoke3/02.png",
+    "sprites/black_smoke3/03.png",
+    "sprites/black_smoke3/04.png",
+    "sprites/black_smoke3/05.png",
+    "sprites/black_smoke3/06.png",
+    "sprites/black_smoke3/07.png",
+    "sprites/black_smoke3/08.png",
+    "sprites/black_smoke3/09.png",
+    "sprites/black_smoke3/10.png",
+    "sprites/black_smoke3/11.png",
+    "sprites/black_smoke3/12.png",
+    "sprites/black_smoke3/13.png",
+    "sprites/black_smoke3/14.png",
+    "sprites/black_smoke3/15.png",
+    "sprites/black_smoke3/16.png",
+    "sprites/black_smoke3/17.png",
+    "sprites/black_smoke3/18.png",
+    "sprites/black_smoke3/19.png",
+    "sprites/black_smoke3/20.png",
+    "sprites/black_smoke3/21.png",
+    "sprites/black_smoke3/22.png",
+    "sprites/black_smoke3/23.png",
+    "sprites/black_smoke3/24.png",
+    "sprites/black_smoke3/25.png",
+    "sprites/black_smoke3/26.png",
+    "sprites/black_smoke3/27.png",
+    "sprites/black_smoke3/28.png",
+    "sprites/black_smoke3/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 72,
+   "max_width": 72,
+   "name": "black_smoke3",
+   "orientation": 2,
+   "source_sha256": "8539f22177ae5ec673316d76939211dc9dc1c1c2dacdb6a52e100e1e7d5c15ea",
+   "sync_type": 1,
+   "texture_format": 2
+  },
+  "blood": {
+   "beam_length": 0.0,
+   "bounding_radius": 11.313708305358887,
+   "frame_metadata": [
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/00.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/01.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/02.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/03.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/04.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/05.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/06.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/07.png",
+     "width": 16
+    },
+    {
+     "height": 16,
+     "origin_x": -8,
+     "origin_y": 8,
+     "texture": "sprites/blood/08.png",
+     "width": 16
+    }
+   ],
+   "frames": [
+    "sprites/blood/00.png",
+    "sprites/blood/01.png",
+    "sprites/blood/02.png",
+    "sprites/blood/03.png",
+    "sprites/blood/04.png",
+    "sprites/blood/05.png",
+    "sprites/blood/06.png",
+    "sprites/blood/07.png",
+    "sprites/blood/08.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 16,
+   "max_width": 16,
+   "name": "blood",
+   "orientation": 2,
+   "source_sha256": "42cabfbac848496fde138163bc36de3e71b7e7b4e51926f6f4f9a2ff685f19c8",
+   "sync_type": 1,
+   "texture_format": 3
+  },
+  "bloodspray": {
+   "beam_length": 0.0,
+   "bounding_radius": 45.25483322143555,
+   "frame_metadata": [
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/00.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/01.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/02.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/03.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/04.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/05.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/06.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/07.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/08.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/bloodspray/09.png",
+     "width": 64
+    }
+   ],
+   "frames": [
+    "sprites/bloodspray/00.png",
+    "sprites/bloodspray/01.png",
+    "sprites/bloodspray/02.png",
+    "sprites/bloodspray/03.png",
+    "sprites/bloodspray/04.png",
+    "sprites/bloodspray/05.png",
+    "sprites/bloodspray/06.png",
+    "sprites/bloodspray/07.png",
+    "sprites/bloodspray/08.png",
+    "sprites/bloodspray/09.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 64,
+   "max_width": 64,
+   "name": "bloodspray",
+   "orientation": 2,
+   "source_sha256": "86769469cf458df8114a7239a9c1b5018ecc8cc2e443d679eb43bad5b70efb89",
+   "sync_type": 1,
+   "texture_format": 3
+  },
+  "eexplo": {
+   "beam_length": 0.0,
+   "bounding_radius": 56.56854248046875,
+   "frame_metadata": [
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/00.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/01.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/02.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/03.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/04.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/05.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/06.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/07.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/08.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/09.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/10.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/11.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/12.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/13.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/14.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/15.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/16.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/17.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/18.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/19.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/20.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/21.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/22.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/23.png",
+     "width": 80
+    },
+    {
+     "height": 80,
+     "origin_x": -40,
+     "origin_y": 40,
+     "texture": "sprites/eexplo/24.png",
+     "width": 80
+    }
+   ],
+   "frames": [
+    "sprites/eexplo/00.png",
+    "sprites/eexplo/01.png",
+    "sprites/eexplo/02.png",
+    "sprites/eexplo/03.png",
+    "sprites/eexplo/04.png",
+    "sprites/eexplo/05.png",
+    "sprites/eexplo/06.png",
+    "sprites/eexplo/07.png",
+    "sprites/eexplo/08.png",
+    "sprites/eexplo/09.png",
+    "sprites/eexplo/10.png",
+    "sprites/eexplo/11.png",
+    "sprites/eexplo/12.png",
+    "sprites/eexplo/13.png",
+    "sprites/eexplo/14.png",
+    "sprites/eexplo/15.png",
+    "sprites/eexplo/16.png",
+    "sprites/eexplo/17.png",
+    "sprites/eexplo/18.png",
+    "sprites/eexplo/19.png",
+    "sprites/eexplo/20.png",
+    "sprites/eexplo/21.png",
+    "sprites/eexplo/22.png",
+    "sprites/eexplo/23.png",
+    "sprites/eexplo/24.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 80,
+   "max_width": 80,
+   "name": "eexplo",
+   "orientation": 2,
+   "source_sha256": "cebc88024c092fce37476a0ffac3744af521c8f9ff9808f392b1262d50186502",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "fexplo": {
+   "beam_length": 0.0,
+   "bounding_radius": 62.481998443603516,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/00.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/01.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/02.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/03.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/04.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/05.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/06.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/07.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/08.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/09.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/10.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/11.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/12.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/13.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/14.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/15.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/16.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/17.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/18.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/19.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/20.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/21.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/22.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/23.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/24.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/25.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/26.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/27.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/28.png",
+     "width": 80
+    },
+    {
+     "height": 96,
+     "origin_x": -40,
+     "origin_y": 48,
+     "texture": "sprites/fexplo/29.png",
+     "width": 80
+    }
+   ],
+   "frames": [
+    "sprites/fexplo/00.png",
+    "sprites/fexplo/01.png",
+    "sprites/fexplo/02.png",
+    "sprites/fexplo/03.png",
+    "sprites/fexplo/04.png",
+    "sprites/fexplo/05.png",
+    "sprites/fexplo/06.png",
+    "sprites/fexplo/07.png",
+    "sprites/fexplo/08.png",
+    "sprites/fexplo/09.png",
+    "sprites/fexplo/10.png",
+    "sprites/fexplo/11.png",
+    "sprites/fexplo/12.png",
+    "sprites/fexplo/13.png",
+    "sprites/fexplo/14.png",
+    "sprites/fexplo/15.png",
+    "sprites/fexplo/16.png",
+    "sprites/fexplo/17.png",
+    "sprites/fexplo/18.png",
+    "sprites/fexplo/19.png",
+    "sprites/fexplo/20.png",
+    "sprites/fexplo/21.png",
+    "sprites/fexplo/22.png",
+    "sprites/fexplo/23.png",
+    "sprites/fexplo/24.png",
+    "sprites/fexplo/25.png",
+    "sprites/fexplo/26.png",
+    "sprites/fexplo/27.png",
+    "sprites/fexplo/28.png",
+    "sprites/fexplo/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 80,
+   "name": "fexplo",
+   "orientation": 2,
+   "source_sha256": "b89ee20a8f588ac5517d43d4e73e2d5411b1f6962a057792c4f13741a9419255",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "gas_puff_01": {
+   "beam_length": 0.0,
+   "bounding_radius": 45.25483322143555,
+   "frame_metadata": [
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/gas_puff_01/00.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/gas_puff_01/01.png",
+     "width": 64
+    }
+   ],
+   "frames": [
+    "sprites/gas_puff_01/00.png",
+    "sprites/gas_puff_01/01.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0
+   ],
+   "max_height": 64,
+   "max_width": 64,
+   "name": "gas_puff_01",
+   "orientation": 2,
+   "source_sha256": "819c6c15cd4b4d2e9ea1c4dff2984c5f4a589fbd5b22875666b3f6aaf6580e07",
+   "sync_type": 1,
+   "texture_format": 2
+  },
+  "muzzleflash1": {
+   "beam_length": 0.0,
+   "bounding_radius": 33.941123962402344,
+   "frame_metadata": [
+    {
+     "height": 48,
+     "origin_x": -24,
+     "origin_y": 24,
+     "texture": "sprites/muzzleflash1/00.png",
+     "width": 48
+    }
+   ],
+   "frames": [
+    "sprites/muzzleflash1/00.png"
+   ],
+   "intervals": [
+    0.0
+   ],
+   "max_height": 48,
+   "max_width": 48,
+   "name": "muzzleflash1",
+   "orientation": 2,
+   "source_sha256": "401813604b4888956b880658e22466be9837697b19d635ed0d150e9e0ffb0371",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "muzzleflash2": {
+   "beam_length": 0.0,
+   "bounding_radius": 45.25483322143555,
+   "frame_metadata": [
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/muzzleflash2/00.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/muzzleflash2/01.png",
+     "width": 64
+    },
+    {
+     "height": 64,
+     "origin_x": -32,
+     "origin_y": 32,
+     "texture": "sprites/muzzleflash2/02.png",
+     "width": 64
+    }
+   ],
+   "frames": [
+    "sprites/muzzleflash2/00.png",
+    "sprites/muzzleflash2/01.png",
+    "sprites/muzzleflash2/02.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 64,
+   "max_width": 64,
+   "name": "muzzleflash2",
+   "orientation": 2,
+   "source_sha256": "8d5de8592cd691bd4d228f2922208acfe33d20870406a48863dbb1a3c1bc9693",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "muzzleflash3": {
+   "beam_length": 0.0,
+   "bounding_radius": 50.91168975830078,
+   "frame_metadata": [
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/muzzleflash3/00.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/muzzleflash3/01.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/muzzleflash3/02.png",
+     "width": 72
+    }
+   ],
+   "frames": [
+    "sprites/muzzleflash3/00.png",
+    "sprites/muzzleflash3/01.png",
+    "sprites/muzzleflash3/02.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 72,
+   "max_width": 72,
+   "name": "muzzleflash3",
+   "orientation": 2,
+   "source_sha256": "1240366a4701811cd63eaaa6f4cfadf6619408a9d77995c382f5ae8ae0bd7be5",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "muzzleflash4": {
+   "beam_length": 0.0,
+   "bounding_radius": 33.941123962402344,
+   "frame_metadata": [
+    {
+     "height": 48,
+     "origin_x": -24,
+     "origin_y": 24,
+     "texture": "sprites/muzzleflash4/00.png",
+     "width": 48
+    }
+   ],
+   "frames": [
+    "sprites/muzzleflash4/00.png"
+   ],
+   "intervals": [
+    0.0
+   ],
+   "max_height": 48,
+   "max_width": 48,
+   "name": "muzzleflash4",
+   "orientation": 2,
+   "source_sha256": "d3de5d0f1a35052bc7aa7c6fd7e33cc496a245c29a89e5fd39ad99f061d46aa2",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "pistol_smoke1": {
+   "beam_length": 0.0,
+   "bounding_radius": 80.0,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/00.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/01.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/02.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/03.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/04.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/05.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/06.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/07.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/08.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/09.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/10.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/11.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/12.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/13.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/14.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/15.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/16.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/17.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/18.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/19.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/20.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/21.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/22.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/23.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/24.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/25.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/26.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/27.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/28.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke1/29.png",
+     "width": 128
+    }
+   ],
+   "frames": [
+    "sprites/pistol_smoke1/00.png",
+    "sprites/pistol_smoke1/01.png",
+    "sprites/pistol_smoke1/02.png",
+    "sprites/pistol_smoke1/03.png",
+    "sprites/pistol_smoke1/04.png",
+    "sprites/pistol_smoke1/05.png",
+    "sprites/pistol_smoke1/06.png",
+    "sprites/pistol_smoke1/07.png",
+    "sprites/pistol_smoke1/08.png",
+    "sprites/pistol_smoke1/09.png",
+    "sprites/pistol_smoke1/10.png",
+    "sprites/pistol_smoke1/11.png",
+    "sprites/pistol_smoke1/12.png",
+    "sprites/pistol_smoke1/13.png",
+    "sprites/pistol_smoke1/14.png",
+    "sprites/pistol_smoke1/15.png",
+    "sprites/pistol_smoke1/16.png",
+    "sprites/pistol_smoke1/17.png",
+    "sprites/pistol_smoke1/18.png",
+    "sprites/pistol_smoke1/19.png",
+    "sprites/pistol_smoke1/20.png",
+    "sprites/pistol_smoke1/21.png",
+    "sprites/pistol_smoke1/22.png",
+    "sprites/pistol_smoke1/23.png",
+    "sprites/pistol_smoke1/24.png",
+    "sprites/pistol_smoke1/25.png",
+    "sprites/pistol_smoke1/26.png",
+    "sprites/pistol_smoke1/27.png",
+    "sprites/pistol_smoke1/28.png",
+    "sprites/pistol_smoke1/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 128,
+   "name": "pistol_smoke1",
+   "orientation": 2,
+   "source_sha256": "fadbe48f1276a0fffecd5063ecffed32140262d809a795dbe6f04e777937a2ac",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "pistol_smoke2": {
+   "beam_length": 0.0,
+   "bounding_radius": 80.0,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/00.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/01.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/02.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/03.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/04.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/05.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/06.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/07.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/08.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/09.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/10.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/11.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/12.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/13.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/14.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/15.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/16.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/17.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/18.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/19.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/20.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/21.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/22.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/23.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/24.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/25.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/26.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/27.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/28.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/pistol_smoke2/29.png",
+     "width": 128
+    }
+   ],
+   "frames": [
+    "sprites/pistol_smoke2/00.png",
+    "sprites/pistol_smoke2/01.png",
+    "sprites/pistol_smoke2/02.png",
+    "sprites/pistol_smoke2/03.png",
+    "sprites/pistol_smoke2/04.png",
+    "sprites/pistol_smoke2/05.png",
+    "sprites/pistol_smoke2/06.png",
+    "sprites/pistol_smoke2/07.png",
+    "sprites/pistol_smoke2/08.png",
+    "sprites/pistol_smoke2/09.png",
+    "sprites/pistol_smoke2/10.png",
+    "sprites/pistol_smoke2/11.png",
+    "sprites/pistol_smoke2/12.png",
+    "sprites/pistol_smoke2/13.png",
+    "sprites/pistol_smoke2/14.png",
+    "sprites/pistol_smoke2/15.png",
+    "sprites/pistol_smoke2/16.png",
+    "sprites/pistol_smoke2/17.png",
+    "sprites/pistol_smoke2/18.png",
+    "sprites/pistol_smoke2/19.png",
+    "sprites/pistol_smoke2/20.png",
+    "sprites/pistol_smoke2/21.png",
+    "sprites/pistol_smoke2/22.png",
+    "sprites/pistol_smoke2/23.png",
+    "sprites/pistol_smoke2/24.png",
+    "sprites/pistol_smoke2/25.png",
+    "sprites/pistol_smoke2/26.png",
+    "sprites/pistol_smoke2/27.png",
+    "sprites/pistol_smoke2/28.png",
+    "sprites/pistol_smoke2/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 128,
+   "name": "pistol_smoke2",
+   "orientation": 2,
+   "source_sha256": "e53dcbe0ef346df5517ee76c1b38f3968f380ce390887ebb139ef3a5659e24d3",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "richo1": {
+   "beam_length": 0.0,
+   "bounding_radius": 22.627416610717773,
+   "frame_metadata": [
+    {
+     "height": 32,
+     "origin_x": -16,
+     "origin_y": 16,
+     "texture": "sprites/richo1/00.png",
+     "width": 32
+    }
+   ],
+   "frames": [
+    "sprites/richo1/00.png"
+   ],
+   "intervals": [
+    0.0
+   ],
+   "max_height": 32,
+   "max_width": 32,
+   "name": "richo1",
+   "orientation": 2,
+   "source_sha256": "563229da9238e2bd1c196f5de17a64d558c90eaacc07eb9627cdeb8984742bd9",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "rifle_smoke1": {
+   "beam_length": 0.0,
+   "bounding_radius": 80.0,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/00.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/01.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/02.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/03.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/04.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/05.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/06.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/07.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/08.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/09.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/10.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/11.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/12.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/13.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/14.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/15.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/16.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/17.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/18.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/19.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/20.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/21.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/22.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/23.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/24.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/25.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/26.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/27.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/28.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke1/29.png",
+     "width": 128
+    }
+   ],
+   "frames": [
+    "sprites/rifle_smoke1/00.png",
+    "sprites/rifle_smoke1/01.png",
+    "sprites/rifle_smoke1/02.png",
+    "sprites/rifle_smoke1/03.png",
+    "sprites/rifle_smoke1/04.png",
+    "sprites/rifle_smoke1/05.png",
+    "sprites/rifle_smoke1/06.png",
+    "sprites/rifle_smoke1/07.png",
+    "sprites/rifle_smoke1/08.png",
+    "sprites/rifle_smoke1/09.png",
+    "sprites/rifle_smoke1/10.png",
+    "sprites/rifle_smoke1/11.png",
+    "sprites/rifle_smoke1/12.png",
+    "sprites/rifle_smoke1/13.png",
+    "sprites/rifle_smoke1/14.png",
+    "sprites/rifle_smoke1/15.png",
+    "sprites/rifle_smoke1/16.png",
+    "sprites/rifle_smoke1/17.png",
+    "sprites/rifle_smoke1/18.png",
+    "sprites/rifle_smoke1/19.png",
+    "sprites/rifle_smoke1/20.png",
+    "sprites/rifle_smoke1/21.png",
+    "sprites/rifle_smoke1/22.png",
+    "sprites/rifle_smoke1/23.png",
+    "sprites/rifle_smoke1/24.png",
+    "sprites/rifle_smoke1/25.png",
+    "sprites/rifle_smoke1/26.png",
+    "sprites/rifle_smoke1/27.png",
+    "sprites/rifle_smoke1/28.png",
+    "sprites/rifle_smoke1/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 128,
+   "name": "rifle_smoke1",
+   "orientation": 2,
+   "source_sha256": "aae249f31605fdf3773d0753764dd4865873dca48a58108579923af755122fe5",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "rifle_smoke2": {
+   "beam_length": 0.0,
+   "bounding_radius": 80.0,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/00.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/01.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/02.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/03.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/04.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/05.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/06.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/07.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/08.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/09.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/10.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/11.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/12.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/13.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/14.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/15.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/16.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/17.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/18.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/19.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/20.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/21.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/22.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/23.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/24.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/25.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/26.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/27.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/28.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke2/29.png",
+     "width": 128
+    }
+   ],
+   "frames": [
+    "sprites/rifle_smoke2/00.png",
+    "sprites/rifle_smoke2/01.png",
+    "sprites/rifle_smoke2/02.png",
+    "sprites/rifle_smoke2/03.png",
+    "sprites/rifle_smoke2/04.png",
+    "sprites/rifle_smoke2/05.png",
+    "sprites/rifle_smoke2/06.png",
+    "sprites/rifle_smoke2/07.png",
+    "sprites/rifle_smoke2/08.png",
+    "sprites/rifle_smoke2/09.png",
+    "sprites/rifle_smoke2/10.png",
+    "sprites/rifle_smoke2/11.png",
+    "sprites/rifle_smoke2/12.png",
+    "sprites/rifle_smoke2/13.png",
+    "sprites/rifle_smoke2/14.png",
+    "sprites/rifle_smoke2/15.png",
+    "sprites/rifle_smoke2/16.png",
+    "sprites/rifle_smoke2/17.png",
+    "sprites/rifle_smoke2/18.png",
+    "sprites/rifle_smoke2/19.png",
+    "sprites/rifle_smoke2/20.png",
+    "sprites/rifle_smoke2/21.png",
+    "sprites/rifle_smoke2/22.png",
+    "sprites/rifle_smoke2/23.png",
+    "sprites/rifle_smoke2/24.png",
+    "sprites/rifle_smoke2/25.png",
+    "sprites/rifle_smoke2/26.png",
+    "sprites/rifle_smoke2/27.png",
+    "sprites/rifle_smoke2/28.png",
+    "sprites/rifle_smoke2/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 128,
+   "name": "rifle_smoke2",
+   "orientation": 2,
+   "source_sha256": "8b20f268bb2ec78958b49dfb7426ae49eeec738eedf66895d40c0a1abbfde387",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "rifle_smoke3": {
+   "beam_length": 0.0,
+   "bounding_radius": 80.0,
+   "frame_metadata": [
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/00.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/01.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/02.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/03.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/04.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/05.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/06.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/07.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/08.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/09.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/10.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/11.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/12.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/13.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/14.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/15.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/16.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/17.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/18.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/19.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/20.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/21.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/22.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/23.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/24.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/25.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/26.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/27.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/28.png",
+     "width": 128
+    },
+    {
+     "height": 96,
+     "origin_x": -64,
+     "origin_y": 48,
+     "texture": "sprites/rifle_smoke3/29.png",
+     "width": 128
+    }
+   ],
+   "frames": [
+    "sprites/rifle_smoke3/00.png",
+    "sprites/rifle_smoke3/01.png",
+    "sprites/rifle_smoke3/02.png",
+    "sprites/rifle_smoke3/03.png",
+    "sprites/rifle_smoke3/04.png",
+    "sprites/rifle_smoke3/05.png",
+    "sprites/rifle_smoke3/06.png",
+    "sprites/rifle_smoke3/07.png",
+    "sprites/rifle_smoke3/08.png",
+    "sprites/rifle_smoke3/09.png",
+    "sprites/rifle_smoke3/10.png",
+    "sprites/rifle_smoke3/11.png",
+    "sprites/rifle_smoke3/12.png",
+    "sprites/rifle_smoke3/13.png",
+    "sprites/rifle_smoke3/14.png",
+    "sprites/rifle_smoke3/15.png",
+    "sprites/rifle_smoke3/16.png",
+    "sprites/rifle_smoke3/17.png",
+    "sprites/rifle_smoke3/18.png",
+    "sprites/rifle_smoke3/19.png",
+    "sprites/rifle_smoke3/20.png",
+    "sprites/rifle_smoke3/21.png",
+    "sprites/rifle_smoke3/22.png",
+    "sprites/rifle_smoke3/23.png",
+    "sprites/rifle_smoke3/24.png",
+    "sprites/rifle_smoke3/25.png",
+    "sprites/rifle_smoke3/26.png",
+    "sprites/rifle_smoke3/27.png",
+    "sprites/rifle_smoke3/28.png",
+    "sprites/rifle_smoke3/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 96,
+   "max_width": 128,
+   "name": "rifle_smoke3",
+   "orientation": 2,
+   "source_sha256": "04f6e73e49e5bafe7c03fed8b80aad28f4c167f8a8c73bd2bf1fae8cbb154f3e",
+   "sync_type": 1,
+   "texture_format": 1
+  },
+  "steam1": {
+   "beam_length": 0.0,
+   "bounding_radius": 28.844409942626953,
+   "frame_metadata": [
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/00.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/01.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/02.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/03.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/04.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/05.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/06.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/07.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/08.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/09.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/10.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/11.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/12.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/13.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/14.png",
+     "width": 32
+    },
+    {
+     "height": 48,
+     "origin_x": -16,
+     "origin_y": 24,
+     "texture": "sprites/steam1/15.png",
+     "width": 32
+    }
+   ],
+   "frames": [
+    "sprites/steam1/00.png",
+    "sprites/steam1/01.png",
+    "sprites/steam1/02.png",
+    "sprites/steam1/03.png",
+    "sprites/steam1/04.png",
+    "sprites/steam1/05.png",
+    "sprites/steam1/06.png",
+    "sprites/steam1/07.png",
+    "sprites/steam1/08.png",
+    "sprites/steam1/09.png",
+    "sprites/steam1/10.png",
+    "sprites/steam1/11.png",
+    "sprites/steam1/12.png",
+    "sprites/steam1/13.png",
+    "sprites/steam1/14.png",
+    "sprites/steam1/15.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 48,
+   "max_width": 32,
+   "name": "steam1",
+   "orientation": 4,
+   "source_sha256": "ca839de89f7e47015b451a649a9411fa8827337bddc5712d73ecda311a23a0e3",
+   "sync_type": 1,
+   "texture_format": 2
+  },
+  "wall_puff1": {
+   "beam_length": 0.0,
+   "bounding_radius": 50.91168975830078,
+   "frame_metadata": [
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/00.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/01.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/02.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/03.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/04.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/05.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/06.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/07.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/08.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/09.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/10.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/11.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/12.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/13.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/14.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/15.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/16.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/17.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/18.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/19.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/20.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/21.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/22.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/23.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/24.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/25.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/26.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/27.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/28.png",
+     "width": 72
+    },
+    {
+     "height": 72,
+     "origin_x": -36,
+     "origin_y": 36,
+     "texture": "sprites/wall_puff1/29.png",
+     "width": 72
+    }
+   ],
+   "frames": [
+    "sprites/wall_puff1/00.png",
+    "sprites/wall_puff1/01.png",
+    "sprites/wall_puff1/02.png",
+    "sprites/wall_puff1/03.png",
+    "sprites/wall_puff1/04.png",
+    "sprites/wall_puff1/05.png",
+    "sprites/wall_puff1/06.png",
+    "sprites/wall_puff1/07.png",
+    "sprites/wall_puff1/08.png",
+    "sprites/wall_puff1/09.png",
+    "sprites/wall_puff1/10.png",
+    "sprites/wall_puff1/11.png",
+    "sprites/wall_puff1/12.png",
+    "sprites/wall_puff1/13.png",
+    "sprites/wall_puff1/14.png",
+    "sprites/wall_puff1/15.png",
+    "sprites/wall_puff1/16.png",
+    "sprites/wall_puff1/17.png",
+    "sprites/wall_puff1/18.png",
+    "sprites/wall_puff1/19.png",
+    "sprites/wall_puff1/20.png",
+    "sprites/wall_puff1/21.png",
+    "sprites/wall_puff1/22.png",
+    "sprites/wall_puff1/23.png",
+    "sprites/wall_puff1/24.png",
+    "sprites/wall_puff1/25.png",
+    "sprites/wall_puff1/26.png",
+    "sprites/wall_puff1/27.png",
+    "sprites/wall_puff1/28.png",
+    "sprites/wall_puff1/29.png"
+   ],
+   "intervals": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "max_height": 72,
+   "max_width": 72,
+   "name": "wall_puff1",
+   "orientation": 2,
+   "source_sha256": "4811f91cca15c8ade73cd886ae594fdc0acca5d2ba4d5c606c8faa233a9cea52",
+   "sync_type": 1,
+   "texture_format": 1
+  }
+ },
+ "version": 1
 }

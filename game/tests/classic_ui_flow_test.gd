@@ -283,6 +283,30 @@ func _run() -> void:
 	hud._show_buy_category("rifles")
 	_check(hud.buy_list_panel.get_node_or_null("BuyItem_ak47") != null, "T catalog exposes AK-47")
 	_check(hud.buy_list_panel.get_node_or_null("BuyItem_m4a1") == null, "T catalog excludes CT M4A1")
+	# The Tactical Shield is deliberately not sold: nothing implements shield
+	# blocking, its speed cap or its weapon restrictions, so it would be a pure
+	# money trap. The CT equipment page must not list it.
+	hud.show_buy_menu(2, 10000)
+	hud._show_buy_category("equipment")
+	_check(
+		hud.buy_list_panel.get_node_or_null("BuyItem_shield") == null,
+		"CT equipment page does not offer the unimplemented tactical shield",
+	)
+	_check(
+		hud._buy_items.all(
+			func(item: Dictionary) -> bool: return str(item.item_id) != "shield"
+		),
+		"no buy row resolves to the tactical shield",
+	)
+	_check(
+		not GameHUD.BUY_DEFINITIONS.has("shield"),
+		"the shield is removed from the buy catalog itself",
+	)
+	_check(
+		hud.buy_list_panel.get_node_or_null("BuyItem_vesthelm") != null,
+		"the rest of the equipment page still lists its items",
+	)
+
 	hud.show_buy_menu(1, 1000, {"primary_ammo_price": 80, "secondary_ammo_price": 40})
 	hud._show_buy_category("primary_ammo")
 	_check(
@@ -310,9 +334,11 @@ func _run() -> void:
 		"scoreboard renders spectator rows",
 	)
 	var dead_row := hud.scoreboard_rows.get_node("Player_Bravo") as Control
+	# CS 1.6's scoreboard never draws per-row dead/VIP/bomb glyphs; dead
+	# players keep an unadorned row and the bomb carrier is never revealed.
 	_check(
-		dead_row.find_child("Status_smallskull", true, false) != null,
-		"scoreboard uses the staged death status icon",
+		dead_row.find_child("Status_smallskull", true, false) == null,
+		"scoreboard draws no dead status glyph (CS 1.6 parity)",
 	)
 	players[0]["voice_active"] = true
 	players[1]["voice_muted"] = true

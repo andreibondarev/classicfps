@@ -108,6 +108,15 @@ func _run() -> void:
 	_check(wall_actor.position.x <= -3.209, "swept hull cannot tunnel through a wall")
 	_check(wall_actor.position.z > 0.20, "fly move slides along a wall")
 	_near((wall_result.velocity as Vector3).x, 0.0, "wall collision clips x velocity", 0.01)
+	# Regression: a hull already flush against the wall must keep sliding on
+	# later ticks while the player still pushes into it, never welding stuck.
+	var flush_z := wall_actor.position.z
+	for _tick in range(10):
+		wall_kernel.move(Vector3(4.0, 0.0, 1.0), 0.01, true)
+	_check(
+		wall_actor.position.z > flush_z + 0.09,
+		"flush wall contact still slides tangentially on repeated ticks",
+	)
 
 	var corner_kernel = KernelScript.new(corner_actor)
 	_check(corner_kernel.categorize_ground(Vector3.ZERO), "corner fixture actor categorizes ground")

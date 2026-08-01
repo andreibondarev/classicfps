@@ -18,10 +18,29 @@ struct ExportGroup {
 }
 
 #[derive(Serialize)]
-struct ExportModelBounds<'a> {
+struct ExportModelBounds {
     model_index: u32,
-    mins: &'a cs16_demo_parser::types::Vec3,
-    maxs: &'a cs16_demo_parser::types::Vec3,
+    mins: cs16_demo_parser::types::Vec3,
+    maxs: cs16_demo_parser::types::Vec3,
+    origin: cs16_demo_parser::types::Vec3,
+    pivot: cs16_demo_parser::types::Vec3,
+    vertex_space: &'static str,
+    entity_index: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct ExportEntity<'a> {
+    entity_index: u32,
+    classname: &'a str,
+    origin: Option<&'a cs16_demo_parser::types::Vec3>,
+    properties: &'a [(String, String)],
+}
+
+#[derive(Serialize)]
+struct ExportLightmap {
+    texture: String,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Serialize)]
@@ -29,14 +48,29 @@ struct MapExport<'a> {
     format: &'static str,
     version: u32,
     groups: Vec<ExportGroup>,
-    model_bounds: Vec<ExportModelBounds<'a>>,
+    model_bounds: Vec<ExportModelBounds>,
     positions: &'a [f32],
     normals: &'a [f32],
     colors: &'a [f32],
     uvs: &'a [f32],
-    entities: &'a [cs16_demo_parser::types::BspEntity],
+    uv2s: &'a [f32],
+    lightmap: Option<ExportLightmap>,
+    entities: Vec<ExportEntity<'a>>,
     bounds_min: &'a cs16_demo_parser::types::Vec3,
     bounds_max: &'a cs16_demo_parser::types::Vec3,
+}
+
+fn entity_model_index(entity: &cs16_demo_parser::types::BspEntity) -> Option<u32> {
+    let model = entity
+        .properties
+        .iter()
+        .find(|(key, _)| key == "model")
+        .map(|(_, value)| value.as_str())?;
+    model.strip_prefix('*')?.parse().ok()
+}
+
+fn godot_position(source: &cs16_demo_parser::types::Vec3) -> cs16_demo_parser::types::Vec3 {
+    cs16_demo_parser::types::Vec3::new(source.x * 0.01, source.z * 0.01, -source.y * 0.01)
 }
 
 fn safe_name(name: &str) -> String {
@@ -161,6 +195,36 @@ fn run() -> Result<(), String> {
         });
     }
 
+    // Per-face lightmap atlas: the renderer samples it via UV2 for GoldSrc's
+    // crisp baked shadow edges (per-vertex colors stay as a fallback).
+    let lightmap = if parsed.lightmap_width > 0
+        && parsed.lightmap_height > 0
+        && !parsed.lightmap_pixels.is_empty()
+    {
+        let relative = "textures/lightmap_atlas.tga".to_string();
+        write_tga(
+            &output_path.join(&relative),
+            parsed.lightmap_width,
+            parsed.lightmap_height,
+            &parsed.lightmap_pixels,
+        )?;
+        Some(ExportLightmap {
+            texture: relative,
+            width: parsed.lightmap_width,
+            height: parsed.lightmap_height,
+        })
+    } else {
+        None
+    };
+
+    let model_entity_indices: HashMap<u32, u32> = parsed
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(entity_index, entity)| {
+            entity_model_index(entity).map(|model_index| (model_index, entity_index as u32))
+        })
+        .collect();
     let export = MapExport {
         format: "protocol47-bsp",
         version: 1,
@@ -170,15 +234,37 @@ fn run() -> Result<(), String> {
             .iter()
             .map(|bounds| ExportModelBounds {
                 model_index: bounds.model_index,
-                mins: &bounds.mins,
-                maxs: &bounds.maxs,
+                mins: bounds.mins.clone(),
+                maxs: bounds.maxs.clone(),
+                origin: bounds.origin.clone(),
+                pivot: model_entity_indices
+                    .get(&bounds.model_index)
+                    .and_then(|entity_index| {
+                        parsed.entities[*entity_index as usize].origin.as_ref()
+                    })
+                    .map(godot_position)
+                    .unwrap_or_else(|| bounds.origin.clone()),
+                vertex_space: "model_local",
+                entity_index: model_entity_indices.get(&bounds.model_index).copied(),
             })
             .collect(),
         positions: &parsed.positions,
         normals: &parsed.normals,
         colors: &parsed.colors,
         uvs: &parsed.uvs,
-        entities: &parsed.entities,
+        uv2s: &parsed.uv2s,
+        lightmap,
+        entities: parsed
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(entity_index, entity)| ExportEntity {
+                entity_index: entity_index as u32,
+                classname: &entity.classname,
+                origin: entity.origin.as_ref(),
+                properties: &entity.properties,
+            })
+            .collect(),
         bounds_min: &parsed.bounds_min,
         bounds_max: &parsed.bounds_max,
     };
@@ -194,6 +280,54 @@ fn run() -> Result<(), String> {
         parsed.entities.len(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cs16_demo_parser::types::{BspEntity, Vec3};
+
+    fn entity(classname: &str, model: Option<&str>, origin: Option<Vec3>) -> BspEntity {
+        let mut properties = vec![("classname".to_string(), classname.to_string())];
+        if let Some(model) = model {
+            properties.push(("model".to_string(), model.to_string()));
+        }
+        BspEntity {
+            classname: classname.to_string(),
+            origin,
+            properties,
+        }
+    }
+
+    #[test]
+    fn model_indices_keep_stable_bsp_entity_order() {
+        let entities = [
+            entity("worldspawn", None, None),
+            entity("func_button", Some("*42"), None),
+            entity(
+                "func_door_rotating",
+                Some("*11"),
+                Some(Vec3::new(696.0, 2236.0, 48.0)),
+            ),
+        ];
+        let indices: HashMap<u32, u32> = entities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                entity_model_index(value).map(|model| (model, index as u32))
+            })
+            .collect();
+        assert_eq!(indices.get(&42), Some(&1));
+        assert_eq!(indices.get(&11), Some(&2));
+    }
+
+    #[test]
+    fn rotating_entity_pivot_uses_godot_axes_and_scale() {
+        let pivot = godot_position(&Vec3::new(696.0, 2236.0, 48.0));
+        assert!((pivot.x - 6.96).abs() < 0.000_01);
+        assert!((pivot.y - 0.48).abs() < 0.000_01);
+        assert!((pivot.z + 22.36).abs() < 0.000_01);
+    }
 }
 
 fn main() {

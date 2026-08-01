@@ -161,9 +161,14 @@ func _validate_player_animation(
 
 
 func _player_activity_family(weapon: String) -> String:
-	if weapon == "ak47":
-		return "ak47"
-	if weapon in ["aug", "famas", "galil", "m4a1", "sg552"]:
+	# The AK is baked on the carbine family on purpose: the stock
+	# ref_aim_ak47/ref_shoot_ak47 tapes pose the torso off the gait facing
+	# (Bip01 Spine yaw -61 degrees versus -12 for ref_aim_carbine, at every one
+	# of the nine STUDIO_XR pitch blends), so the rifle reads as carried across
+	# the hips instead of shouldered. Mirrors WEAPON_FAMILIES in
+	# game/scripts/mdl_character_model.gd and attached_weapon_family in
+	# crate/src/mdl.rs; all three must agree or the gun leaves the hands.
+	if weapon in ["ak47", "aug", "famas", "galil", "m4a1", "sg552"]:
 		return "carbine"
 	if weapon in ["awp", "g3sg1", "scout", "sg550"]:
 		return "rifle"

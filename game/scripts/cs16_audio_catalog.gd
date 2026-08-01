@@ -128,6 +128,38 @@ const EVENT_SAMPLES := {
 	"round.ct_win": ["radio/ctwin.wav"],
 	"round.t_win": ["radio/terwin.wav"],
 	"round.draw": ["radio/rounddraw.wav"],
+	"door.move1": ["doors/doormove1.wav"],
+	"door.move2": ["doors/doormove2.wav"],
+	"door.move3": ["doors/doormove3.wav"],
+	"door.move4": ["doors/doormove4.wav"],
+	"door.move5": ["doors/doormove5.wav"],
+	"door.move6": ["doors/doormove6.wav"],
+	"door.move7": ["doors/doormove7.wav"],
+	"door.move8": ["doors/doormove8.wav"],
+	"door.move9": ["doors/doormove9.wav"],
+	"door.move10": ["doors/doormove10.wav"],
+	"door.stop1": ["doors/doorstop1.wav"],
+	"door.stop2": ["doors/doorstop2.wav"],
+	"door.stop3": ["doors/doorstop3.wav"],
+	"door.stop4": ["doors/doorstop4.wav"],
+	"door.stop5": ["doors/doorstop5.wav"],
+	"door.stop6": ["doors/doorstop6.wav"],
+	"door.stop7": ["doors/doorstop7.wav"],
+	"door.stop8": ["doors/doorstop8.wav"],
+	"button.press1": ["buttons/button1.wav"],
+	"button.press2": ["buttons/button2.wav"],
+	"button.press3": ["buttons/button3.wav"],
+	"button.press4": ["buttons/button4.wav"],
+	"button.press5": ["buttons/button5.wav"],
+	"button.press6": ["buttons/button6.wav"],
+	"button.press7": ["buttons/button7.wav"],
+	"button.press8": ["buttons/button8.wav"],
+	"button.press9": ["buttons/button9.wav"],
+	"button.press10": ["buttons/button10.wav"],
+	"button.press11": ["buttons/button11.wav"],
+	"button.press12": ["buttons/latchlocked1.wav"],
+	"button.press13": ["buttons/latchunlocked1.wav"],
+	"button.press14": ["buttons/lightswitch2.wav"],
 }
 
 static var _material_types: Dictionary = {}
@@ -182,6 +214,30 @@ static func event_sample(event_name: String, variant_index := 0) -> String:
 	if variants.is_empty():
 		return ""
 	return "%s/%s" % [SOUND_ROOT, str(variants[posmod(variant_index, variants.size())])]
+
+
+static func door_move_event(sound_ordinal: int) -> String:
+	return (
+		"door.move%d" % sound_ordinal
+		if sound_ordinal >= 1 and sound_ordinal <= 10
+		else ""
+	)
+
+
+static func door_stop_event(sound_ordinal: int) -> String:
+	return (
+		"door.stop%d" % sound_ordinal
+		if sound_ordinal >= 1 and sound_ordinal <= 8
+		else ""
+	)
+
+
+static func button_press_event(sound_ordinal: int) -> String:
+	return (
+		"button.press%d" % sound_ordinal
+		if sound_ordinal >= 1 and sound_ordinal <= 14
+		else ""
+	)
 
 
 static func footstep_descriptor(

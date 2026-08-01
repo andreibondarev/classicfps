@@ -43,6 +43,32 @@ func _initialize() -> void:
 			_check(int(profile.base_damage) == int(item.damage), "%s damage reaches ballistics" % weapon_name)
 			_check(is_equal_approx(float(profile.range_modifier), float(item.range_modifier)), "%s range modifier reaches ballistics" % weapon_name)
 
+	# Shotguns reload shell by shell: the registry insert interval must reach the
+	# weapon clock, or an eight shell M3 magazine would refill in one 0.55 s step.
+	for shotgun_name in ["m3", "xm1014"]:
+		var shotgun := Registry.definition(shotgun_name)
+		var shotgun_timing := WeaponClock.timing(shotgun_name)
+		_check(
+			float(shotgun.get("reload_insert", 0.0)) > 0.0,
+			"%s defines a per-shell insert interval" % shotgun_name,
+		)
+		_check(
+			is_equal_approx(
+				float(shotgun_timing.get("reload_insert_seconds", 0.0)),
+				float(shotgun.reload_insert),
+			),
+			"%s insert interval reaches the weapon clock" % shotgun_name,
+		)
+	_check(
+		is_equal_approx(float(Registry.definition("m3").reload_insert), 0.45)
+		and is_equal_approx(float(Registry.definition("xm1014").reload_insert), 0.3),
+		"shotgun insert intervals are the ReGameDLL 0.45/0.3 values",
+	)
+	_check(
+		not WeaponClock.timing("ak47").has("reload_insert_seconds"),
+		"magazine weapons expose no per-shell insert interval",
+	)
+
 	var ammo := Registry.initial_ammunition()
 	_check(ammo.size() == 28, "every non-knife weapon has persistent ammunition state")
 	_check(int(ammo.ak47.clip) == 30 and int(ammo.ak47.reserve) == 90, "AK defaults are preserved")

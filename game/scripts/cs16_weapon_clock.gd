@@ -9,7 +9,8 @@ const WeaponRegistry := preload("res://scripts/cs16_weapon_registry.gd")
 ## reads wall time and never schedules SceneTree timers.
 ##
 ## Source parity:
-## - ReGameDLL_CS weapons.cpp: DefaultDeploy, DefaultReload, ItemPostFrame
+## - ReGameDLL_CS weapons.cpp: DefaultDeploy, DefaultReload,
+##   DefaultShotgunReload, ItemPostFrame
 ## - ReGameDLL_CS wpn_ak47.cpp: fire/reload/idle timing
 ## - ReGameDLL_CS wpn_deagle.cpp: fire/reload/idle timing
 ## - ReGameDLL_CS wpn_knife.cpp: swing/idle timing
@@ -29,6 +30,7 @@ const STATE_GRENADE_THROWING := "grenade_throwing"
 
 const EVENT_DEPLOY_COMPLETE := "deploy_complete"
 const EVENT_RELOAD_COMPLETE := "reload_complete"
+const EVENT_RELOAD_SHELL := "reload_shell"
 const EVENT_WEAPON_IDLE := "weapon_idle"
 const EVENT_GRENADE_THROW := "grenade_throw"
 const EVENT_GRENADE_RETIRE := "grenade_retire"
@@ -37,6 +39,9 @@ const DEFAULT_DEPLOY_SECONDS := 0.75
 const DEFAULT_DEPLOY_IDLE_SECONDS := 1.5
 const EMPTY_FIRE_SECONDS := 0.2
 const MUZZLE_FLASH_SECONDS := 0.035
+# CM3/CXM1014::WeaponIdle plays the pump animation once the shell loop stops
+# and pushes the next idle out by 1.5 seconds.
+const SHELL_RELOAD_PUMP_SECONDS := 1.5
 const TRACER_SECONDS := 0.055
 const IMPACT_SECONDS := 1.4
 
@@ -78,12 +83,16 @@ var active_weapon := "ak47"
 var state := STATE_READY
 var next_primary_tick := 0
 var reload_complete_tick := NEVER
+var reload_shell_tick := NEVER
+var shells_inserted := 0
 var weapon_idle_tick := NEVER
 var deploy_complete_tick := NEVER
 var grenade_pin_ready_tick := NEVER
 var grenade_retire_tick := NEVER
 var _grenade_released := false
 var _grenade_last := true
+var _shell_reload := false
+var _reload_insert_ticks := 0
 var _events: Array[String] = []
 
 
@@ -130,6 +139,7 @@ func reset(weapon_name := "ak47", initial_tick := 0, deploy := false) -> void:
 	grenade_retire_tick = NEVER
 	_grenade_released = false
 	_grenade_last = true
+	_clear_shell_reload()
 	_events.clear()
 	if deploy:
 		begin_deploy(weapon_name)
@@ -139,6 +149,7 @@ func begin_deploy(weapon_name: String) -> void:
 	active_weapon = weapon_name
 	state = STATE_DEPLOYING
 	reload_complete_tick = NEVER
+	_clear_shell_reload()
 	grenade_pin_ready_tick = NEVER
 	grenade_retire_tick = NEVER
 	_grenade_released = false
@@ -193,16 +204,57 @@ func begin_reload() -> bool:
 	var reload_seconds := float(profile.get("reload_seconds", 0.0))
 	if reload_seconds <= 0.0:
 		return false
+	var insert_seconds := float(profile.get("reload_insert_seconds", 0.0))
 	state = STATE_RELOADING
+	if insert_seconds > 0.0:
+		# DefaultShotgunReload: `reload_seconds` is only the start delay that
+		# moves the gun aside. Every shell after it costs one insert interval
+		# and enters the clip on its own, so the loop can be aborted by firing.
+		_shell_reload = true
+		shells_inserted = 0
+		_reload_insert_ticks = ticks_from_seconds(insert_seconds)
+		reload_complete_tick = NEVER
+		next_primary_tick = tick + ticks_from_seconds(reload_seconds)
+		reload_shell_tick = next_primary_tick + _reload_insert_ticks
+		weapon_idle_tick = NEVER
+		return true
 	reload_complete_tick = tick + ticks_from_seconds(reload_seconds)
 	weapon_idle_tick = reload_complete_tick + ticks_from_seconds(0.5)
 	return true
 
 
-func cancel_reload() -> void:
-	reload_complete_tick = NEVER
+func is_shell_reloading() -> bool:
+	return _shell_reload
+
+
+## 1.6 lets a shotgun fire out of its shell loop once a shell is seated; the
+## weapon only holds the player still through the initial start delay.
+func can_interrupt_reload() -> bool:
+	return _shell_reload and shells_inserted > 0
+
+
+## Ends the shell loop when the magazine is full or the reserve runs dry.
+func finish_shell_reload() -> void:
+	if not _shell_reload:
+		return
+	_clear_shell_reload()
 	if state == STATE_RELOADING:
 		state = STATE_READY
+	weapon_idle_tick = tick + ticks_from_seconds(SHELL_RELOAD_PUMP_SECONDS)
+
+
+func cancel_reload() -> void:
+	reload_complete_tick = NEVER
+	_clear_shell_reload()
+	if state == STATE_RELOADING:
+		state = STATE_READY
+
+
+func _clear_shell_reload() -> void:
+	_shell_reload = false
+	_reload_insert_ticks = 0
+	reload_shell_tick = NEVER
+	shells_inserted = 0
 
 
 func begin_grenade_pin() -> bool:
@@ -251,6 +303,15 @@ func _process_due_events() -> void:
 		if state == STATE_RELOADING:
 			state = STATE_READY
 			_events.append(EVENT_RELOAD_COMPLETE)
+
+	if (
+		reload_shell_tick != NEVER
+		and tick >= reload_shell_tick
+		and state == STATE_RELOADING
+	):
+		reload_shell_tick = tick + _reload_insert_ticks
+		shells_inserted += 1
+		_events.append(EVENT_RELOAD_SHELL)
 
 	if state == STATE_FIRING and tick >= next_primary_tick:
 		state = STATE_READY

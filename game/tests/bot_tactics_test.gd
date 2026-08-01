@@ -11,6 +11,7 @@ func _init() -> void:
 	_test_determinism()
 	_test_continuous_aim()
 	_test_render_schedule_equivalence()
+	_test_grenade_requests()
 	if failures.is_empty():
 		print("GAME_BOT_TACTICS_TEST_PASS")
 		quit(0)
@@ -146,6 +147,92 @@ func _test_render_schedule_equivalence() -> void:
 	_check(
 		at_30 == at_60 and at_30 == at_144,
 		"30/60/144 Hz callers preserve identical actor fire/reload/ammo traces",
+	)
+
+
+func _grenade_requests(
+	tactics: RefCounted,
+	distance_hu: float,
+	ticks: int,
+	confirm: bool,
+) -> Array[Dictionary]:
+	var observation := _visible_observation(distance_hu)
+	var requests: Array[Dictionary] = []
+	for ignored in range(ticks):
+		var output: Dictionary = tactics.advance_ticks(1, observation)
+		for request: Dictionary in output.grenade_events:
+			requests.append(request)
+			if confirm:
+				tactics.confirm_grenade_throw(str(request.kind))
+			else:
+				tactics.defer_grenade_throw()
+	return requests
+
+
+func _test_grenade_requests() -> void:
+	var empty_handed := BotTactics.new()
+	empty_handed.reset(2024, 1.0)
+	_check(
+		_grenade_requests(empty_handed, 900.0, 1200, true).is_empty(),
+		"a bot without utility never requests a grenade",
+	)
+
+	var carrier := BotTactics.new()
+	carrier.reset(2024, 1.0)
+	_check(
+		carrier.configure_weapon("hegrenade")
+		and int(carrier.grenade_counts.hegrenade) == 1,
+		"a grenade is carried as utility instead of being rejected",
+	)
+	_check(
+		carrier.weapon_name == "ak47",
+		"carrying a grenade leaves the shooting clock on the primary",
+	)
+	var point_blank := _grenade_requests(carrier, 120.0, 1200, true)
+	_check(point_blank.is_empty(), "a bot never lobs a grenade at point-blank range")
+	var far := _grenade_requests(carrier, 4000.0, 1200, true)
+	_check(far.is_empty(), "a bot never requests a throw beyond grenade range")
+	var requests := _grenade_requests(carrier, 900.0, 1200, true)
+	_check(requests.size() == 1, "the single carried HE is requested exactly once")
+	if not requests.is_empty():
+		_check(
+			str(requests[0].kind) == "hegrenade"
+			and (requests[0].target as Vector3) == Vector3(4.0, 0.53, -9.0),
+			"the request names the grenade and the last seen enemy position",
+		)
+	_check(
+		carrier.grenade_counts.is_empty(),
+		"a confirmed throw consumes the grenade",
+	)
+
+	var first := BotTactics.new()
+	var second := BotTactics.new()
+	first.reset(4711, 0.88)
+	second.reset(4711, 0.88)
+	first.add_grenade("hegrenade")
+	second.add_grenade("hegrenade")
+	_check(
+		_grenade_requests(first, 900.0, 900, false)
+		== _grenade_requests(second, 900.0, 900, false),
+		"grenade decisions are a pure function of the seed and the tick stream",
+	)
+
+	var shooter := BotTactics.new()
+	var thrower := BotTactics.new()
+	shooter.reset(4711, 0.88)
+	thrower.reset(4711, 0.88)
+	thrower.add_grenade("hegrenade")
+	var shooter_trace: Array[Dictionary] = []
+	var thrower_trace: Array[Dictionary] = []
+	var engagement := _visible_observation(900.0)
+	for ignored in range(900):
+		var shooter_output: Dictionary = shooter.advance_ticks(1, engagement)
+		var thrower_output: Dictionary = thrower.advance_ticks(1, engagement)
+		shooter_trace.append_array(shooter_output.fire_events)
+		thrower_trace.append_array(thrower_output.fire_events)
+	_check(
+		shooter_trace == thrower_trace,
+		"carrying utility cannot perturb the shooting trace of the same seed",
 	)
 
 

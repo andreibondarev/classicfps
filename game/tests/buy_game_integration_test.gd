@@ -34,6 +34,7 @@ func _run() -> void:
 	_assert_equipment(game)
 	_assert_ammunition(game)
 	_assert_rejections_do_not_charge(game)
+	_assert_pistols_are_team_neutral(game)
 	_assert_slot_replacement_and_grenade_caps(game)
 
 	if failures.is_empty():
@@ -198,6 +199,23 @@ func _assert_ammunition(game: Node) -> void:
 			== int(Registry.AMMO[ammo_name].box),
 			"%s grants its exact box count" % ammo_name,
 		)
+
+
+func _assert_pistols_are_team_neutral(game: Node) -> void:
+	# BuyPistols_TER.kv and BuyPistols_CT.kv both list glock and usp, and the
+	# registry marks both TEAM_BOTH, so neither side may be refused either pistol.
+	_reset_buyer(game, RoundState.TEAM_T)
+	_check(
+		bool(game._purchase_and_grant("usp").allowed)
+		and game.player.owns_weapon("usp"),
+		"Terrorist buys the USP through the live buy path",
+	)
+	_reset_buyer(game, RoundState.TEAM_CT)
+	_check(
+		bool(game._purchase_and_grant("glock18").allowed)
+		and game.player.owns_weapon("glock18"),
+		"Counter-Terrorist buys the Glock through the live buy path",
+	)
 
 
 func _assert_rejections_do_not_charge(game: Node) -> void:

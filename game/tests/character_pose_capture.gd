@@ -21,7 +21,8 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	var output_root := "/tmp"
+	var output_root := ProjectSettings.globalize_path("res://artifacts")
+	DirAccess.make_dir_recursive_absolute(output_root)
 	var pose_ok := await _capture_pose_grid(
 		output_root.path_join("protocol47-character-pose-grid.png")
 	)
@@ -31,18 +32,126 @@ func _run() -> void:
 	var phase_ok := await _capture_interpolation_grid(
 		output_root.path_join("protocol47-character-interpolation-grid.png")
 	)
-	if pose_ok and scale_ok and phase_ok:
+	var family_ok := await _capture_family_grid(
+		output_root.path_join("protocol47-character-weapon-families.png")
+	)
+	var crouch_death_ok := await _capture_crouch_death_grid(
+		output_root.path_join("protocol47-character-crouch-death.png")
+	)
+	if pose_ok and scale_ok and phase_ok and family_ok and crouch_death_ok:
 		print(
-			"GAME_CHARACTER_POSE_CAPTURE_PASS %s %s %s"
+			"GAME_CHARACTER_POSE_CAPTURE_PASS %s %s %s %s %s"
 			% [
 				output_root.path_join("protocol47-character-pose-grid.png"),
 				output_root.path_join("protocol47-character-scale-grid.png"),
 				output_root.path_join("protocol47-character-interpolation-grid.png"),
+				output_root.path_join("protocol47-character-weapon-families.png"),
+				output_root.path_join("protocol47-character-crouch-death.png"),
 			]
 		)
 		quit()
 	else:
 		quit(1)
+
+
+func _capture_family_grid(output_path: String) -> bool:
+	# Three-quarter framing on purpose: the barrel line and grip-in-palm
+	# alignment of the bone-merged p_ model stay visible side-on, exactly
+	# where a detached weapon family would show.
+	var scene := _make_scene(
+		"Weapon activity families · three-quarter view · barrel + grip alignment"
+	)
+	root.add_child(scene)
+	var loadouts := [
+		["terror", "ak47", "idle", 0.50],
+		["gsg9", "m4a1", "idle", 0.50],
+		["arctic", "awp", "idle", 0.50],
+		["leet", "mp5", "run", 0.50],
+		["urban", "m3", "idle", 0.50],
+		["guerilla", "m249", "idle", 0.50],
+		["sas", "knife", "idle", 0.50],
+		["gign", "hegrenade", "idle", 0.50],
+	]
+	for index in loadouts.size():
+		var loadout: Array = loadouts[index]
+		var cell := Node3D.new()
+		cell.position = Vector3(
+			(float(index % 4) - 1.5) * 0.88,
+			0.90 if index < 4 else 0.0,
+			0.0,
+		)
+		scene.add_child(cell)
+		var model := _make_model(str(loadout[0]), str(loadout[1]))
+		cell.add_child(model)
+		model.process_mode = Node.PROCESS_MODE_DISABLED
+		# Rotate away from the camera-facing default so the weapon reads in
+		# profile instead of foreshortening into the chest.
+		model.rotation.y += 0.30 * PI
+		model.force_pose(str(loadout[2]), float(loadout[3]), 0.0)
+		_add_projected_label(
+			scene,
+			"%s · %s" % [str(loadout[0]), str(loadout[1])],
+			cell.global_position + Vector3(0.0, -0.12, 0.0),
+			20,
+		)
+	_add_floor(scene, 3.8, 0.0)
+	_add_floor(scene, 3.8, 0.90)
+	var captured := await _settle_and_capture(output_path)
+	scene.queue_free()
+	await process_frame
+	return captured
+
+
+func _capture_crouch_death_grid(output_path: String) -> bool:
+	var scene := _make_scene(
+		"Crouch + death source tapes · settled idle · mid-fall · settled corpse"
+	)
+	root.add_child(scene)
+	var stages := [
+		["idle", 0.00, "idle (settled)"],
+		["crouchidle", 0.25, "crouchidle"],
+		["crouchrun", 0.50, "crouchrun"],
+		["crouchshoot", 0.50, "crouchshoot"],
+		["die", 0.35, "die (mid-fall)"],
+		["die", 1.00, "die (corpse)"],
+	]
+	for index in stages.size():
+		var stage: Array = stages[index]
+		var row := index / 3
+		var cell := Node3D.new()
+		cell.position = Vector3(
+			(float(index % 3) - 1.0) * 1.16,
+			0.90 if row == 0 else 0.0,
+			0.0,
+		)
+		scene.add_child(cell)
+		var model := _make_model("terror", "ak47")
+		cell.add_child(model)
+		model.process_mode = Node.PROCESS_MODE_DISABLED
+		model.rotation.y += 0.22 * PI
+		if str(stage[0]) == "die":
+			model.play_death()
+			var animation: Dictionary = model._body_template.animations.die
+			var frame_index := mini(
+				int(floor(float(stage[1]) * float(animation.frames - 1))),
+				int(animation.frames) - 1,
+			)
+			model.advance_animation(float(frame_index) / float(animation.fps))
+		else:
+			model.set_locomotion(false, str(stage[0]).begins_with("crouch"), true)
+			model.force_pose(str(stage[0]), float(stage[1]), 0.0)
+		_add_projected_label(
+			scene,
+			str(stage[2]),
+			cell.global_position + Vector3(0.0, -0.12, 0.0),
+			20,
+		)
+	_add_floor(scene, 3.8, 0.0)
+	_add_floor(scene, 3.8, 0.90)
+	var captured := await _settle_and_capture(output_path)
+	scene.queue_free()
+	await process_frame
+	return captured
 
 
 func _capture_pose_grid(output_path: String) -> bool:
@@ -118,10 +227,16 @@ func _capture_interpolation_grid(output_path: String) -> bool:
 		"Adjacent authored shoot frames · temporal + XR blend · one production clock"
 	)
 	root.add_child(scene)
+	# Single-row grid: tighten the ortho framing so the three phase characters
+	# fill the canvas and the temporal blend differences stay judgeable.
+	var camera := scene.get_node("CaptureCamera") as Camera3D
+	camera.size = 1.02
+	camera.position.y = 0.42
+	camera.look_at_from_position(camera.position, Vector3(0.0, 0.40, 0.0), Vector3.UP)
 	for index in 3:
 		var phase: float = [0.25, 0.50, 0.75][index]
 		var cell := Node3D.new()
-		cell.position = Vector3((float(index) - 1.0) * 1.10, 0.0, 0.0)
+		cell.position = Vector3((float(index) - 1.0) * 0.60, 0.0, 0.0)
 		scene.add_child(cell)
 		var model := _make_model("terror")
 		cell.add_child(model)
@@ -148,7 +263,7 @@ func _capture_interpolation_grid(output_path: String) -> bool:
 		_add_projected_label(
 			scene,
 			"phase %.2f" % phase,
-			cell.global_position + Vector3(0.0, -0.12, 0.0),
+			cell.global_position + Vector3(0.0, -0.06, 0.0),
 		)
 	_add_floor(scene, 3.8, 0.0)
 	var captured := await _settle_and_capture(output_path)
@@ -177,10 +292,10 @@ func _make_scene(title: String) -> Node3D:
 	return scene
 
 
-func _make_model(skin: String) -> MdlCharacterModel:
+func _make_model(skin: String, weapon := "ak47") -> MdlCharacterModel:
 	var model: MdlCharacterModel = CharacterModelScript.new()
-	if not model.load_character(skin, "ak47"):
-		push_error("Could not load capture model %s" % skin)
+	if not model.load_character(skin, weapon):
+		push_error("Could not load capture model %s (%s)" % [skin, weapon])
 	model.set_process(false)
 	return model
 

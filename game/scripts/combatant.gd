@@ -24,6 +24,20 @@ var health := 100
 var armor := 0
 var has_helmet := false
 var alive := true
+# Flashbang blindness, expressed in physics frames so bots and the player
+# share one clock. -1 = not blinded.
+var flash_blind_until_frame := -1
+
+
+func apply_flash_blind(duration_seconds: float) -> void:
+	var until := Engine.get_physics_frames() + int(
+		duration_seconds * Engine.physics_ticks_per_second
+	)
+	flash_blind_until_frame = maxi(flash_blind_until_frame, until)
+
+
+func is_flash_blinded() -> bool:
+	return int(Engine.get_physics_frames()) < flash_blind_until_frame
 var combat_controller: CombatController
 var last_command: Dictionary = {}
 var last_damage_attacker: Combatant
@@ -102,6 +116,40 @@ func receive_bullet_damage(
 	)
 
 
+## Ground-plane facing of this combatant. Player hulls and bot actors both aim
+## with their body yaw, so -Z of the body basis is the 1.6 `v_forward`.
+func facing_direction() -> Vector3:
+	var forward := -global_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() <= 0.0000001:
+		return Vector3.FORWARD
+	return forward.normalized()
+
+
+## Knife hits use TraceAttack with DMG_BULLET, so they share the bullet armor
+## branch (and the knife's 1.7 armor ratio) plus hit-group scaling. Only the
+## 1.6 backstab multiplier is knife-specific, and it is applied to the base
+## damage before any armor math, exactly as CKnife::Stab does.
+func receive_melee_damage(
+	base_damage: int,
+	hit_group: int,
+	weapon_name: String,
+	hit_position := Vector3.ZERO,
+	attacker: Combatant = null,
+	backstab := false,
+) -> bool:
+	var damage := base_damage
+	if backstab:
+		damage = int(float(base_damage) * Ballistics.KNIFE_BACKSTAB_MULTIPLIER)
+	return receive_bullet_damage(
+		damage,
+		hit_group,
+		weapon_name,
+		hit_position,
+		attacker,
+	)
+
+
 func receive_explosion_damage(
 	raw_damage: float,
 	hit_position := Vector3.ZERO,
@@ -168,6 +216,48 @@ func reset_combatant(spawn_position: Vector3, starting_armor := 0) -> void:
 	last_damage_attacker = null
 	velocity = Vector3.ZERO
 	global_position = spawn_position
+	_drop_spawn_to_floor()
+
+
+func _drop_spawn_to_floor() -> void:
+	## GoldSrc DispatchSpawn drops player entities to the floor (DROP_TO_FLOOR);
+	## map spawn points sit a few units above ground. Without this, a combatant
+	## that is frozen before its first physics tick renders hovering mid-air.
+	## The engine drops the full 32 HU hull, not a point: probe the center and
+	## four inset hull corners and rest on the highest walkable support so a
+	## spawn beside sloped geometry cannot embed a hull corner in the floor
+	## (Godot would then depenetrate the body upward on its first tick,
+	## briefly launching it airborne).
+	if not is_inside_tree():
+		return
+	var world := get_world_3d()
+	if world == null:
+		return
+	var half_width := 16.0 * GOLDSRC_UNIT
+	var inset := half_width - 0.001
+	var offsets: Array[Vector3] = [
+		Vector3.ZERO,
+		Vector3(inset, 0.0, inset),
+		Vector3(inset, 0.0, -inset),
+		Vector3(-inset, 0.0, inset),
+		Vector3(-inset, 0.0, -inset),
+	]
+	var highest_floor_y := -INF
+	for offset: Vector3 in offsets:
+		var from := global_position + offset + Vector3.UP * 0.10
+		var query := PhysicsRayQueryParameters3D.create(
+			from,
+			from + Vector3.DOWN * 1.30,
+		)
+		query.exclude = [get_rid()]
+		var hit := world.direct_space_state.intersect_ray(query)
+		if hit.is_empty() or float(hit.normal.y) < 0.7:
+			continue
+		highest_floor_y = maxf(highest_floor_y, float(hit.position.y))
+	if highest_floor_y == -INF:
+		return
+	if highest_floor_y < global_position.y:
+		global_position.y = highest_floor_y + 0.001
 
 
 func is_dead() -> bool:

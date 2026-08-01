@@ -165,8 +165,16 @@ func _run() -> void:
 	game._update_round_hud(true)
 	_check(game.phase == "post", "CT elimination enters post-round phase")
 	_check(
-		_scoreboard_has_dead_icon(game.hud),
-		"post-round scoreboard displays eliminated combatants as dead",
+		not _scoreboard_has_dead_icon(game.hud),
+		"scoreboard never shows skull glyphs (CS 1.6 rows carry no dead icons)",
+	)
+	_check(
+		_scoreboard_max_deaths(game.hud) >= 1,
+		"post-round scoreboard increments eliminated combatants' deaths column",
+	)
+	_check(
+		_scoreboard_has_dead_text(game.hud),
+		"post-round scoreboard prints DEAD in eliminated players' ping column",
 	)
 
 	_advance_game_round(game, 2)
@@ -187,6 +195,8 @@ func _run() -> void:
 		game.hud.health_label.text == "100",
 		"round-start HUD health state is reset immediately",
 	)
+
+	_assert_match_structure(game)
 
 	if failures.is_empty():
 		print("GAME_ROUND_INTEGRATION_TEST_PASS")
@@ -414,6 +424,61 @@ func _assert_team_class_authority(game: Node) -> void:
 	)
 
 
+func _assert_match_structure(game: Node) -> void:
+	_check(
+		int(game.round_state.config.max_rounds) == 30
+		and int(game.round_state.config.win_limit) == 16
+		and bool(game.round_state.config.halftime),
+		"the live match runs MR15: 30 rounds, 16-win limit, half-time swap",
+	)
+	var team_before := str(game.player.team)
+	var spawn_before: Vector3 = game.player_spawn
+	# CS16RoundState swaps its own roster before emitting halftime; reproduce that
+	# ordering so the consumer sees the same state the kernel would hand it.
+	for player_id: String in game.round_state.players:
+		var row: Dictionary = game.round_state.players[player_id]
+		if str(row.team) in ["T", "CT"]:
+			row.team = "CT" if str(row.team) == "T" else "T"
+			game.round_state.players[player_id] = row
+	var halftime_events: Array[Dictionary] = [{
+		"tick": 0,
+		"type": "halftime",
+		"round": 15,
+		"ct_score": 8,
+		"terrorist_score": 7,
+		"start_money": 800,
+	}]
+	game._consume_round_events(halftime_events)
+	_check(
+		game.player.team != team_before
+		and game.player.team == str(game.round_state.players.player.team),
+		"half-time switches the live player onto the kernel's new side",
+	)
+	_check(
+		game.player_spawn != spawn_before,
+		"half-time re-assigns the spawn side",
+	)
+	var bots_in_sync := true
+	for bot in game._all_bots():
+		if str(game.round_state.players[bot.name].team) != bot.team:
+			bots_in_sync = false
+	_check(bots_in_sync, "half-time keeps every bot actor on its kernel team")
+
+	var match_end_events: Array[Dictionary] = [{
+		"tick": 0,
+		"type": "match_end",
+		"ct_score": 16,
+		"terrorist_score": 7,
+	}]
+	game._consume_round_events(match_end_events)
+	_check(
+		not game.match_started
+		and not game.player.controls_enabled
+		and not game.player.look_enabled,
+		"match end stops the match and releases player control",
+	)
+
+
 func _assert_c4_inventory_boundary(game: Node) -> void:
 	for player_id: String in game.round_state.players:
 		var state_player: Dictionary = game.round_state.players[player_id]
@@ -435,6 +500,28 @@ func _assert_c4_inventory_boundary(game: Node) -> void:
 		and not game.player.ammunition.has("c4"),
 		"planted/dropped C4 is removed from Player inventory",
 	)
+
+
+func _scoreboard_has_dead_text(hud: Node) -> bool:
+	for row in hud.scoreboard_rows.get_children():
+		if row.get_child_count() < 4:
+			continue
+		var latency_label := row.get_child(3) as Label
+		if latency_label != null and latency_label.text == "DEAD":
+			return true
+	return false
+
+
+func _scoreboard_max_deaths(hud: Node) -> int:
+	var max_deaths := 0
+	for row in hud.scoreboard_rows.get_children():
+		# Row children: identity box, then score / deaths / latency labels.
+		if row.get_child_count() < 3:
+			continue
+		var deaths_label := row.get_child(2) as Label
+		if deaths_label != null and deaths_label.text.is_valid_int():
+			max_deaths = maxi(max_deaths, int(deaths_label.text))
+	return max_deaths
 
 
 func _scoreboard_has_dead_icon(hud: Node) -> bool:

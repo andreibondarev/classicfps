@@ -161,14 +161,14 @@ func explode() -> void:
 				"muzzleflash1", global_position, 4.0, 30.0,
 				CombatEffectsScript.EVENT_MUZZLE_FLASH, 0, true,
 			)
+		_blind_combatants()
 		queue_free()
 		return
 	if grenade_kind == "smokegrenade":
 		if is_instance_valid(combat_effects):
-			combat_effects._spawn_sprite(
-				"steam1", global_position, 4.0, 5.0,
-				CombatEffectsScript.EVENT_HE_SMOKE,
-			)
+			# CS 1.6 smoke: a massive, ground-hugging, vision-blocking gray-olive
+			# cloud that persists ~15 seconds, not a single small puff.
+			combat_effects.spawn_smoke_cloud(global_position)
 		queue_free()
 		return
 	if is_instance_valid(combat_effects):
@@ -196,3 +196,40 @@ func explode() -> void:
 			global_position,
 			thrower,
 		)
+
+
+func _blind_combatants() -> void:
+	# CS 1.6 flashbang: everyone within range is blinded — the thrower and
+	# teammates included. Duration scales with distance and with how directly
+	# the victim faces the burst; a blocked line of sight nearly negates it.
+	const FLASH_RANGE := 15.0
+	const FULL_BLIND_SECONDS := 4.2
+	for actor_node in get_tree().get_nodes_in_group("combatants"):
+		var actor := actor_node as Combatant
+		if not is_instance_valid(actor) or not actor.alive:
+			continue
+		var eye := actor.global_position + Vector3.UP * 0.5
+		var distance := eye.distance_to(global_position)
+		if distance >= FLASH_RANGE:
+			continue
+		var query := PhysicsRayQueryParameters3D.create(
+			eye, global_position, 1, [get_rid(), actor.get_rid()],
+		)
+		var blocked := not get_world_3d().direct_space_state.intersect_ray(query).is_empty()
+		var facing := 1.0
+		var to_burst := (global_position - eye).normalized()
+		var forward := -actor.global_transform.basis.z
+		var dot := forward.dot(to_burst)
+		if dot < -0.2:
+			facing = 0.35
+		elif dot < 0.4:
+			facing = 0.65
+		var strength := (1.0 - distance / FLASH_RANGE) * facing
+		if blocked:
+			strength *= 0.1
+		var seconds := FULL_BLIND_SECONDS * strength
+		if seconds < 0.1:
+			continue
+		actor.apply_flash_blind(seconds)
+		if actor.is_in_group("player") and actor.has_signal("flash_blinded"):
+			actor.emit_signal("flash_blinded", seconds)
