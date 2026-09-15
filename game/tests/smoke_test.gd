@@ -1,5 +1,7 @@
 extends SceneTree
 
+const Ballistics := preload("res://scripts/cs16_ballistics.gd")
+
 var failures: Array[String] = []
 
 
@@ -45,7 +47,9 @@ func _uses_goldsrc_hull(target: TargetActor) -> bool:
 
 
 func _uses_world_model_scale(target: TargetActor) -> bool:
-	return target.character_model.scale.is_equal_approx(Vector3.ONE)
+	return target.character_model.scale.is_equal_approx(
+		MdlCharacterModel.PRESENTATION_SCALE
+	)
 
 
 func _run() -> void:
@@ -266,9 +270,9 @@ func _run() -> void:
 		bot_command = duel_ally.combat_controller.gather_command(1.0 / 100.0)
 	_check(bot_command.enemy == duel_enemy, "bot perception selects the nearest opposing combatant")
 	_check(bot_command.state == "react", "visible opposing bots honor acquisition reaction time")
-	for reaction_tick in range(18):
+	for reaction_tick in range(24):
 		bot_command = duel_ally.combat_controller.gather_command(1.0 / 100.0)
-	_check(bot_command.state == "engage", "visible opposing bots engage after expert reaction time")
+	_check(bot_command.state == "engage", "visible opposing bots engage after medium reaction time")
 	var duel_enemy_health: int = duel_enemy.health
 	duel_ally._try_fire(duel_enemy)
 	_check(duel_enemy.health < duel_enemy_health, "bot fire damages an opposing combatant")
@@ -345,16 +349,34 @@ func _run() -> void:
 	_check(game.player.clip == -1, "knife correctly has no ammunition")
 	game.player.switch_weapon("hegrenade")
 	game.player._advance_weapon_simulation_tick(75)
+	var view_before_grenade_test: Vector2 = game.player.input_view_angles()
+	var grenade_release_view := Vector2(deg_to_rad(25.0), deg_to_rad(35.0))
+	game.player._apply_command_look({"view_angles": grenade_release_view})
 	game.player._try_fire()
 	_check(
 		game.player.weapon_clock.state == game.player.WeaponClockScript.STATE_GRENADE_PINNED,
 		"HE primary enters the pin-held state",
 	)
 	_check(game.player.ammunition.hegrenade.clip == 1, "HE is not consumed while its pin is held")
-	game.player.weapon_clock.release_grenade(true)
+	var inherited_throw_velocity: Vector3 = game.player.velocity
+	var goldsrc_release_angles: Vector2 = game.player.grenade_goldsrc_angles(grenade_release_view)
+	var expected_throw_velocity := Ballistics.he_throw_velocity(
+		goldsrc_release_angles.x,
+		goldsrc_release_angles.y,
+		inherited_throw_velocity,
+	)
+	game.player._release_held_grenade()
+	game.player._apply_command_look({"view_angles": Vector2(deg_to_rad(-70.0), deg_to_rad(-60.0))})
 	game.player._advance_weapon_simulation_tick(49)
 	_check(game.player.ammunition.hegrenade.clip == 1, "early HE release waits through pin tick 49")
 	game.player._advance_weapon_simulation_tick()
+	var thrown_grenade := game.get_node_or_null("HEGrenade") as HEGrenade
+	_check(
+		thrown_grenade != null
+		and thrown_grenade.linear_velocity.distance_to(expected_throw_velocity) < 0.0001,
+		"HE trajectory follows the mouse direction at release, not later camera motion",
+	)
+	game.player._apply_command_look({"view_angles": view_before_grenade_test})
 	await process_frame
 	_check(game.player.ammunition.hegrenade.clip == 0, "HE grenade is consumed on throw")
 	_check(game.get_node_or_null("HEGrenade") != null, "HE grenade projectile spawns")

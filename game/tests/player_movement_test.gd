@@ -34,6 +34,8 @@ func _run() -> void:
 	_near(PlayerController.STAND_EYE, 0.53, "standing eye preserves the CS view offset")
 	_near(PlayerController.CROUCH_EYE, 0.30, "duck eye preserves the CS view offset")
 	_near(PlayerController.STEP_HEIGHT, 0.18, "classic step height is 18 units")
+	_near(PlayerController.STAIR_VIEW_SPEED, 1.50, "stair view catches up at Valve's 150 ups")
+	_near(PlayerController.STAIR_VIEW_MAX_OFFSET, 0.18, "stair view trails by at most one step")
 
 	player._build_body()
 	var hull := player.collider.shape as BoxShape3D
@@ -45,7 +47,8 @@ func _run() -> void:
 
 	# playermove_t::clientmaxspeed is supplied by the current CS weapon.
 	_near(player._movement_speed(false, false), 2.21, "AK-47 running max speed is 221 ups")
-	_near(player._movement_speed(false, true), 2.08, "Shift uses cl_movespeedkey 0.52")
+	_near(player._movement_speed(false, true), 2.21 * PlayerController.CL_MOVE_SPEED_KEY,
+		"Shift scales the weapon-limited speed to a distinct walking pace")
 	_near(
 		player._movement_speed(true, false),
 		2.21 * PlayerController.DUCK_SPEED_MULTIPLIER,
@@ -53,13 +56,36 @@ func _run() -> void:
 	)
 	_near(
 		player._movement_speed(true, true),
-		2.08 * PlayerController.DUCK_SPEED_MULTIPLIER,
+		2.21 * PlayerController.CL_MOVE_SPEED_KEY * PlayerController.DUCK_SPEED_MULTIPLIER,
 		"Shift and duck command scaling compose",
 	)
 	player.set_max_speed(180.0)
 	_near(player._movement_speed(false, false), 1.80, "client max-speed override is honored")
 	player.set_max_speed(0.0)
 	_near(player._movement_speed(false, false), 2.21, "zero restores weapon max speed")
+
+	# Duck affects collision, view and movement on the first simulation tick.
+	player._movement_grounded = true
+	player._update_crouch(classic_delta, true)
+	_check(not player._standing, "duck press immediately enters the crouched stance")
+	_near(hull.size.y, PlayerController.CROUCH_HEIGHT, "duck press immediately applies the crouch hull")
+	_near(player.camera.position.y, PlayerController.CROUCH_EYE, "duck press immediately lowers the eye")
+	player._update_crouch(classic_delta, false)
+	_check(player._standing, "duck release immediately stands when there is clearance")
+
+	# V_CalcNormalRefdef smooths only the rendered eye after an upward step. The
+	# body has already climbed 16 HU, while the eye advances 1.5 HU this frame.
+	player._update_stair_view_smoothing(classic_delta, 0.16, true)
+	_near(player._stair_view_offset, -0.145, "16-HU Dust2 step receives classic eye smoothing")
+	_near(player.camera.position.y, PlayerController.STAND_EYE - 0.145,
+		"stair smoothing offsets the camera without moving the player")
+	player._update_stair_view_smoothing(classic_delta, 0.0, true)
+	_near(player._stair_view_offset, -0.13, "stair eye catches up at 150 ups")
+	player._update_stair_view_smoothing(classic_delta, 0.32, true)
+	_near(player._stair_view_offset, -PlayerController.STAIR_VIEW_MAX_OFFSET,
+		"stacked upward movement cannot exceed the 18-HU view cap")
+	player._update_stair_view_smoothing(classic_delta, -0.01, true)
+	_near(player._stair_view_offset, 0.0, "descending resets upward-only stair smoothing")
 
 	# PM_Accelerate: accel * frametime * wishspeed * player friction.
 	var wish_direction := Vector3.RIGHT

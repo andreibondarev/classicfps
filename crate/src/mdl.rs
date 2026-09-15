@@ -101,6 +101,8 @@ pub struct ParsedMdl {
     pub uvs: Vec<f32>,
     pub pixels: Vec<u8>,
     pub seq_labels: Vec<String>,
+    /// One bit per emitted vertex: pelvis/leg ownership from the source bones.
+    pub lower_body_mask: Vec<u8>,
 }
 
 /// All sequence labels, in sequence order
@@ -330,11 +332,30 @@ fn anim_pose_matrices(
     Ok(bone_mats)
 }
 
-/// First bone that belongs to the upper-body layer. GoldSrc's player renderer
-/// (StudioProcessGait) copies the gait sequence into every bone BEFORE
-/// "Bip01 Spine" and keeps the aim/shoot sequence from the spine upward.
-fn spine_bone_boundary(d: &[u8]) -> Option<usize> {
+/// Index of the upper-body branch, not an array boundary: legs follow the arms
+/// in the stock CS skeleton. StudioSetupBones resumes gait at pelvis children.
+fn spine_bone_index(d: &[u8]) -> Option<usize> {
     bone_names(d).iter().position(|name| name == "Bip01 Spine")
+}
+
+fn gait_bone_mask(d: &[u8]) -> Option<Vec<bool>> {
+    spine_bone_index(d)?;
+    let names = bone_names(d);
+    let boneindex = i32_at(d, 144) as usize;
+    let mut gait = Vec::with_capacity(names.len());
+    let mut copy_gait = true;
+    for (b, name) in names.iter().enumerate() {
+        let parent = i32_at(d, boneindex + b * 112 + 32);
+        // Match StudioSetupBones' branch switches, including late helper bones.
+        // Stopping once at Spine incorrectly freezes both subsequent leg chains.
+        if name == "Bip01 Spine" {
+            copy_gait = false;
+        } else if parent >= 0 && names.get(parent as usize).is_some_and(|n| n == "Bip01 Pelvis") {
+            copy_gait = true;
+        }
+        gait.push(copy_gait);
+    }
+    Some(gait)
 }
 
 /// GoldSrc third-person player pose: legs and pelvis follow the gait
@@ -352,7 +373,7 @@ fn composite_pose_matrices(
     aim_frame: usize,
     aim_blend: usize,
 ) -> Result<Vec<Mat34>, String> {
-    let Some(boundary) = spine_bone_boundary(d) else {
+    let Some(gait_mask) = gait_bone_mask(d) else {
         return anim_pose_matrices(
             d,
             external_groups,
@@ -377,7 +398,7 @@ fn composite_pose_matrices(
     for b in 0..numbones {
         let bo = boneindex + b * 112;
         let parent = i32_at(d, bo + 32);
-        let local = if b < boundary {
+        let local = if gait_mask[b] {
             bone_local_pose_matrix(
                 d,
                 gait_data,
@@ -456,7 +477,7 @@ fn player_pose_plan(d: &[u8], family: &str) -> Option<Vec<PosePlanEntry>> {
     let crouch_aim_label = format!("crouch_aim_{family}");
     let ref_aim = find_sequence(d, &[ref_aim_label.as_str()])?;
     let crouch_aim = find_sequence(d, &[crouch_aim_label.as_str()]).unwrap_or(ref_aim.clone());
-    spine_bone_boundary(d)?;
+    spine_bone_index(d)?;
 
     let gait_idle = find_sequence(d, &["idle1", "idle"])?;
     let gait_run = find_sequence(d, &["run", "walk"])?;
@@ -700,7 +721,7 @@ fn walk_geometry(
     numskinref: usize,
     skinindex: usize,
     body_value: usize,
-) -> std::collections::BTreeMap<usize, (Vec<f32>, Vec<f32>)> {
+) -> std::collections::BTreeMap<usize, (Vec<f32>, Vec<f32>, Vec<u8>)> {
     let skin_of = |skinref: usize| -> usize {
         let o = skinindex + skinref * 2;
         if o + 2 <= d.len() && skinref < numskinref {
@@ -710,7 +731,7 @@ fn walk_geometry(
         }
     };
     // Geometry, bucketed per texture
-    let mut buckets: std::collections::BTreeMap<usize, (Vec<f32>, Vec<f32>)> = Default::default();
+    let mut buckets: std::collections::BTreeMap<usize, (Vec<f32>, Vec<f32>, Vec<u8>)> = Default::default();
     for bp in 0..numbodyparts {
         let o = bodypartindex + bp * 76;
         let nummodels = i32_at(d, o + 64) as usize;
@@ -779,21 +800,23 @@ fn walk_geometry(
                     if tri + count * 8 > d.len() {
                         break;
                     }
-                    let mut chain: Vec<([f32; 3], f32, f32)> = Vec::with_capacity(count);
+                    let mut chain: Vec<([f32; 3], f32, f32, u8)> = Vec::with_capacity(count);
                     for k in 0..count {
                         let e = tri + k * 8;
                         let vi = i16_at(d, e) as usize;
                         let s = i16_at(d, e + 4) as f32;
                         let t = i16_at(d, e + 6) as f32;
                         let p = verts.get(vi).copied().unwrap_or([0.0; 3]);
-                        chain.push((p, (s + 0.5) / tw, (t + 0.5) / th));
+                        let bone = if vi < numverts { d[vertinfoindex + vi] } else { 0 };
+                        chain.push((p, (s + 0.5) / tw, (t + 0.5) / th, bone));
                     }
                     tri += count * 8;
 
-                    let emit = |b: &mut (Vec<f32>, Vec<f32>), v: &([f32; 3], f32, f32)| {
+                    let emit = |b: &mut (Vec<f32>, Vec<f32>, Vec<u8>), v: &([f32; 3], f32, f32, u8)| {
                         // GoldSrc -> three.js: (x, z, -y), scaled to world units
                         b.0.extend_from_slice(&[v.0[0] * 0.01, v.0[2] * 0.01, -v.0[1] * 0.01]);
                         b.1.extend_from_slice(&[v.1, v.2]);
+                        b.2.push(v.3);
                     };
                     for k in 2..chain.len() {
                         if fan {
@@ -887,8 +910,10 @@ fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
         uvs: Vec::new(),
         pixels,
         seq_labels: sequence_labels(d),
+        lower_body_mask: Vec::new(),
     };
-    for (tex, (pos, uv)) in buckets {
+    let gait_mask = gait_bone_mask(d);
+    for (tex, (pos, uv, bones)) in buckets {
         let (name, w, h, off) = tex_meta[tex].clone();
         let skin_ref = (0..numskinref).find(|skin_ref| {
             let offset = skinindex + skin_ref * 2;
@@ -925,6 +950,11 @@ fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
         });
         out.positions.extend_from_slice(&pos);
         out.uvs.extend_from_slice(&uv);
+        if let Some(mask) = &gait_mask {
+            out.lower_body_mask.extend(bones.iter().map(|bone| {
+                u8::from(mask.get(*bone as usize).copied().unwrap_or(false))
+            }));
+        }
     }
     Ok(out)
 }
@@ -1019,6 +1049,8 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
     let is_view_model = labels.iter().any(|label| {
         let label = label.to_lowercase();
         label.contains("shoot") || label.contains("reload") || label == "draw"
+            // Grenade viewmodels have idle/pullpin/throw/deploy, no gun actions.
+            || label == "pullpin"
     }) && !labels
         .iter()
         .any(|label| label.to_lowercase().contains("run"));
@@ -1061,7 +1093,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                                 skinindex,
                                 0,
                             );
-                            for (_, (positions, _)) in buckets {
+                            for (_, (positions, _, _)) in buckets {
                                 data.extend_from_slice(&positions);
                             }
                         }
@@ -1136,7 +1168,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                             skinindex,
                             0,
                         );
-                        for (_, (pos, _)) in buckets {
+                        for (_, (pos, _, _)) in buckets {
                             data.extend_from_slice(&pos);
                         }
                     }
@@ -1236,7 +1268,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                             skinindex,
                             0,
                         );
-                        for (_, (pos, _)) in buckets {
+                        for (_, (pos, _, _)) in buckets {
                             data.extend_from_slice(&pos);
                         }
                     }
@@ -1398,7 +1430,7 @@ pub fn parse_mdl_attached(
     // Static pose on the player's bind skeleton
     let bind = bind_pose_matrices(player, p_numbones, p_boneindex)?;
     let mut positions = Vec::new();
-    for (_, (pos, _)) in walk_geometry(
+    for (_, (pos, _, _)) in walk_geometry(
         weapon,
         &remap(&bind),
         &w_texmeta,
@@ -1432,7 +1464,7 @@ pub fn parse_mdl_attached(
                     sample,
                 ) {
                     Ok(mats) => {
-                        for (_, (pos, _)) in walk_geometry(
+                        for (_, (pos, _, _)) in walk_geometry(
                             weapon,
                             &remap(&mats),
                             &w_texmeta,
@@ -1502,7 +1534,7 @@ pub fn parse_mdl_attached(
                         blend,
                     ) {
                         Ok(mats) => {
-                            for (_, (pos, _)) in walk_geometry(
+                            for (_, (pos, _, _)) in walk_geometry(
                                 weapon,
                                 &remap(&mats),
                                 &w_texmeta,
@@ -1551,6 +1583,8 @@ pub fn parse_mdl_attached(
         // Attached animation metadata indexes the player skeleton's sequence
         // table, not the p_ weapon's (usually empty) table.
         seq_labels: sequence_labels(player),
+        // Attached weapons never receive a lower-body overlay at runtime.
+        lower_body_mask: Vec::new(),
     };
     Ok((out, anims))
 }
@@ -1559,7 +1593,101 @@ pub fn parse_mdl_attached(
 mod tests {
     use super::*;
 
+    #[test]
+    fn grenade_viewmodels_preserve_all_authored_sequences() {
+        let models: [&[u8]; 3] = [
+            include_bytes!("../../public/models/weapons/v_hegrenade.mdl"),
+            include_bytes!("../../public/models/weapons/v_flashbang.mdl"),
+            include_bytes!("../../public/models/weapons/v_smokegrenade.mdl"),
+        ];
+        for bytes in models {
+            let (model, animations) = parse_mdl_animated(bytes).expect("grenade viewmodel");
+            assert_eq!(animations.len(), model.seq_labels.len());
+            for (index, animation) in animations.iter().enumerate() {
+                assert_eq!(animation.sequence_index, index as u32);
+                assert_eq!(animation.name, model.seq_labels[index]);
+                assert!(animation.frames > 0);
+                assert_eq!(
+                    animation.data.len(),
+                    animation.frames as usize * animation.blends as usize * model.positions.len()
+                );
+            }
+            assert!(animations
+                .iter()
+                .any(|animation| animation.name == "pullpin"));
+            assert!(animations.iter().any(|animation| animation.name == "throw"));
+        }
+    }
+
     const TERROR_MODEL: &[u8] = include_bytes!("../../public/models/player/terror/terror.mdl");
+    const PLAYER_MODELS: [&[u8]; 8] = [
+        TERROR_MODEL,
+        include_bytes!("../../public/models/player/leet/leet.mdl"),
+        include_bytes!("../../public/models/player/arctic/arctic.mdl"),
+        include_bytes!("../../public/models/player/guerilla/guerilla.mdl"),
+        include_bytes!("../../public/models/player/urban/urban.mdl"),
+        include_bytes!("../../public/models/player/gsg9/gsg9.mdl"),
+        include_bytes!("../../public/models/player/sas/sas.mdl"),
+        include_bytes!("../../public/models/player/gign/gign.mdl"),
+    ];
+
+    #[test]
+    fn player_gait_follows_both_leg_branches_after_the_spine() {
+        for d in PLAYER_MODELS {
+            let names = bone_names(d);
+            let boneindex = i32_at(d, 144) as usize;
+            let seqindex = i32_at(d, 168) as usize;
+            let mask = gait_bone_mask(d).expect("player gait mask");
+            // Independent oracle: Valve StudioSetupBones' ordered copy flag.
+            let mut copy = true;
+            for (b, name) in names.iter().enumerate() {
+                let parent = i32_at(d, boneindex + b * 112 + 32);
+                if name == "Bip01 Spine" {
+                    copy = false;
+                } else if parent >= 0 && names[parent as usize] == "Bip01 Pelvis" {
+                    copy = true;
+                }
+                assert_eq!(mask[b], copy, "source gait ownership: {name}");
+            }
+            let left = names.iter().position(|n| n == "Bip01 L Foot").unwrap();
+            let right = names.iter().position(|n| n == "Bip01 R Foot").unwrap();
+            assert!(left > spine_bone_index(d).unwrap() && mask[left] && mask[right]);
+            let aim = find_sequence(d, &["ref_aim_carbine"]).unwrap();
+            for state in ["run", "crouchrun"] {
+                let gait = find_sequence(d, &[state]).unwrap();
+                let mut minimum = [f32::INFINITY; 2];
+                let mut maximum = [f32::NEG_INFINITY; 2];
+                for frame in 0..gait.frames {
+                    let composite = composite_pose_matrices(d, &[], names.len(), boneindex,
+                        seqindex, gait.index, frame, aim.index, 0, aim.blends / 2).unwrap();
+                    let raw = anim_pose_matrices(d, &[], names.len(), boneindex,
+                        seqindex, gait.index, frame, 0).unwrap();
+                    for bone in [left, right] {
+                        for axis in 0..3 {
+                            for component in 0..4 {
+                                assert!((composite[bone][axis][component] - raw[bone][axis][component]).abs() < 0.0001,
+                                    "{state} frame {frame}: {} must retain authored gait", names[bone]);
+                            }
+                        }
+                    }
+                    for axis in 0..2 {
+                        let separation = composite[left][axis][3] - composite[right][axis][3];
+                        minimum[axis] = minimum[axis].min(separation);
+                        maximum[axis] = maximum[axis].max(separation);
+                    }
+                }
+                assert!((0..2).any(|axis| minimum[axis] < -5.0 && maximum[axis] > 5.0),
+                    "{state}: feet must alternate which leads, got {minimum:?}..{maximum:?}");
+            }
+            let model = parse_mdl(d).unwrap();
+            assert_eq!(model.lower_body_mask.len(), model.positions.len() / 3);
+            assert!(model.lower_body_mask.contains(&0) && model.lower_body_mask.contains(&1));
+            let floor = model.positions.chunks_exact(3).map(|p| p[1]).fold(f32::INFINITY, f32::min);
+            assert!(model.positions.chunks_exact(3).zip(&model.lower_body_mask)
+                .any(|(p, &mask)| mask == 1 && p[1] > floor + 0.34),
+                "bone mask must retain thighs above the old height cutoff");
+        }
+    }
     const AK47_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_ak47.mdl");
     const C4_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_c4.mdl");
     const DEAGLE_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_deagle.mdl");

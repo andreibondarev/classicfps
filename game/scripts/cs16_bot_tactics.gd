@@ -15,6 +15,12 @@ const AK_RESERVE_SIZE := 90
 const AK_FIRE_TICKS := 10
 const AK_RELOAD_TICKS := 245
 const VISUAL_MEMORY_TICKS := 180
+const AIM_ERROR_MIN_SECONDS := 0.40
+const AIM_ERROR_MAX_SECONDS := 0.75
+const MIN_AIM_ERROR_DEGREES := 0.35
+const MAX_AIM_ERROR_DEGREES := 1.80
+const MIN_TURN_DEGREES_PER_SECOND := 140.0
+const MAX_TURN_DEGREES_PER_SECOND := 260.0
 
 ## Grenade usage window. Below the minimum a 1.6 bot shoots instead of cooking a
 ## grenade at its own feet; above the maximum the throw cannot reach.
@@ -54,6 +60,7 @@ var reload_duration_ticks := AK_RELOAD_TICKS
 var grenade_counts := {}
 
 var _reaction_ticks := 22
+var _skill := 1.0
 var _rng := RandomNumberGenerator.new()
 # Grenade decisions draw from their own stream so carrying utility can never
 # shift the shooting trace of an identical replay.
@@ -64,6 +71,10 @@ var _second_accumulator := 0.0
 var _fire_pulse := false
 var _reload_pulse := false
 var _aim_target := Vector3.ZERO
+var _aim_direction := Vector3.ZERO
+var _aim_error := Vector2.ZERO
+var _aim_error_goal := Vector2.ZERO
+var _next_aim_error_tick := 0
 var _fire_ticks: Array[int] = []
 var _fire_events: Array[Dictionary] = []
 var _reload_ticks: Array[int] = []
@@ -108,6 +119,10 @@ func reset(seed: int, skill := 1.0) -> void:
 	_fire_pulse = false
 	_reload_pulse = false
 	_aim_target = Vector3.ZERO
+	_aim_direction = Vector3.ZERO
+	_aim_error = Vector2.ZERO
+	_aim_error_goal = Vector2.ZERO
+	_next_aim_error_tick = 0
 	_fire_ticks.clear()
 	_fire_events.clear()
 	_reload_ticks.clear()
@@ -116,8 +131,9 @@ func reset(seed: int, skill := 1.0) -> void:
 	_next_grenade_tick = 0
 	_rng.seed = seed
 	_grenade_rng.seed = seed ^ 0x9E3779B9
+	_skill = clampf(skill, 0.0, 1.0)
 	_reaction_ticks = clampi(
-		int(round(34.0 - clampf(skill, 0.0, 1.0) * 18.0)),
+		int(round(34.0 - _skill * 18.0)),
 		16,
 		34,
 	)
@@ -203,7 +219,7 @@ func _advance_tick(observation: Dictionary) -> void:
 		last_seen_position = enemy_position
 		last_seen_velocity = enemy_velocity
 		last_seen_tick = tick
-		_update_aim_target(distance_hu)
+		_update_aim_target(distance_hu, observation)
 
 	if reload_complete_tick >= 0:
 		state = STATE_RELOAD
@@ -293,18 +309,54 @@ func _burst_size(distance_hu: float) -> int:
 	return _rng.randi_range(1, 3)
 
 
-func _update_aim_target(distance_hu: float) -> void:
-	# Expert CS bots still have a small, deterministic angular error. Express
-	# it as a world-space offset so TargetActor can feed the result through the
-	# same spread/ballistics path as a human shot.
-	var lead_seconds := clampf(distance_hu / 8000.0, 0.0, 0.12)
-	var error_radius_hu := clampf(distance_hu * 0.0025, 1.5, 10.0)
-	var error := Vector3(
-		_rng.randf_range(-error_radius_hu, error_radius_hu),
-		_rng.randf_range(-error_radius_hu * 0.65, error_radius_hu * 0.65),
-		_rng.randf_range(-error_radius_hu, error_radius_hu),
-	) * 0.01
-	_aim_target = last_seen_position + last_seen_velocity * lead_seconds + error
+func _update_aim_target(distance_hu: float, observation: Dictionary) -> void:
+	# Human aim holds an error for a moment and then drifts; it does not roll a
+	# fresh near-perfect offset every 10 ms. Lower skill widens that offset.
+	if tick >= _next_aim_error_tick:
+		var error_degrees := lerpf(MAX_AIM_ERROR_DEGREES, MIN_AIM_ERROR_DEGREES, _skill)
+		_aim_error_goal = Vector2(
+			_rng.randf_range(-error_degrees, error_degrees),
+			_rng.randf_range(-error_degrees * 0.65, error_degrees * 0.65),
+		)
+		if _next_aim_error_tick == 0:
+			_aim_error = _aim_error_goal
+		_next_aim_error_tick = tick + _rng.randi_range(
+			int(round(AIM_ERROR_MIN_SECONDS * TICK_RATE)),
+			int(round(AIM_ERROR_MAX_SECONDS * TICK_RATE)),
+		)
+	_aim_error = _aim_error.lerp(_aim_error_goal, 0.045)
+
+	# Estimate rather than perfectly solve target movement.
+	var lead_fraction := lerpf(0.25, 0.60, _skill)
+	var lead_seconds := clampf(distance_hu / 8000.0, 0.0, 0.12) * lead_fraction
+	var predicted := last_seen_position + last_seen_velocity * lead_seconds
+	var origin: Vector3 = observation.get("observer_origin", Vector3.INF)
+	if origin == Vector3.INF:
+		origin = Vector3.ZERO
+	var desired := predicted - origin
+	if desired.length_squared() <= 0.000001:
+		return
+	var forward := desired.normalized()
+	var right := forward.cross(Vector3.UP).normalized()
+	if right.is_zero_approx():
+		right = Vector3.RIGHT
+	var up := right.cross(forward).normalized()
+	var distance := desired.length()
+	var noisy_target := predicted + (
+		right * tan(deg_to_rad(_aim_error.x))
+		+ up * tan(deg_to_rad(_aim_error.y))
+	) * distance
+	var desired_direction := origin.direction_to(noisy_target)
+	if _aim_direction.is_zero_approx():
+		var observed_forward: Vector3 = observation.get("observer_forward", Vector3.ZERO)
+		_aim_direction = observed_forward.normalized() if not observed_forward.is_zero_approx() else desired_direction
+	var angle := _aim_direction.angle_to(desired_direction)
+	var max_angle := deg_to_rad(
+		lerpf(MIN_TURN_DEGREES_PER_SECOND, MAX_TURN_DEGREES_PER_SECOND, _skill)
+	) / float(TICK_RATE)
+	if angle > 0.000001:
+		_aim_direction = _aim_direction.slerp(desired_direction, minf(1.0, max_angle / angle)).normalized()
+	_aim_target = origin + _aim_direction * distance
 
 
 func snapshot() -> Dictionary:
@@ -320,6 +372,8 @@ func snapshot() -> Dictionary:
 		"reloading": reload_complete_tick >= 0,
 		"reload_complete_tick": reload_complete_tick,
 		"aim_target": _aim_target,
+		"aim_error": _aim_error,
+		"aim_error_goal": _aim_error_goal,
 		"last_seen_position": last_seen_position,
 		"last_seen_tick": last_seen_tick,
 		"clip": clip,

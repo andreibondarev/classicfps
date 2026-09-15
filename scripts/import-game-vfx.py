@@ -28,6 +28,9 @@ SPRITES = (
     "richo1",
     "blood",
     "bloodspray",
+    "wall_puff1",
+    "gas_puff_01",
+    "black_smoke3",
 )
 DECALS = (
     "{shot1",

@@ -1,25 +1,34 @@
 class_name CS16DroppedWeapon
 extends Node3D
 
+signal landed(position: Vector3)
+
 ## Source-backed dropped gun world item.
 ##
-## CS 1.6's DropPlayerItem wraps the gun's w_ model in a CWeaponBox that
-## settles almost immediately, so the runtime item is a static floor-snapped
-## model with the weaponbox's random yaw. The game loop performs the CS 1.6
-## hull-touch pickup check over the live drop list.
+## Host-owned toss of the original w_ model. A swept point against map solids
+## supplies travel, wall contact and landing; clients only interpolate snapshots.
+## The existing game loop owns inventory and hull-touch pickup checks.
 
 const C4WorldScript := preload("res://scripts/cs16_c4_world.gd")
 const WeaponRegistryScript := preload("res://scripts/cs16_weapon_registry.gd")
 
 const FLOOR_PROBE_UP := 0.5
 const FLOOR_PROBE_DOWN := 4.0
+const TOSS_SPEED := 4.0
+const TOSS_LIFT := 1.0
+const CONTACT_OFFSET := 0.01
+
+var toss_velocity := Vector3.ZERO
+var tossing := false
 
 var weapon_name := ""
 var clip_ammo := 0
 var reserve_ammo := 0
 var slot := 0
-# Manual G drops land inside the pickup radius; the dropper must leave it
-# once before touch pickup re-arms, or the drop would bounce straight back.
+# Durable Game identity, never a reusable network peer/player slot.
+var dropper_id := ""
+# Manual G drops suppress only the dropper until it leaves the pickup radius.
+# Other humans can collect the item immediately with an empty weapon slot.
 var pickup_armed := true
 
 
@@ -37,6 +46,13 @@ func setup(weapon: String, dropped_clip: int, dropped_reserve: int) -> void:
 	slot = int(WeaponRegistryScript.definition(weapon_name).get("slot", 0))
 
 
+func start_toss(forward: Vector3) -> void:
+	var direction := Vector3(forward.x, 0.0, forward.z).normalized()
+	toss_velocity = direction * TOSS_SPEED + Vector3.UP * TOSS_LIFT
+	tossing = true
+	set_physics_process(true)
+
+
 func _ready() -> void:
 	name = "DroppedWeapon_%s" % weapon_name
 	# Deterministic per-drop yaw: the shared RNG stream must not shift under
@@ -51,11 +67,39 @@ func _ready() -> void:
 	# functional pickup; placeholder geometry is deliberately not faked.
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
+	if tossing:
+		_advance_toss(delta)
+		return
 	# Space queries need one frame inside the physics world before the raycast
 	# can see the imported BSP colliders.
 	_snap_to_floor()
 	set_physics_process(false)
+
+
+func _advance_toss(delta: float) -> void:
+	toss_velocity.y -= float(ProjectSettings.get_setting("physics/3d/default_gravity", 8.0)) * delta
+	var remaining := delta
+	# Sweep the full displacement, including fast throws near thin walls.
+	for contact in range(3):
+		var origin := global_position + Vector3.UP * CONTACT_OFFSET
+		var destination := origin + toss_velocity * remaining
+		var hit := get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(origin, destination, 1))
+		if hit.is_empty():
+			global_position = destination - Vector3.UP * CONTACT_OFFSET
+			return
+		var normal: Vector3 = hit.normal
+		var distance := origin.distance_to(destination)
+		remaining *= 1.0 - clampf(origin.distance_to(hit.position) / maxf(distance, 0.00001), 0.0, 1.0)
+		global_position = hit.position + normal * CONTACT_OFFSET - Vector3.UP * CONTACT_OFFSET
+		if normal.y >= 0.7 and toss_velocity.y <= 0.0:
+			toss_velocity = Vector3.ZERO
+			tossing = false
+			set_physics_process(false)
+			landed.emit(global_position)
+			return
+		toss_velocity = toss_velocity.slide(normal)
 
 
 func _snap_to_floor() -> void:

@@ -1,0 +1,19 @@
+; Standalone diagnostic: deliberately no game assets, scripts, or autoloads.
+config_version=5
+
+[application]
+config/name="Protocol 47 render environment diagnostic"
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/window_width_override=1280
+window/size/window_height_override=720
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+anti_aliasing/quality/msaa_3d=2
+
+[physics]
+common/physics_ticks_per_second=100
+common/max_physics_steps_per_frame=16

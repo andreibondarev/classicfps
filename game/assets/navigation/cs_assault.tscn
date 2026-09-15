@@ -1,0 +1,9 @@
+[gd_scene format=3]
+
+[node name="AssaultTraversals" type="Node3D"]
+
+[node name="WarehouseEntrance" type="NavigationLink3D" parent="."]
+start_position = Vector3(6.44, 0.04, -21.8)
+end_position = Vector3(6.44, 0.36, -23.0)
+enter_cost = 1.0
+metadata/traversal_kind = "jump"

@@ -15,6 +15,27 @@ func _check(condition: bool, message: String) -> void:
 
 
 func _run() -> void:
+	_check(AudioCatalog.EVENT_SAMPLES["buy.ammo"] == ["items/9mmclip1.wav"], "ammo purchase uses the original CS clip cue")
+	_check(AudioCatalog.EVENT_SAMPLES["buy.armor"] == ["items/ammopickup2.wav"],
+		"kevlar and helmet purchases use the original CS armor cue")
+	_check(AudioCatalog.EVENT_SAMPLES["weapon.acquire"] == ["items/gunpickup2.wav"],
+		"weapon acquisition uses the original CS gun-pickup cue")
+	_check(AudioCatalog.EVENT_SAMPLES["weapon.drop"] == ["items/weapondrop1.wav"],
+		"weapon landing uses the original CS drop cue")
+	_check(AudioCatalog.EVENT_SAMPLES["buy.defuser"] == ["items/kevlar.wav"]
+		and AudioCatalog.EVENT_SAMPLES["buy.nvgs"] == ["items/equip_nvg.wav"],
+		"remaining equipment purchases use their stock CS cues")
+	_check(AudioCatalog.EVENT_SAMPLES["player.hit_helmet"] == ["player/bhit_helmet-1.wav"]
+		and AudioCatalog.EVENT_SAMPLES["player.hit_kevlar"] == ["player/bhit_kevlar-1.wav"],
+		"armored bullet hits retain helmet and kevlar distinctions")
+	_check(AudioCatalog.DEPLOY_AUDIO_STAGES["m4a1"].size() == 2
+		and int(AudioCatalog.DEPLOY_AUDIO_STAGES["ak47"][0].offset) == 37,
+		"viewmodel-authored deploy markers drive draw sounds")
+	_check(AudioCatalog.C4_ARM_AUDIO_STAGES == [118, 142, 164, 188, 212, 236, 255],
+		"C4 keypad clicks retain the stock pressbutton timing")
+	_check(AudioCatalog.EVENT_SAMPLES["glock18.fire"] == ["weapons/glock18-2.wav"], "Glock semi-auto uses only the single-shot recording")
+	_check(AudioCatalog.EVENT_SAMPLES["glock18.fire_burst"] == ["weapons/glock18-1.wav"], "Glock burst uses the three-shot recording")
+	_check(AudioCatalog.EVENT_SAMPLES["weapon.mode_switch"] == ["common/wpn_select.wav"], "fire-mode confirmation uses existing menu click")
 	_check(AudioCatalog.material_code("TSIBeam") == AudioCatalog.METAL, "metal table entry")
 	_check(AudioCatalog.material_code("TSFlrGrt") == AudioCatalog.GRATE, "grate table entry")
 	_check(AudioCatalog.material_code("brickPath") == AudioCatalog.DIRT, "dirt table entry")

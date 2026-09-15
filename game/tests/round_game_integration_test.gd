@@ -151,6 +151,18 @@ func _run() -> void:
 	)
 	game.phase = "live"
 
+	game.hud.reset_money_presentation()
+	game._update_round_hud(true)
+	var kill_balance: int = game.money
+	game.round_state.grant_kill("player")
+	game._consume_new_round_trace()
+	game._sync_round_public_state()
+	game._update_round_hud()
+	_check(game.hud.money_delta_amount == game.money - kill_balance
+		and game.hud.money_delta_amount == 300,
+		"real kill reward updates the HUD without waiting for the next clock second")
+	game.hud._money_delta_tween.custom_step(3.0)
+	var pre_round_balance: int = game.money
 	# Reproduce the former stale-dead HUD bug, then cross a real round restart.
 	for target in game.targets:
 		target.alive = false
@@ -164,6 +176,11 @@ func _run() -> void:
 	game._sync_round_public_state()
 	game._update_round_hud(true)
 	_check(game.phase == "post", "CT elimination enters post-round phase")
+	_check(game.money > pre_round_balance
+		and game.hud.money_delta_amount == game.money - pre_round_balance,
+		"round payout displays the actual credited money")
+	_check(game.player.can_simulate_movement() and not game.player.controls_enabled,
+		"local survivor keeps movement during post countdown without reopening attacks")
 	_check(
 		not _scoreboard_has_dead_icon(game.hud),
 		"scoreboard never shows skull glyphs (CS 1.6 rows carry no dead icons)",
@@ -174,9 +191,12 @@ func _run() -> void:
 	)
 	_check(
 		_scoreboard_has_dead_text(game.hud),
-		"post-round scoreboard prints DEAD in eliminated players' ping column",
+		"post-round scoreboard marks eliminated players in the status column",
 	)
 
+	# Also cover a human who was dead when the preceding freeze event arrived.
+	game.player.alive = false
+	game.player.look_enabled = false
 	_advance_game_round(game, 2)
 	_check(
 		game.phase == "freeze" and game.round_number == 2,
@@ -187,6 +207,7 @@ func _run() -> void:
 	for ally in game.allied_bots:
 		_check(ally.alive, "%s is alive after round reset" % ally.name)
 	_check(game.player.alive, "player is alive after round reset")
+	_assert_freeze_controls(game)
 	_check(
 		not _scoreboard_has_dead_icon(game.hud),
 		"round-start HUD rebuild removes every stale dead-player icon",
@@ -196,6 +217,10 @@ func _run() -> void:
 		"round-start HUD health state is reset immediately",
 	)
 
+	_advance_game_round(game, 1)
+	_check(game.player.controls_enabled, "live deadline restores human controls after reset")
+	for bot: TargetActor in game._all_bots():
+		_check(bot.active, "%s resumes decisions at the live deadline" % bot.name)
 	_assert_match_structure(game)
 
 	if failures.is_empty():
@@ -206,6 +231,25 @@ func _run() -> void:
 		print("GAME_ROUND_INTEGRATION_TEST_FAIL (%d)" % failures.size())
 		await _teardown(game)
 		quit(1)
+
+
+func _assert_freeze_controls(game: Node) -> void:
+	_check(not game.player.controls_enabled, "round reset preserves the human freeze lock")
+	_check(not game.player.can_simulate_movement(), "post-round movement does not leak into the next freeze")
+	_check(game.player.look_enabled, "respawned human can look around during freeze")
+	for bot: TargetActor in game._all_bots():
+		_check(not bot.active, "%s stays inactive after round reset" % bot.name)
+		var spawn := bot.global_position
+		var clip := bot.weapon_clip
+		# Exercise the actual actor callback, not just its public phase label.
+		# The game's round clock is held by this fixture until explicitly advanced.
+		for tick in range(3):
+			bot._physics_process(0.01)
+		_check(bot.global_position == spawn and bot.velocity == Vector3.ZERO,
+			"%s cannot move during freeze" % bot.name)
+		_check(bot.last_command.is_empty() and bot.weapon_clip == clip
+			and bot.combat_controller._objective_tick == 0,
+			"%s cannot advance AI or fire during freeze" % bot.name)
 
 
 func _teardown(game: Node) -> void:
@@ -462,6 +506,10 @@ func _assert_match_structure(game: Node) -> void:
 	for bot in game._all_bots():
 		if str(game.round_state.players[bot.name].team) != bot.team:
 			bots_in_sync = false
+		_check(bot.character_model.get_child_count() == 2,
+			"%s halftime replaces, rather than stacks, character meshes" % bot.name)
+		_check(bot.character_model.skin_name == bot.player_skin,
+			"%s halftime presentation uses its new team skin" % bot.name)
 	_check(bots_in_sync, "half-time keeps every bot actor on its kernel team")
 
 	var match_end_events: Array[Dictionary] = [{
@@ -506,8 +554,8 @@ func _scoreboard_has_dead_text(hud: Node) -> bool:
 	for row in hud.scoreboard_rows.get_children():
 		if row.get_child_count() < 4:
 			continue
-		var latency_label := row.get_child(3) as Label
-		if latency_label != null and latency_label.text == "DEAD":
+		var status_label := row.get_node_or_null("Status") as Label
+		if status_label != null and status_label.text == "Dead":
 			return true
 	return false
 
@@ -515,10 +563,7 @@ func _scoreboard_has_dead_text(hud: Node) -> bool:
 func _scoreboard_max_deaths(hud: Node) -> int:
 	var max_deaths := 0
 	for row in hud.scoreboard_rows.get_children():
-		# Row children: identity box, then score / deaths / latency labels.
-		if row.get_child_count() < 3:
-			continue
-		var deaths_label := row.get_child(2) as Label
+		var deaths_label := row.get_node_or_null("Deaths") as Label
 		if deaths_label != null and deaths_label.text.is_valid_int():
 			max_deaths = maxi(max_deaths, int(deaths_label.text))
 	return max_deaths

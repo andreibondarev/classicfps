@@ -82,6 +82,7 @@ var tick := 0
 var active_weapon := "ak47"
 var state := STATE_READY
 var next_primary_tick := 0
+var next_secondary_tick := 0
 var reload_complete_tick := NEVER
 var reload_shell_tick := NEVER
 var shells_inserted := 0
@@ -132,6 +133,7 @@ func reset(weapon_name := "ak47", initial_tick := 0, deploy := false) -> void:
 	active_weapon = weapon_name
 	state = STATE_READY
 	next_primary_tick = tick
+	next_secondary_tick = tick
 	reload_complete_tick = NEVER
 	weapon_idle_tick = NEVER
 	deploy_complete_tick = NEVER
@@ -155,6 +157,7 @@ func begin_deploy(weapon_name: String) -> void:
 	_grenade_released = false
 	deploy_complete_tick = tick + ticks_from_seconds(DEFAULT_DEPLOY_SECONDS)
 	next_primary_tick = deploy_complete_tick
+	next_secondary_tick = deploy_complete_tick
 	weapon_idle_tick = tick + ticks_from_seconds(DEFAULT_DEPLOY_IDLE_SECONDS)
 
 
@@ -168,7 +171,13 @@ func can_primary_attack() -> bool:
 	)
 
 
+func can_secondary_attack() -> bool:
+	return can_primary_attack() and tick >= next_secondary_tick
+
+
 func begin_primary_attack(hit := false) -> bool:
+	if active_weapon == "knife":
+		return begin_knife_attack(false, hit)
 	if not can_primary_attack():
 		return false
 	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
@@ -177,14 +186,21 @@ func begin_primary_attack(hit := false) -> bool:
 	if profile.is_empty():
 		return false
 	var cycle_seconds := float(profile.get("primary_seconds", 0.0))
-	if active_weapon == "knife":
-		cycle_seconds = float(
-			profile.primary_hit_seconds
-			if hit
-			else profile.primary_miss_seconds
-		)
 	next_primary_tick = tick + ticks_from_seconds(cycle_seconds)
+	next_secondary_tick = next_primary_tick
 	weapon_idle_tick = tick + ticks_from_seconds(float(profile.fire_idle_seconds))
+	state = STATE_FIRING
+	return true
+
+
+func begin_knife_attack(stab: bool, hit: bool) -> bool:
+	if active_weapon != "knife" or not can_primary_attack() or (stab and not can_secondary_attack()):
+		return false
+	# CKnife::Swing / Stab: slash-to-stab recovery differs from repeat slash.
+	var recovery := (1.1 if hit else 1.0) if stab else (0.4 if hit else 0.35)
+	next_primary_tick = tick + ticks_from_seconds(recovery)
+	next_secondary_tick = next_primary_tick if stab else tick + ticks_from_seconds(0.5)
+	weapon_idle_tick = tick + ticks_from_seconds(2.0)
 	state = STATE_FIRING
 	return true
 

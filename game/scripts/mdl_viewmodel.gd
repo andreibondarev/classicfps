@@ -61,12 +61,20 @@ const LIGHT_TINT_FLOOR := 0.35
 # folded in -- it applies to the whole original frame and the imported world
 # already renders at its approved brightness.
 const TEXTURE_GAMMA := 0.8
+# Animated ArrayMeshes are expensive to rebuild on the render thread. A shot
+# restarts one of a small set of authored sequences, so retain the finished
+# mesh for each sampled source frame and swap the resource on replay. Keeping
+# this per viewmodel also keeps its independently tinted material instances.
+const MAX_CACHED_FRAME_MESHES := 256
+const MAX_PARKED_WEAPONS := 3
 
 # Gamma-lifted albedo textures, shared across weapon loads (keyed by source
 # texture path).
 static var _gamma_texture_cache: Dictionary = {}
+static var _prepared_weapon_assets: Dictionary = {}
 
 var loaded_weapon := ""
+var last_load_timings: Dictionary = {}
 var model_root: Node3D
 # GoldSrc viewmodels carry their full placement in the baked sequence data;
 # the camera-relative anchor is the authored view origin itself.
@@ -79,6 +87,7 @@ var _animation_time := 0.0
 var _animation_loop := true
 var _frame_key := ""
 var _action_serial := 0
+var weapon_silenced := false
 var _light_timer := INF
 var _light_snap := true
 var _light_tint := Color(1.0, 1.0, 1.0)
@@ -86,6 +95,13 @@ var _light_map: BspMap
 var _light_map_searched := false
 var _light_probe_cells: Dictionary = {}
 var _light_probes_built := false
+var _frame_mesh_cache: Dictionary = {}
+var _frame_mesh_cache_order: Array[String] = []
+var _current_muzzle_local := Vector3(0.07, -0.04, -0.30)
+var _fire_prewarm_queue: Array[Dictionary] = []
+var _prewarm_process_counter := 0
+var _parked_weapons: Dictionary = {}
+var _parked_weapon_order: Array[String] = []
 
 
 func _ready() -> void:
@@ -122,16 +138,24 @@ func muzzle_point_world() -> Vector3:
 
 
 func _muzzle_point_local() -> Vector3:
-	if not is_instance_valid(_model_instance):
-		return Vector3(0.07, -0.04, -0.30)
-	var mesh := _model_instance.mesh as ArrayMesh
+	return _current_muzzle_local
+
+
+func _muzzle_point_for_mesh(mesh: ArrayMesh) -> Vector3:
 	if mesh == null or mesh.get_surface_count() == 0:
 		return Vector3(0.07, -0.04, -0.30)
+	var surfaces: Array = []
+	for surface_index in mesh.get_surface_count():
+		surfaces.append([mesh.surface_get_arrays(surface_index), null])
+	return _muzzle_point_for_surfaces(surfaces)
+
+
+func _muzzle_point_for_surfaces(surfaces: Array) -> Vector3:
 	var to_view := model_root.transform * _model_instance.transform
 	var best := Vector3(0.07, -0.04, -0.30)
 	var best_depth := INF
-	for surface_index in mesh.get_surface_count():
-		var arrays := mesh.surface_get_arrays(surface_index)
+	for surface: Array in surfaces:
+		var arrays: Array = surface[0]
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		for vertex in vertices:
 			var view_point := to_view * vertex
@@ -144,15 +168,44 @@ func _muzzle_point_local() -> Vector3:
 func load_weapon(weapon: String) -> bool:
 	if loaded_weapon == weapon:
 		return true
+	last_load_timings = {"weapon": weapon}
+	var phase_started := Time.get_ticks_usec()
+	var parked: Dictionary = _parked_weapons.get(weapon, {})
+	if not parked.is_empty():
+		# Take the requested entry before parking the departing weapon so the
+		# LRU cannot evict the model about to become active.
+		_parked_weapons.erase(weapon)
+		_parked_weapon_order.erase(weapon)
+		if is_instance_valid(parked.root):
+			phase_started = Time.get_ticks_usec()
+			_park_active_weapon()
+			last_load_timings.park_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+			phase_started = Time.get_ticks_usec()
+			model_root = parked.root
+			_model_instance = parked.instance
+			_template = parked.template
+			_frame_mesh_cache = parked.frames
+			_frame_mesh_cache_order = parked.frame_order
+			model_root.basis = VIEW_BASIS
+			model_root.show()
+			last_load_timings.source_ms = 0.0
+			last_load_timings.materials_ms = 0.0
+			last_load_timings.reused_model = true
+			_finish_weapon_load(weapon, phase_started)
+			return true
 	var path := "res://generated/weapons/%s/model.json" % weapon
 	var source_template: Dictionary = CharacterModelScript._load_template(path)
+	last_load_timings.source_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
 	if source_template.is_empty():
 		push_warning("Converted animated viewmodel is unavailable: %s" % path)
 		return false
+	phase_started = Time.get_ticks_usec()
+	_park_active_weapon()
+	last_load_timings.park_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+	phase_started = Time.get_ticks_usec()
 	_template = _first_person_template(source_template, weapon in UNMIRRORED_WEAPONS)
-	if is_instance_valid(model_root):
-		model_root.queue_free()
-
+	last_load_timings.materials_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+	phase_started = Time.get_ticks_usec()
 	model_root = Node3D.new()
 	model_root.name = "Authentic_%s" % weapon
 	# Re-base the exported view-space vertices so the authored forward axis
@@ -178,17 +231,221 @@ func load_weapon(weapon: String) -> bool:
 	else:
 		_model_instance.transform = Transform3D(Basis.FLIP_Z, Vector3.ZERO)
 	model_root.add_child(_model_instance)
+	# New containers: clearing the old ones would also erase the parked state.
+	_frame_mesh_cache = {}
+	_frame_mesh_cache_order = []
+	last_load_timings.reused_model = false
+	_finish_weapon_load(weapon, phase_started)
+	return true
+
+
+func _finish_weapon_load(weapon: String, phase_started: int) -> void:
+	base_position = CLASSIC_BASE_POSITION
+	position = base_position
 
 	loaded_weapon = weapon
+	weapon_silenced = false
 	visible = true
+	_fire_prewarm_queue = []
+	_prewarm_process_counter = 0
+	_current_muzzle_local = Vector3(0.07, -0.04, -0.30)
 	_update_projection_scale()
 	_action_serial = 0
-	# Fresh instances start with white materials; re-apply the probed light on
-	# the next processed frame without waiting for the refresh clock.
+	# New or restored materials must pick up the current player's lighting on
+	# the next processed frame, never keep a tint from the previous location.
 	_light_timer = INF
 	_light_snap = true
+	last_load_timings.instance_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+	phase_started = Time.get_ticks_usec()
 	_start_animation(_idle_animation(), true)
+	last_load_timings.idle_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+	phase_started = Time.get_ticks_usec()
+	_prewarm_fire_frames()
+	last_load_timings.fire_prewarm_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
+
+
+func _park_active_weapon() -> void:
+	if loaded_weapon.is_empty() or not is_instance_valid(model_root):
+		return
+	# Only the active instance is animated by this viewmodel. Hidden roots
+	# retain their independently tinted materials and bounded frame meshes.
+	model_root.hide()
+	_parked_weapons[loaded_weapon] = {
+		"root": model_root, "instance": _model_instance, "template": _template,
+		"frames": _frame_mesh_cache, "frame_order": _frame_mesh_cache_order,
+	}
+	_parked_weapon_order.append(loaded_weapon)
+	while _parked_weapon_order.size() > MAX_PARKED_WEAPONS:
+		var oldest: String = _parked_weapon_order.pop_front()
+		var entry: Dictionary = _parked_weapons[oldest]
+		if is_instance_valid(entry.root):
+			entry.root.queue_free()
+		_parked_weapons.erase(oldest)
+
+
+func prepare_weapon_assets(weapons: Array) -> bool:
+	# The finite shipped weapon catalog is resident for a match. Reading binary
+	# animation tapes and applying texgamma at the moment of a pickup/switch
+	# causes a visible hitch even when the weapon's mesh is inexpensive.
+	# Prepare one initial animation pose per loading frame, before deployment
+	# is allowed. Keep immutable CPU geometry, not another set of animated nodes
+	# or tinted materials. Only frame zero of each finite source tape is resident;
+	# later frames still use the bounded per-instance cache.
+	for weapon_value: Variant in weapons:
+		var weapon := str(weapon_value)
+		var source_path := "res://generated/weapons/%s/model.json" % weapon
+		var attached_path := "res://generated/player_weapons/%s/model.json" % weapon
+		if (_prepared_weapon_assets.has(weapon)
+			and CharacterModelScript._template_cache.has(source_path)
+			and CharacterModelScript._template_cache.has(attached_path)):
+			continue
+		var source := CharacterModelScript._load_template(source_path)
+		var attached := CharacterModelScript._load_template(attached_path)
+		if source.is_empty() or attached.is_empty():
+			push_error("Cannot prepare required weapon assets: " + weapon)
+			return false
+		for group: Dictionary in source.groups:
+			var material := group.material as StandardMaterial3D
+			if material != null:
+				_gamma_lifted_texture(material.albedo_texture)
+		var initial_frames := {}
+		for animation_name: String in source.animations:
+			var animation: Dictionary = source.animations[animation_name]
+			var surfaces := _source_frame_surfaces(source, animation.positions, 0)
+			_shade_surfaces(surfaces, weapon not in UNMIRRORED_WEAPONS)
+			initial_frames[animation_name] = {"surfaces": surfaces}
+			await get_tree().process_frame
+		_prepared_weapon_assets[weapon] = initial_frames
+		await get_tree().process_frame
 	return true
+
+
+static func release_cached_resources() -> void:
+	_gamma_texture_cache.clear()
+	_prepared_weapon_assets.clear()
+
+
+func _prewarm_fire_frames() -> void:
+	## The trigger frame must never pay mesh construction, normal welding, and
+	## two ArrayMesh uploads. Frame zero is synchronous here; remaining fire
+	## frames are prepared incrementally while the viewmodel is idling (normally
+	## during freeze/buy time) so combat never receives one large loading stall.
+	var candidates: Array[String] = []
+	if loaded_weapon in ["m4a1", "usp"]:
+		candidates.assign(["shoot1", "shoot1_unsil"])
+	elif loaded_weapon == "knife":
+		candidates.assign(["midslash1", "midslash2", "stab", "stab_miss"])
+	else:
+		candidates.assign(["shoot1", "shoot2", "shoot3", "shoot", "fire"])
+	var available: Array[String] = []
+	for animation_name: String in candidates:
+		if _template.animations.has(animation_name):
+			available.append(animation_name)
+			_cached_frame(animation_name, 0)
+	var largest_frame_count := 0
+	for animation_name: String in available:
+		largest_frame_count = maxi(
+			largest_frame_count,
+			int((_template.animations[animation_name] as Dictionary).frames),
+		)
+	# Round-robin by source-frame index: every firing variant gets its early,
+	# frequently reached frames before any long tail is prepared.
+	for frame_index in range(1, largest_frame_count):
+		for animation_name: String in available:
+			var animation: Dictionary = _template.animations[animation_name]
+			if frame_index < int(animation.frames):
+				_fire_prewarm_queue.append({
+					"animation": animation_name,
+					"frame": frame_index,
+				})
+
+
+func _prewarm_next_fire_frame() -> void:
+	if not _animation_loop or _fire_prewarm_queue.is_empty():
+		return
+	_prewarm_process_counter += 1
+	# One frame every fourth render keeps the preparation slice bounded while
+	# still finishing ordinary fire sequences comfortably inside buy time.
+	if _prewarm_process_counter % 4 != 0:
+		return
+	var pending: Dictionary = _fire_prewarm_queue.pop_front()
+	_cached_frame(str(pending.animation), int(pending.frame))
+
+
+func _cached_frame(animation_name: String, frame_index: int) -> Dictionary:
+	var key := "%s:%d" % [animation_name, frame_index]
+	if _frame_mesh_cache.has(key):
+		return _frame_mesh_cache[key]
+	var animation: Dictionary = _template.animations.get(animation_name, {})
+	if animation.is_empty() or frame_index < 0 or frame_index >= int(animation.frames):
+		return {}
+	# Build and shade on the CPU before the single upload. Reading surfaces
+	# back from a staging GPU mesh forces a driver round trip on cache misses.
+	var prepared: Dictionary = {}
+	if frame_index == 0:
+		var initial_frames: Dictionary = _prepared_weapon_assets.get(loaded_weapon, {})
+		prepared = initial_frames.get(animation_name, {})
+	var surfaces: Array
+	var muzzle_local: Vector3
+	var mesh := ArrayMesh.new()
+	if prepared.is_empty():
+		surfaces = _frame_surfaces(animation.positions, frame_index)
+		muzzle_local = _muzzle_point_for_surfaces(surfaces)
+		_write_shaded_surfaces(mesh, surfaces)
+	else:
+		# The prepared arrays contain no material references. Upload with this
+		# instance's independently tinted materials, never a cached scene's tint.
+		surfaces = prepared.surfaces
+		# Muzzle projection depends on the active instance's handedness/FOV,
+		# so it cannot be retained in the shared source-geometry cache.
+		muzzle_local = _muzzle_point_for_surfaces(surfaces)
+		_upload_surfaces(mesh, surfaces, _model_instance.get_meta("group_materials", []))
+	var cached := {
+		"mesh": mesh,
+		"muzzle_local": muzzle_local,
+		"prepared_geometry": not prepared.is_empty(),
+	}
+	_frame_mesh_cache[key] = cached
+	_frame_mesh_cache_order.append(key)
+	while _frame_mesh_cache_order.size() > MAX_CACHED_FRAME_MESHES:
+		var oldest: String = _frame_mesh_cache_order.pop_front()
+		_frame_mesh_cache.erase(oldest)
+	return cached
+
+
+func _frame_surfaces(positions: PackedFloat32Array, frame_index: int) -> Array:
+	var surfaces := _source_frame_surfaces(_template, positions, frame_index)
+	var materials: Array = _model_instance.get_meta("group_materials", [])
+	for surface: Array in surfaces:
+		var group_index := int(surface[2])
+		surface[1] = materials[group_index] if group_index < materials.size() else _template.groups[group_index].material
+	return surfaces
+
+
+static func _source_frame_surfaces(template: Dictionary, positions: PackedFloat32Array, frame_index: int) -> Array:
+	var surfaces: Array = []
+	var uvs: PackedFloat32Array = template.uvs
+	var base := frame_index * int(template.vertex_float_count)
+	for group_index in range(template.groups.size()):
+		var group: Dictionary = template.groups[group_index]
+		var count := int(group.count)
+		if count <= 0:
+			continue
+		var vertices := PackedVector3Array()
+		var texture_uvs := PackedVector2Array()
+		vertices.resize(count)
+		texture_uvs.resize(count)
+		for local_index in range(count):
+			var vertex_index := int(group.start) + local_index
+			var offset := base + vertex_index * 3
+			vertices[local_index] = Vector3(positions[offset], positions[offset + 1], positions[offset + 2])
+			texture_uvs[local_index] = Vector2(uvs[vertex_index * 2], uvs[vertex_index * 2 + 1])
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		arrays[Mesh.ARRAY_TEX_UV] = texture_uvs
+		surfaces.append([arrays, null, group_index])
+	return surfaces
 
 
 func _first_person_template(source_template: Dictionary, unmirrored: bool) -> Dictionary:
@@ -288,6 +545,7 @@ func _process(delta: float) -> void:
 		_light_timer = 0.0
 		_update_light_tint()
 		_update_projection_scale()
+	_prewarm_next_fire_frame()
 	var animation: Dictionary = _template.animations.get(_animation_name, {})
 	if animation.is_empty():
 		return
@@ -313,17 +571,45 @@ func _process(delta: float) -> void:
 	var next_key := "%s:%d" % [_animation_name, frame_index]
 	if next_key == _frame_key:
 		return
-	CharacterModelScript._render_frame(
-		_model_instance,
-		_template,
-		animation.positions,
-		frame_index * int(_template.vertex_float_count),
-	)
-	_inject_flat_normals(_model_instance.mesh as ArrayMesh)
+	var cached := _cached_frame(_animation_name, frame_index)
+	if cached.is_empty():
+		return
+	_model_instance.mesh = cached.mesh
+	_current_muzzle_local = cached.muzzle_local
 	_frame_key = next_key
 
 
 func _inject_flat_normals(mesh: ArrayMesh) -> void:
+	# Compatibility for pose captures that supply an already constructed mesh.
+	if mesh == null:
+		return
+	var surfaces: Array = []
+	for surface_index in mesh.get_surface_count():
+		surfaces.append([
+			mesh.surface_get_arrays(surface_index),
+			mesh.surface_get_material(surface_index),
+		])
+	_write_shaded_surfaces(mesh, surfaces)
+
+
+func _write_shaded_surfaces(mesh: ArrayMesh, surfaces: Array) -> void:
+	if mesh == null:
+		return
+	_shade_surfaces(surfaces, is_instance_valid(_model_instance) and _model_instance.basis.determinant() < 0.0)
+	_upload_surfaces(mesh, surfaces)
+
+
+static func _upload_surfaces(mesh: ArrayMesh, surfaces: Array, materials: Array = []) -> void:
+	mesh.clear_surfaces()
+	for surface: Array in surfaces:
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface[0])
+		var material: Material = surface[1]
+		if not materials.is_empty():
+			material = materials[int(surface[2])]
+		mesh.surface_set_material(mesh.get_surface_count() - 1, material)
+
+
+static func _shade_surfaces(surfaces: Array, mirrored: bool) -> void:
 	# The baked MDL frames carry positions and UVs only. GoldSrc studio
 	# lighting is one ambient term plus a single soft lambert shade, so rebuild
 	# each surface with per-vertex normals and bake that shade into vertex
@@ -334,23 +620,11 @@ func _inject_flat_normals(mesh: ArrayMesh) -> void:
 	# viewmodel is authored around the camera at the origin, so each face
 	# normal is re-oriented toward the camera (against its own centroid)
 	# before welding -- the orientation the viewer actually shades against.
-	if mesh == null:
-		return
-	var mirrored := (
-		is_instance_valid(_model_instance)
-		and _model_instance.basis.determinant() < 0.0
-	)
 	var light_direction := SHADE_LIGHT_DIRECTION.normalized()
 	if mirrored:
 		# Shade is computed in authored model space; mirror the light with the
 		# geometry so the on-screen light always falls from the same side.
 		light_direction.z = -light_direction.z
-	var surfaces: Array = []
-	for surface_index in mesh.get_surface_count():
-		surfaces.append([
-			mesh.surface_get_arrays(surface_index),
-			mesh.surface_get_material(surface_index),
-		])
 	# GoldSrc shades studio models with per-vertex normals; average the face
 	# normals across every vertex sharing a position (across all texture
 	# groups) so arms and hands shade as rounded surfaces instead of flat
@@ -380,7 +654,6 @@ func _inject_flat_normals(mesh: ArrayMesh) -> void:
 				var cell := _weld_key(vertices[triangle_start + corner])
 				smoothed[cell] = smoothed.get(cell, Vector3.ZERO) + normal
 		face_normals.append(per_face)
-	mesh.clear_surfaces()
 	for surface_index in range(surfaces.size()):
 		var surface: Array = surfaces[surface_index]
 		var arrays: Array = surface[0]
@@ -410,8 +683,6 @@ func _inject_flat_normals(mesh: ArrayMesh) -> void:
 			colors[vertex_index] = Color(shade, shade, shade, 1.0)
 		arrays[Mesh.ARRAY_NORMAL] = normals
 		arrays[Mesh.ARRAY_COLOR] = colors
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, surface[1])
 
 
 static func _weld_key(position: Vector3) -> Vector3i:
@@ -445,6 +716,8 @@ func _update_light_tint() -> void:
 	target.g = clampf(target.g, LIGHT_TINT_FLOOR, 1.0)
 	target.b = clampf(target.b, LIGHT_TINT_FLOOR, 1.0)
 	target.a = 1.0
+	if is_instance_valid(_light_map) and _light_map is BspMap:
+		target = BspMap.lift_shadow_tint(target, _light_map.shadow_lift)
 	# Smooth like the engine's light interpolation so walking between rooms
 	# never pops the weapon brightness.
 	_light_tint = target if _light_snap else _light_tint.lerp(target, 0.45)
@@ -623,7 +896,17 @@ func _start_animation(animation: String, loop: bool) -> void:
 	_frame_key = ""
 
 
+func set_silenced(enabled: bool) -> void:
+	if weapon_silenced == enabled:
+		return
+	weapon_silenced = enabled
+	if _animation_loop:
+		_start_animation(_idle_animation(), true)
+
+
 func _idle_animation() -> String:
+	if loaded_weapon in ["m4a1", "usp"] and not weapon_silenced and _template.animations.has("idle_unsil"):
+		return "idle_unsil"
 	for candidate in ["idle", "idle1", "idle2", "idle3"]:
 		if _template.animations.has(candidate):
 			return candidate
@@ -632,6 +915,9 @@ func _idle_animation() -> String:
 
 
 func _action_animation(kind: String) -> String:
+	if loaded_weapon in ["m4a1", "usp"] and kind in ["fire", "reload", "switch"]:
+		var sequence := {"fire": "shoot1", "reload": "reload", "switch": "draw"}[kind] as String
+		return sequence if weapon_silenced else sequence + "_unsil"
 	var candidates: Array[String] = []
 	match kind:
 		"fire":
@@ -649,7 +935,8 @@ func _action_animation(kind: String) -> String:
 		"switch":
 			candidates.assign(["draw", "deploy", "up"])
 		"knife":
-			candidates.assign(["slash1", "slash2", "stab", "midslash1", "midslash2"])
+			candidates.assign(["midslash1" if _action_serial % 2 == 0 else "midslash2"])
+			_action_serial += 1
 		"throw":
 			candidates.assign(["throw", "throw1", "release"])
 		_:

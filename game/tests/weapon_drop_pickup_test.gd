@@ -99,6 +99,7 @@ func _run() -> void:
 	)
 
 	# 4. Touching a drop with an empty slot picks it up and deploys it.
+	game.audio_router.reset()
 	game.player.global_position = bot_drop.global_position
 	game._process_weapon_pickups()
 	_check(
@@ -115,6 +116,13 @@ func _run() -> void:
 		game.dropped_weapons.size() == 1,
 		"claimed drop leaves the live drop list",
 	)
+	var pickup_audio: Array[Dictionary] = game.audio_router.trace().filter(
+		func(event: Dictionary) -> bool:
+			return str(event.kind) == "start" and str(event.event_name) == "weapon.acquire"
+	)
+	_check(pickup_audio.size() == 1 and pickup_audio[0].sample == "items/gunpickup2.wav"
+		and int(pickup_audio[0].channel) == CS16AudioEventRouter.CHAN_ITEM,
+		"successful ground pickup emits the original gunpickup2 cue once")
 
 	# 5. A round reset clears every remaining ground weapon.
 	game._reset_combatants_for_round()

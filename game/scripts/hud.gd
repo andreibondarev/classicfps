@@ -2,11 +2,14 @@ class_name GameHUD
 extends CanvasLayer
 
 signal deploy_requested
+signal deploy_cancel_requested
 signal resume_requested
 signal team_selected(team_id: int)
 signal class_selected(class_id: int)
 signal buy_item_requested(item_id: String)
+signal paused_input_received(event: InputEvent)
 signal disconnect_requested
+signal network_connection_requested(action: String, address: String, port: String)
 signal quit_requested
 signal menu_command_requested(command: String)
 signal ui_sound_requested(sample_path: String)
@@ -15,6 +18,7 @@ signal menu_action_requested(action: String, payload: Dictionary)
 signal options_apply_requested(values: Dictionary)
 signal options_defaults_requested(page: String)
 signal options_cancel_requested
+signal chat_submitted(text: String, team_only: bool)
 
 # CS 1.6's one fixed HUD colour (RGB 255,160,0) shared by every element —
 # health, armor, ammo, timer, money — in every state.
@@ -44,6 +48,7 @@ const GAMEUI_MENU_TEXT_DIM := Color(178.0 / 255.0, 166.0 / 255.0, 140.0 / 255.0,
 const GAMEUI_PANEL := Color(76.0 / 255.0, 88.0 / 255.0, 68.0 / 255.0, 0.94)
 const GAMEUI_PANEL_BORDER := Color(56.0 / 255.0, 64.0 / 255.0, 50.0 / 255.0, 1.0)
 const VGUI_BASE_SIZE := Vector2(640.0, 480.0)
+const SCOREBOARD_COLUMN_WIDTHS := [200, 76, 36, 60, 48, 46, 46]
 const VGUI_MENU_ORIGIN := Vector2(76.0, 0.0)
 const VGUI_MENU_SIZE := Vector2(552.0, 448.0)
 # One uniform row metric for every buy list: CS 1.6 keeps a single font and a
@@ -51,6 +56,9 @@ const VGUI_MENU_SIZE := Vector2(552.0, 448.0)
 const BUY_ROW_WIDTH := 202.0
 const BUY_PRICE_COLUMN_WIDTH := 40.0
 const BUY_ROW_FONT_SIZE := 10
+const CHAT_MAX_ROWS := 6
+const CHAT_ROW_SECONDS := 8.0
+const CHAT_MAX_LENGTH := 120
 
 const TEAM_MENU_ITEMS := [
 	["1", "TERRORIST FORCES", 1, "terbutton"],
@@ -189,6 +197,15 @@ var buy_description: Label
 var scoreboard_rows: VBoxContainer
 var pause_main_menu: Control
 var pause_options_menu: Control
+var network_menu: Control
+var network_address: LineEdit
+var network_port: LineEdit
+var network_status: Label
+var network_connect_button: Button
+var _network_menu_action := "join"
+var _network_online := false
+var _network_client := false
+var _pause_return_state := "none"
 var options_tab_bar: HBoxContainer
 var options_pages: Control
 var accessibility_overlay: Control
@@ -200,8 +217,17 @@ var hitmarker: Control
 var crosshair: Control
 var radar_display: CS16RadarDisplay
 var kill_feed_box: VBoxContainer
+var _kill_feed_icons := {}
+var chat_feed_box: VBoxContainer
+var chat_input_panel: Panel
+var chat_prompt_label: Label
+var chat_entry: LineEdit
+var _chat_team_only := false
 var hostage_status_group: HBoxContainer
 var _banner_generation := 0
+var _banner_tween: Tween
+var _objective_tween: Tween
+var _damage_tween: Tween
 var settings: Node
 var _weapon_name := "AK-47"
 var _fire_mode := "FULL AUTO"
@@ -221,6 +247,9 @@ var _buy_navigation_level := "category"
 var _buy_items: Array = []
 var _menu_state := "none"
 var _gameplay_controls: Array[Control] = []
+var _participant_controls: Array[Control] = []
+var _spectating := false
+var _spectator_first_person := false
 var vgui_source: CS16VGuiSource
 var vgui_amber := VGUI_AMBER_FALLBACK
 var vgui_amber_dim := VGUI_AMBER_DIM_FALLBACK
@@ -236,10 +265,22 @@ var _money_sign: TextureRect
 var _armor_icon: TextureRect
 var _ammo_icon: TextureRect
 var _buyzone_icon: TextureRect
+var _defuse_kit_icon: TextureRect
+var defuse_progress_bar: Control
+var _defuse_progress_fill: ColorRect
+var _has_defuse_kit := false
+var _defuse_progress_active := false
 var _has_helmet := false
 var _in_buy_zone := false
+var buy_menu_generation := 0
 var _last_money := -2147483648
 var _money_flash_generation := 0
+var money_delta: HBoxContainer
+var money_delta_digits: HBoxContainer
+var money_delta_amount := 0
+var _money_delta_sign: TextureRect
+var _money_delta_dollar: TextureRect
+var _money_delta_tween: Tween
 var _objective_text := ""
 var _objective_generation := 0
 var _crosshair_spread_px := 0
@@ -354,6 +395,9 @@ func _ready() -> void:
 	vgui_blue = vgui_source.scheme_color("team2", VGUI_BLUE_FALLBACK)
 	vgui_red = vgui_source.scheme_color("team1", VGUI_RED_FALLBACK)
 	_vgui_font = _font_for_rule("Default")
+	# The finite atlas is loaded before combat, never from incoming weapon paths.
+	for sprite: String in ["knife", "ak47", "awp", "deagle", "famas", "fiveseven", "flashbang", "g3sg1", "galil", "glock18", "grenade", "m249", "m3", "m4a1", "mp5navy", "p228", "p90", "scout", "sg550", "sg552", "ump45", "usp", "tmp", "xm1014", "skull", "tracktrain", "aug", "mac10", "elite", "headshot"]:
+		_kill_feed_icons[sprite] = load("res://assets/hud/death/d_%s.png" % sprite)
 	_build_hud()
 	settings.changed.connect(_apply_accessibility)
 	_apply_accessibility()
@@ -409,6 +453,7 @@ func _build_hud() -> void:
 	kill_feed_box.alignment = BoxContainer.ALIGNMENT_BEGIN
 	kill_feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(kill_feed_box)
+	_build_chat(root)
 
 	hostage_status_group = HBoxContainer.new()
 	hostage_status_group.name = "ClassicHostageStatus"
@@ -438,6 +483,22 @@ func _build_hud() -> void:
 	money_label.name = "Money"
 	money_label.visible = false
 	root.add_child(money_label)
+	money_delta = HBoxContainer.new()
+	money_delta.name = "ClassicMoneyDelta"
+	money_delta.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	money_delta.position = Vector2(-224, -146)
+	money_delta.size = Vector2(200, 28)
+	money_delta.alignment = BoxContainer.ALIGNMENT_END
+	money_delta.add_theme_constant_override("separation", 2)
+	money_delta.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	money_delta.modulate.a = 0.0
+	root.add_child(money_delta)
+	_money_delta_sign = _classic_sprite("plus", CLASSIC_GREEN)
+	_money_delta_dollar = _classic_sprite("dollar", CLASSIC_GREEN)
+	money_delta_digits = _digit_row()
+	money_delta.add_child(_money_delta_sign)
+	money_delta.add_child(_money_delta_dollar)
+	money_delta.add_child(money_delta_digits)
 
 	var health_group := HBoxContainer.new()
 	health_group.name = "ClassicVitals"
@@ -527,6 +588,13 @@ func _build_hud() -> void:
 	_buyzone_icon.size = Vector2(32, 32)
 	_buyzone_icon.visible = false
 	root.add_child(_buyzone_icon)
+	_defuse_kit_icon = _classic_sprite("defuser", Color("#00a000"))
+	_defuse_kit_icon.name = "ClassicDefuseKit"
+	_defuse_kit_icon.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	_defuse_kit_icon.position = Vector2(2, -16)
+	_defuse_kit_icon.size = Vector2(32, 32)
+	_defuse_kit_icon.visible = false
+	root.add_child(_defuse_kit_icon)
 
 	status_label = _classic_label("", 17, CLASSIC_ORANGE)
 	status_label.name = "ObjectiveStatus"
@@ -535,6 +603,35 @@ func _build_hud() -> void:
 	status_label.size = Vector2(520, 30)
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(status_label)
+
+	# GoldSrc's BarTime presentation is deliberately plain: a dark rectangular
+	# track and a green fill near the lower middle of the view. It appears only
+	# for the CT currently performing the authoritative defuse.
+	defuse_progress_bar = Control.new()
+	defuse_progress_bar.name = "ClassicDefuseProgress"
+	defuse_progress_bar.set_anchors_preset(Control.PRESET_CENTER)
+	defuse_progress_bar.position = Vector2(-100, 72)
+	defuse_progress_bar.size = Vector2(200, 12)
+	defuse_progress_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	defuse_progress_bar.visible = false
+	root.add_child(defuse_progress_bar)
+	var progress_track := Panel.new()
+	progress_track.name = "Track"
+	progress_track.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	progress_track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var track_style := StyleBoxFlat.new()
+	track_style.bg_color = Color(0.0, 0.0, 0.0, 0.72)
+	track_style.border_color = Color(0.55, 0.55, 0.55, 0.9)
+	track_style.set_border_width_all(1)
+	progress_track.add_theme_stylebox_override("panel", track_style)
+	defuse_progress_bar.add_child(progress_track)
+	_defuse_progress_fill = ColorRect.new()
+	_defuse_progress_fill.name = "Fill"
+	_defuse_progress_fill.position = Vector2(2, 2)
+	_defuse_progress_fill.size = Vector2(0, 8)
+	_defuse_progress_fill.color = CLASSIC_GREEN
+	_defuse_progress_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	defuse_progress_bar.add_child(_defuse_progress_fill)
 
 	spectate_label = _classic_label("", 17, CLASSIC_ORANGE)
 	spectate_label.name = "ClassicSpectate"
@@ -573,9 +670,11 @@ func _build_hud() -> void:
 		"ClassicRadarContacts",
 		"ClassicHostageStatus",
 		"ClassicMoney",
+		"ClassicMoneyDelta",
 		"ClassicVitals",
 		"ClassicTimer",
 		"ClassicAmmo",
+		"ClassicDefuseProgress",
 		"ObjectiveStatus",
 		"ClassicSpectate",
 		"ClassicAnnouncement",
@@ -585,6 +684,9 @@ func _build_hud() -> void:
 		var gameplay_control := root.get_node_or_null(control_name) as Control
 		if gameplay_control != null:
 			_gameplay_controls.append(gameplay_control)
+			if control_name in ["ClassicRadar", "ClassicRadarContacts", "ClassicHostageStatus",
+				"ClassicMoney", "ClassicMoneyDelta", "ClassicVitals", "ClassicAmmo", "Crosshair", "DamageVignette"]:
+				_participant_controls.append(gameplay_control)
 	_build_deploy_overlay(root)
 	_build_buy_overlay(root)
 	_build_scoreboard_overlay(root)
@@ -592,6 +694,144 @@ func _build_hud() -> void:
 	root.resized.connect(func() -> void: layout_for_viewport(root.size))
 	layout_for_viewport(root.size)
 	_refresh_gameplay_visibility()
+
+
+func _build_chat(root: Control) -> void:
+	chat_feed_box = VBoxContainer.new()
+	chat_feed_box.name = "ClassicChatFeed"
+	chat_feed_box.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	chat_feed_box.offset_left = 18.0
+	chat_feed_box.offset_top = -238.0
+	chat_feed_box.offset_right = 622.0
+	chat_feed_box.offset_bottom = -86.0
+	chat_feed_box.alignment = BoxContainer.ALIGNMENT_END
+	chat_feed_box.add_theme_constant_override("separation", 1)
+	chat_feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(chat_feed_box)
+
+	chat_input_panel = Panel.new()
+	chat_input_panel.name = "ClassicChatInput"
+	chat_input_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	chat_input_panel.offset_left = 18.0
+	chat_input_panel.offset_top = -78.0
+	chat_input_panel.offset_right = 622.0
+	chat_input_panel.offset_bottom = -46.0
+	chat_input_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var input_style := StyleBoxFlat.new()
+	input_style.bg_color = Color(0.0, 0.0, 0.0, 0.72)
+	input_style.border_color = Color(CLASSIC_ORANGE, 0.58)
+	input_style.set_border_width_all(1)
+	input_style.set_corner_radius_all(0)
+	chat_input_panel.add_theme_stylebox_override("panel", input_style)
+	chat_input_panel.visible = false
+	root.add_child(chat_input_panel)
+
+	chat_prompt_label = _classic_label("Say:", 14, CLASSIC_ORANGE)
+	chat_prompt_label.name = "Prompt"
+	chat_prompt_label.position = Vector2(8, 2)
+	chat_prompt_label.size = Vector2(78, 28)
+	chat_input_panel.add_child(chat_prompt_label)
+
+	chat_entry = LineEdit.new()
+	chat_entry.name = "Entry"
+	chat_entry.position = Vector2(84, 2)
+	chat_entry.size = Vector2(510, 28)
+	chat_entry.max_length = CHAT_MAX_LENGTH
+	chat_entry.context_menu_enabled = false
+	chat_entry.virtual_keyboard_enabled = false
+	chat_entry.caret_blink = true
+	chat_entry.add_theme_font_size_override("font_size", 14)
+	chat_entry.add_theme_color_override("font_color", Color("#f2d6aa"))
+	chat_entry.add_theme_color_override("caret_color", CLASSIC_ORANGE_BRIGHT)
+	chat_entry.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	chat_entry.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	if _vgui_font != null:
+		chat_entry.add_theme_font_override("font", _vgui_font)
+	chat_entry.text_submitted.connect(_submit_chat_entry)
+	chat_entry.gui_input.connect(_on_chat_entry_gui_input)
+	chat_input_panel.add_child(chat_entry)
+
+
+func open_chat(team_only: bool) -> bool:
+	if _menu_state not in ["none", "scoreboard"] or not is_instance_valid(chat_entry):
+		return false
+	if _menu_state == "scoreboard":
+		set_scoreboard_visible(false)
+	_chat_team_only = team_only
+	chat_prompt_label.text = "Say (TEAM):" if team_only else "Say:"
+	chat_prompt_label.size.x = 102.0 if team_only else 78.0
+	chat_entry.position.x = 108.0 if team_only else 84.0
+	chat_entry.size.x = 486.0 if team_only else 510.0
+	chat_entry.clear()
+	chat_input_panel.visible = true
+	_set_menu_state("chat")
+	chat_entry.grab_focus()
+	return true
+
+
+func close_chat() -> void:
+	if not is_instance_valid(chat_input_panel):
+		return
+	chat_input_panel.visible = false
+	chat_entry.clear()
+	chat_entry.release_focus()
+	if _menu_state == "chat":
+		_set_menu_state("none")
+
+
+func _submit_chat_entry(value: String) -> void:
+	var text := value.strip_edges()
+	var team_only := _chat_team_only
+	close_chat()
+	if not text.is_empty():
+		chat_submitted.emit(text, team_only)
+
+
+func _on_chat_entry_gui_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+		close_chat()
+		chat_entry.accept_event()
+
+
+func add_chat_message(message: Dictionary) -> void:
+	if not is_instance_valid(chat_feed_box):
+		return
+	var sender_name := str(message.get("sender_name", "Player")).replace("\n", " ").left(32)
+	var text := str(message.get("text", "")).replace("\n", " ").strip_edges().left(CHAT_MAX_LENGTH)
+	if text.is_empty():
+		return
+	var row := RichTextLabel.new()
+	row.name = "ChatRow"
+	row.fit_content = true
+	row.scroll_active = false
+	row.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.custom_minimum_size = Vector2(584, 18)
+	if _vgui_font != null:
+		row.add_theme_font_override("normal_font", _vgui_font)
+	row.add_theme_font_size_override("normal_font_size", 14)
+	row.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	row.add_theme_constant_override("shadow_offset_x", 1)
+	row.add_theme_constant_override("shadow_offset_y", 1)
+	if bool(message.get("team_only", false)):
+		row.push_color(CLASSIC_GREEN)
+		row.add_text("(TEAM) ")
+		row.pop()
+	row.push_color(Color(_kill_feed_team_hex(str(message.get("team", "UNASSIGNED")))))
+	row.add_text(sender_name)
+	row.pop()
+	row.push_color(Color("#f2d6aa"))
+	row.add_text(" :  " + text)
+	row.pop()
+	chat_feed_box.add_child(row)
+	while chat_feed_box.get_child_count() > CHAT_MAX_ROWS:
+		var oldest := chat_feed_box.get_child(0)
+		chat_feed_box.remove_child(oldest)
+		oldest.queue_free()
+	get_tree().create_timer(CHAT_ROW_SECONDS).timeout.connect(func() -> void:
+		if is_instance_valid(row):
+			row.queue_free()
+	)
 
 
 func _build_crosshair(root: Control) -> void:
@@ -648,6 +888,12 @@ func show_flash_blind(seconds: float) -> void:
 	_flash_blind_tween.tween_property(
 		flash_blind_overlay, "color:a", 0.0, seconds * 0.55,
 	)
+
+
+func set_network_flash(total: float, remaining: float) -> void:
+	if _flash_blind_tween != null and _flash_blind_tween.is_valid():
+		_flash_blind_tween.kill()
+	flash_blind_overlay.color.a = clampf(remaining / maxf(total * 0.55, 0.001), 0.0, 1.0)
 
 
 func _build_deploy_overlay(root: Control) -> void:
@@ -776,7 +1022,7 @@ func _build_team_menu() -> void:
 		),
 		cancel_rect.position,
 		cancel_rect.size,
-		func() -> void: show_team_menu(),
+		func() -> void: deploy_cancel_requested.emit(),
 		12,
 		true,
 	)
@@ -902,15 +1148,30 @@ func _show_class_portrait(portrait_name: String, display_name: String) -> void:
 	class_portrait_label.text = display_name
 
 
+var _deploy_selection_rejected := false
+
+
+func reject_deploy_selection() -> void:
+	_deploy_selection_rejected = true
+	show_team_menu()
+
+
 func _select_team(team_id: int) -> void:
+	_deploy_selection_rejected = false
 	if team_id == 6:
 		team_selected.emit(team_id)
+		if _deploy_selection_rejected:
+			return
 		deploy_overlay.visible = false
 		_set_menu_state("none")
 		_refresh_gameplay_visibility()
 		return
 	_selected_team = 1 if team_id == 5 else team_id
-	team_selected.emit(_selected_team)
+	# Preserve auto-assign until game authority resolves it. Its synchronous
+	# acceptance updates _selected_team to the actual class family.
+	team_selected.emit(team_id)
+	if _deploy_selection_rejected:
+		return
 	show_class_menu(_selected_team)
 
 
@@ -1006,6 +1267,11 @@ func _build_buy_overlay(root: Control) -> void:
 
 
 func _show_buy_category(category_id: String) -> void:
+	# MainBuyMenu defines these as purchase commands, not submenu resources.
+	# The purchase result owns closing the menu, just like weapon purchases.
+	if category_id in ["primary_ammo", "secondary_ammo"]:
+		buy_item_requested.emit("primammo" if category_id == "primary_ammo" else "secammo")
+		return
 	var old_title := buy_menu_frame.get_node_or_null("ItemTitle")
 	if old_title != null:
 		old_title.free()
@@ -1015,10 +1281,8 @@ func _show_buy_category(category_id: String) -> void:
 		main_title.visible = false
 	if category_prompt != null:
 		category_prompt.visible = false
-	for child in buy_list_panel.get_children():
-		child.free()
-	for child in buy_item_panel.get_children():
-		child.free()
+	_clear_buy_controls(buy_list_panel)
+	_clear_buy_controls(buy_item_panel)
 	_buy_category = category_id
 	_buy_navigation_level = "item"
 	_set_menu_state("buy_item")
@@ -1071,14 +1335,15 @@ func _show_buy_category(category_id: String) -> void:
 			"$%d" % price,
 			BUY_ROW_FONT_SIZE,
 			vgui_amber_dim,
+			"DefaultUnderline" if row_label != null else "Default",
 		)
 		price_label.name = "PriceText"
 		price_label.position = Vector2(BUY_ROW_WIDTH - BUY_PRICE_COLUMN_WIDTH - 8.0, 0.0)
 		price_label.size = Vector2(BUY_PRICE_COLUMN_WIDTH, 20.0)
 		price_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		# The accelerator RichTextLabel draws from the row top; anchor the
-		# price to the same top edge so name and price share one baseline.
-		price_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		# Match both the name's font metrics and its vertical alignment.
+		# Accelerator overlays draw at the top; ordinary Button text centers.
+		price_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP if row_label != null else VERTICAL_ALIGNMENT_CENTER
 		button.add_child(price_label)
 		button.mouse_entered.connect(func() -> void: _show_buy_portrait(item))
 		button.focus_entered.connect(func() -> void: _show_buy_portrait(item))
@@ -1144,16 +1409,12 @@ func _show_buy_category(category_id: String) -> void:
 	)
 	if not _buy_items.is_empty():
 		_show_buy_portrait(_buy_items[0])
-	var first := buy_list_panel.get_child(0) as Control if buy_list_panel.get_child_count() > 0 else null
-	if first != null:
-		first.call_deferred("grab_focus")
+	_focus_first_buy_row.call_deferred()
 
 
 func _show_buy_categories() -> void:
-	for child in buy_list_panel.get_children():
-		child.free()
-	for child in buy_item_panel.get_children():
-		child.free()
+	_clear_buy_controls(buy_list_panel)
+	_clear_buy_controls(buy_item_panel)
 	_buy_navigation_level = "category"
 	_set_menu_state("buy_category")
 	# The submenu replaces the parent menu in CS 1.6; the item detail panel
@@ -1210,9 +1471,26 @@ func _show_buy_categories() -> void:
 		12,
 		true,
 	)
-	var first := buy_list_panel.get_child(0) as Control if buy_list_panel.get_child_count() > 0 else null
-	if first != null:
-		first.call_deferred("grab_focus")
+	_focus_first_buy_row.call_deferred()
+
+
+func _clear_buy_controls(panel: Control) -> void:
+	# A category, Back or purchase callback may still be running on one of
+	# these buttons. Detach now so old rows cannot draw, intercept input or
+	# collide with replacement names, then free after signal dispatch ends.
+	for child in panel.get_children():
+		panel.remove_child(child)
+		child.queue_free()
+
+
+func _focus_first_buy_row() -> void:
+	# Rapid navigation can retire several rows before deferred calls run.
+	# Resolve the current row here, never retain a soon-to-be-freed button.
+	if not buy_overlay.is_visible_in_tree() or buy_list_panel.get_child_count() == 0:
+		return
+	var first := buy_list_panel.get_child(0) as Control
+	if first != null and first.is_visible_in_tree():
+		first.grab_focus()
 
 
 func _buy_source_path(category_id: String) -> String:
@@ -1233,20 +1511,6 @@ func _buy_source_path(category_id: String) -> String:
 
 
 func _source_buy_items(category_id: String) -> Array:
-	if category_id == "primary_ammo":
-		return [_buy_item_dictionary(
-			"primammo",
-			"PRIMARY AMMO",
-			int(_buy_context.get("primary_ammo_price", 60)),
-			"",
-		)]
-	if category_id == "secondary_ammo":
-		return [_buy_item_dictionary(
-			"secammo",
-			"SECONDARY AMMO",
-			int(_buy_context.get("secondary_ammo_price", 40)),
-			"",
-		)]
 	var source_path := _buy_source_path(category_id)
 	var parsed := vgui_source.parse_file(source_path)
 	var controls: Dictionary = {}
@@ -1286,17 +1550,6 @@ func _source_buy_items(category_id: String) -> Array:
 	return ordered
 
 
-func _buy_item_dictionary(item_id: String, label: String, price: int, art: String) -> Dictionary:
-	return {
-		"item_id": item_id,
-		"label": label,
-		"price": price,
-		"art": art,
-		"source_control": item_id,
-		"y": 116,
-	}
-
-
 func _show_buy_portrait(item: Dictionary) -> void:
 	buy_portrait.texture = vgui_source.asset_texture(str(item.art)) if not str(item.art).is_empty() else null
 	buy_portrait.set_meta("app90_portrait", item.art)
@@ -1311,16 +1564,15 @@ func _strip_accelerator(text: String) -> String:
 
 
 func show_buy_menu(team_id: int, money: int, context: Dictionary = {}) -> void:
+	if _menu_state == "chat":
+		close_chat()
+	buy_menu_generation += 1
 	_buy_team = clampi(team_id, 1, 2)
 	_buy_money = maxi(0, money)
 	# The buy menu's ACCOUNT line and the HUD account counter are the same
 	# value by definition in CS 1.6; opening the menu re-asserts the HUD digits
 	# so the two can never disagree in one frame.
-	money_label.text = "$%d" % _buy_money
-	_last_money = _buy_money
-	if is_instance_valid(_money_sign):
-		_money_sign.modulate = _classic_sprite_modulate(CLASSIC_ORANGE)
-	_set_digit_row(money_digits, str(_buy_money), CLASSIC_ORANGE)
+	update_money(_buy_money)
 	_buy_context = context.duplicate(true)
 	_show_buy_categories()
 	buy_overlay.visible = true
@@ -1328,9 +1580,33 @@ func show_buy_menu(team_id: int, money: int, context: Dictionary = {}) -> void:
 	_refresh_gameplay_visibility()
 
 
+func update_buy_account(money: int, context: Dictionary) -> void:
+	if _buy_money == money and _buy_context == context:
+		return
+	_buy_money = maxi(0, money)
+	_buy_context = context.duplicate(true)
+	if buy_overlay.visible and _buy_navigation_level == "item":
+		_show_buy_category(_buy_category)
+
+
 func set_buy_menu_visible(visible: bool) -> void:
+	if visible and _menu_state == "chat":
+		close_chat()
+	if visible and not buy_overlay.visible:
+		buy_menu_generation += 1
 	buy_overlay.visible = visible
 	_set_menu_state("buy_category" if visible else "none")
+	_refresh_gameplay_visibility()
+
+
+func complete_buy_purchase(generation := -1) -> void:
+	# A delayed reply must not dismiss a newer buy session or steal focus from
+	# Pause/Options opened while the reliable request was in flight.
+	if not buy_overlay.visible or (generation >= 0 and generation != buy_menu_generation):
+		return
+	buy_overlay.hide()
+	if _menu_state in ["buy_category", "buy_item"]:
+		_set_menu_state("none")
 	_refresh_gameplay_visibility()
 
 
@@ -1343,12 +1619,8 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	root.add_child(scoreboard_overlay)
 	scoreboard_canvas = _make_flow_canvas(scoreboard_overlay, "ScoreboardFlowCanvas")
 	var source_path := CS16VGuiSource.CSTRIKE_UI + "ScoreBoard.kv"
-	var source_rect := vgui_source.control_rect(
-		source_path,
-		"ClientScoreBoard",
-		Rect2(60, 48, 520, 340),
-		VGUI_BASE_SIZE,
-	)
+	# User reference: near-full-height scoreboard within the centered 4:3 canvas.
+	var source_rect := Rect2(60, 16, 520, 448)
 	var panel := PanelContainer.new()
 	panel.name = "ClientScoreBoard"
 	panel.position = source_rect.position
@@ -1356,27 +1628,28 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	panel.clip_contents = true
 	panel.set_meta("app90_source", source_path)
 	panel.set_meta("app90_control", "ClientScoreBoard")
-	# CS 1.6's scoreboard is a translucent black VGUI panel with no bright
-	# frame around it.
-	panel.add_theme_stylebox_override(
-		"panel",
-		_panel_style(Color(0.0, 0.0, 0.0, 0.74), Color(0.0, 0.0, 0.0, 0.0), 0),
-	)
+	var panel_style := _panel_style(Color(0.02, 0.025, 0.02, 0.36), Color(vgui_amber, 0.45), 6)
+	panel_style.content_margin_left = 4
+	panel_style.content_margin_right = 4
+	panel_style.content_margin_top = 3
+	panel_style.content_margin_bottom = 3
+	panel.add_theme_stylebox_override("panel", panel_style)
 	scoreboard_canvas.add_child(panel)
 	var column := VBoxContainer.new()
 	column.name = "ScoreboardContent"
-	column.add_theme_constant_override("separation", 2)
+	column.add_theme_constant_override("separation", 0)
 	panel.add_child(column)
-	var server := _vgui_text("Counter-Strike 1.6  |  de_dust2", 14, vgui_amber)
-	server.name = "ServerName"
-	server.custom_minimum_size.y = 24
-	column.add_child(server)
-	var header := _scoreboard_row(["NAME", "SCORE", "DEATHS", "LATENCY"], vgui_amber_dim)
+	var header := _scoreboard_row(["Counter-Strike 1.6  |  de_dust2", "", "HP", "Money", "Score", "Deaths", "Latency"], vgui_amber)
 	header.name = "ColumnHeader"
+	header.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	header.get_child(0).name = "ServerName"
+	header.get_child(0).size_flags_stretch_ratio = SCOREBOARD_COLUMN_WIDTHS[0] + SCOREBOARD_COLUMN_WIDTHS[1]
+	header.get_child(1).free()
 	column.add_child(header)
+	column.add_child(_scoreboard_divider(vgui_amber))
 	var scroll := ScrollContainer.new()
 	scroll.name = "PlayerScroll"
-	scroll.custom_minimum_size = Vector2(512, 276)
+	scroll.custom_minimum_size = Vector2(0, 0)
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1385,44 +1658,72 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	column.add_child(scroll)
 	scoreboard_rows = VBoxContainer.new()
 	scoreboard_rows.name = "PlayerList"
-	scoreboard_rows.add_theme_constant_override("separation", 1)
+	scoreboard_rows.add_theme_constant_override("separation", 0)
 	scoreboard_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(scoreboard_rows)
+	# A full server adds a scrollbar; keep the heading over the same columns.
+	scoreboard_rows.resized.connect(func() -> void:
+		header.custom_minimum_size.x = scoreboard_rows.size.x)
 	update_scoreboard([], "Counter-Strike 1.6", "de_dust2", 0, 0)
+
+
+func _scoreboard_divider(color: Color) -> ColorRect:
+	var line := ColorRect.new()
+	line.custom_minimum_size.y = 1
+	line.color = Color(color, 0.65)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return line
+
+
+func _scoreboard_cell(value: String, index: int, color: Color) -> Label:
+	var label := _vgui_text(value, 10, color)
+	label.name = ["Name", "Status", "Health", "Money", "Score", "Deaths", "Latency"][index]
+	label.custom_minimum_size.y = 20
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.size_flags_stretch_ratio = SCOREBOARD_COLUMN_WIDTHS[index]
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if index < 2 else HORIZONTAL_ALIGNMENT_CENTER
+	return label
 
 
 func _scoreboard_row(values: Array, color: Color) -> HBoxContainer:
 	var row := HBoxContainer.new()
-	row.custom_minimum_size.y = 18
+	row.custom_minimum_size.y = 20
 	row.add_theme_constant_override("separation", 0)
-	var widths := [302, 66, 76, 68]
 	for index in values.size():
-		var label := _vgui_text(str(values[index]), 11, color)
-		label.custom_minimum_size = Vector2(widths[index], 18)
-		label.horizontal_alignment = (
-			HORIZONTAL_ALIGNMENT_LEFT
-			if index == 0
-			else HORIZONTAL_ALIGNMENT_CENTER
-		)
-		row.add_child(label)
+		row.add_child(_scoreboard_cell(str(values[index]), index, color))
 	return row
 
 
 func _scoreboard_player_row(player: Dictionary, team_color := Color.WHITE) -> HBoxContainer:
 	var row := HBoxContainer.new()
-	row.custom_minimum_size.y = 18
+	row.custom_minimum_size.y = 20
 	row.add_theme_constant_override("separation", 0)
+	var is_local := bool(player.get("is_local", false))
+	row.set_meta("is_local", is_local)
+	row.set_meta("actor_id", str(player.get("id", "")))
+	if is_local:
+		# Draw behind the existing columns without changing their layout or input.
+		var highlight := StyleBoxFlat.new()
+		highlight.bg_color = Color(1.0, 1.0, 1.0, 0.14)
+		highlight.border_width_left = 2
+		highlight.border_color = vgui_amber
+		row.draw.connect(func() -> void:
+			row.draw_style_box(highlight, Rect2(Vector2.ZERO, row.size)))
 	var identity := HBoxContainer.new()
-	identity.custom_minimum_size = Vector2(302, 18)
+	identity.custom_minimum_size.y = 20
+	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	identity.size_flags_stretch_ratio = SCOREBOARD_COLUMN_WIDTHS[0]
 	identity.add_theme_constant_override("separation", 4)
+	var gutter := Control.new()
+	gutter.custom_minimum_size.x = 12
+	gutter.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	identity.add_child(gutter)
 	# CS 1.6 draws every player's name (and row values) in the team color:
 	# pale blue for CTs, red for Terrorists, white for spectators.
-	var name_label := _vgui_text(str(player.get("name", "Player")), 11, team_color)
+	var name_label := _vgui_text(str(player.get("name", "Player")), 10, team_color)
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.add_child(name_label)
-	# CS 1.6's scoreboard rows carry no dead/VIP/bomb glyphs — dead players
-	# simply keep an unadorned row and the bomb carrier is never revealed.
-	# Only the voice speaker/muted icon is drawn beside the name.
+	# Keep original voice art; no invented player avatars or account integration.
 	if bool(player.get("voice_muted", false)):
 		identity.add_child(_scoreboard_voice_icon(true, 0))
 	elif bool(player.get("voice_active", false)):
@@ -1430,20 +1731,18 @@ func _scoreboard_player_row(player: Dictionary, team_color := Color.WHITE) -> HB
 			_scoreboard_voice_icon(false, int(player.get("voice_level", 4)))
 		)
 	row.add_child(identity)
-	for value in [
+	var alive := bool(player.get("alive", true))
+	var private_stats := bool(player.get("show_private_stats", false))
+	var values := [
+		"Dead" if not alive else ("Bomb" if private_stats and bool(player.get("bomb", false)) else ""),
+		str(player.health) if private_stats and alive and player.has("health") else "",
+		"$%d" % int(player.money) if private_stats and player.has("money") else "",
 		player.get("score", 0),
 		player.get("deaths", 0),
-		# CS 1.6 marks dead players by printing DEAD in the ping column.
-		"DEAD" if not bool(player.get("alive", true)) else player.get("latency", 0),
-	]:
-		var label := _vgui_text(str(value), 11, team_color)
-		var widths := [66, 76, 68]
-		label.custom_minimum_size = Vector2(widths[label.get_index() if label.get_index() >= 0 else 0], 18)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_child(label)
-	# Child indices are only known after insertion; apply the exact column widths.
-	for index in range(1, row.get_child_count()):
-		(row.get_child(index) as Control).custom_minimum_size.x = [66, 76, 68][index - 1]
+		player.get("latency", 0),
+	]
+	for index in values.size():
+		row.add_child(_scoreboard_cell(str(values[index]), index + 1, team_color))
 	row.set_meta("uses_source_status_icons", true)
 	return row
 
@@ -1491,15 +1790,17 @@ func update_scoreboard(
 	terrorist_score: int,
 ) -> void:
 	var server_label := scoreboard_canvas.get_node(
-		"ClientScoreBoard/ScoreboardContent/ServerName"
+		"ClientScoreBoard/ScoreboardContent/ColumnHeader/ServerName"
 	) as Label
 	server_label.text = "%s  |  %s" % [server_name, map_name]
+	var scroll := scoreboard_rows.get_parent() as ScrollContainer
+	var previous_scroll := scroll.scroll_vertical
 	for child in scoreboard_rows.get_children():
 		child.free()
 	var teams := [
-		[2, "COUNTER-TERRORISTS", ct_score, vgui_blue],
-		[1, "TERRORISTS", terrorist_score, vgui_red],
-		[0, "SPECTATORS", 0, Color(0.8, 0.8, 0.8, 1.0)],
+		[1, "Terrorists", terrorist_score, vgui_red],
+		[2, "Counter-Terrorists", ct_score, vgui_blue],
+		[0, "Spectators", 0, vgui_amber],
 	]
 	for team_entry in teams:
 		var team_id := int(team_entry[0])
@@ -1508,25 +1809,40 @@ func update_scoreboard(
 			var player: Dictionary = player_variant
 			if int(player.get("team", 0)) == team_id:
 				team_players.append(player)
+		team_players.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			if int(a.get("score", 0)) != int(b.get("score", 0)):
+				return int(a.get("score", 0)) > int(b.get("score", 0))
+			if int(a.get("deaths", 0)) != int(b.get("deaths", 0)):
+				return int(a.get("deaths", 0)) < int(b.get("deaths", 0))
+			return str(a.get("id", a.get("name", ""))) < str(b.get("id", b.get("name", ""))))
+		if scoreboard_rows.get_child_count() > 0:
+			var gap := Control.new()
+			gap.custom_minimum_size.y = 6
+			scoreboard_rows.add_child(gap)
 		var section := _scoreboard_row(
 			[
-				"%s  —  %d %s" % [
+				"%s  -  %d %s" % [
 					team_entry[1],
 					team_players.size(),
 					"player" if team_players.size() == 1 else "players",
 				],
-				str(team_entry[2]),
-				"",
-				"",
+				"", "", "",
+				str(team_entry[2]) if team_id != 0 else "",
+				"", "",
 			],
 			team_entry[3],
 		)
 		section.name = "Team%dSection" % team_id
+		# Team title spans name/status space; numeric cells remain aligned.
+		section.get_child(0).size_flags_stretch_ratio = SCOREBOARD_COLUMN_WIDTHS[0] + SCOREBOARD_COLUMN_WIDTHS[1]
+		section.get_child(1).free()
 		scoreboard_rows.add_child(section)
+		scoreboard_rows.add_child(_scoreboard_divider(team_entry[3]))
 		for player in team_players:
-			var row := _scoreboard_player_row(player, team_entry[3])
-			row.name = "Player_%s" % str(player.get("name", "Player")).validate_node_name()
+			var row := _scoreboard_player_row(player, team_entry[3] if team_id != 0 else Color(0.8, 0.8, 0.8))
+			row.name = "Player_%s" % str(player.get("id", player.get("name", "Player"))).validate_node_name()
 			scoreboard_rows.add_child(row)
+	scroll.set_deferred("scroll_vertical", previous_scroll)
 
 
 func show_scoreboard(
@@ -1560,6 +1876,7 @@ func _build_pause_overlay(root: Control) -> void:
 	pause_canvas = _make_flow_canvas(pause_overlay, "PauseFlowCanvas")
 	_build_pause_main_menu()
 	_build_pause_options_menu()
+	_build_network_menu()
 
 
 func _build_pause_main_menu() -> void:
@@ -1644,8 +1961,82 @@ func _activate_pause_command(command: String) -> void:
 			set_scoreboard_visible(true)
 		"options":
 			_show_pause_options()
+		"new_game":
+			show_network_menu("host")
+		"servers":
+			show_network_menu("join")
 		"quit":
 			quit_requested.emit()
+
+
+func _build_network_menu() -> void:
+	network_menu = Panel.new()
+	network_menu.name = "DirectConnection"
+	network_menu.position = Vector2(60, 80)
+	network_menu.size = Vector2(520, 310)
+	# Keep the underlying deployment text from bleeding through this form.
+	var background := Color(GAMEUI_PANEL.r, GAMEUI_PANEL.g, GAMEUI_PANEL.b, 1.0)
+	network_menu.add_theme_stylebox_override("panel", _panel_style(background, GAMEUI_PANEL_BORDER, 0))
+	network_menu.visible = false
+	pause_canvas.add_child(network_menu)
+	_vgui_label(network_menu, "Title", "DUST2 MULTIPLAYER", Vector2(16, 10), Vector2(480, 30), 18, GAMEUI_MENU_TEXT)
+	_vgui_label(network_menu, "Help", "Direct connection only. Both players need the same build.\nShare the host address and UDP port with your friend.", Vector2(16, 48), Vector2(488, 42), 12, GAMEUI_MENU_TEXT, true)
+	_vgui_label(network_menu, "AddressLabel", "Host address", Vector2(16, 108), Vector2(112, 28), 12, GAMEUI_MENU_TEXT)
+	_vgui_label(network_menu, "PortLabel", "UDP port", Vector2(16, 148), Vector2(112, 28), 12, GAMEUI_MENU_TEXT)
+	network_address = _network_entry("Address", "127.0.0.1", Vector2(136, 108), Vector2(364, 28), 253)
+	network_port = _network_entry("Port", "27447", Vector2(136, 148), Vector2(110, 28), 5)
+	network_status = _vgui_label(network_menu, "Status", "OFFLINE", Vector2(16, 188), Vector2(488, 58), 12, GAMEUI_MENU_TEXT, true)
+	network_connect_button = _vgui_button(network_menu, "Connect", "Join", Vector2(16, 266), Vector2(120, 28), _request_network_connection)
+	_vgui_button(network_menu, "Offline", "Return Offline", Vector2(168, 266), Vector2(160, 28), func() -> void: disconnect_requested.emit())
+	_vgui_button(network_menu, "Back", "Back", Vector2(404, 266), Vector2(96, 28), _show_pause_main)
+	network_address.text_submitted.connect(func(_text: String) -> void: _request_network_connection())
+	network_port.text_submitted.connect(func(_text: String) -> void: _request_network_connection())
+
+
+func _network_entry(entry_name: String, text: String, position: Vector2, size: Vector2, limit: int) -> LineEdit:
+	var entry := LineEdit.new()
+	entry.name = entry_name
+	entry.text = text
+	entry.position = position
+	entry.size = size
+	entry.max_length = limit
+	entry.add_theme_font_override("font", _font_for_rule("Default"))
+	entry.add_theme_font_size_override("font_size", 12)
+	entry.add_theme_color_override("font_color", GAMEUI_MENU_TEXT)
+	network_menu.add_child(entry)
+	return entry
+
+
+func show_network_menu(action: String) -> void:
+	_network_menu_action = action
+	pause_main_menu.hide()
+	pause_options_menu.hide()
+	accessibility_overlay.hide()
+	network_menu.show()
+	_refresh_network_controls()
+	_set_menu_state("network")
+	if action == "join" and not _network_online:
+		network_address.grab_focus()
+
+
+func update_network_status(text: String, online: bool, client_mode: bool) -> void:
+	network_status.text = text
+	_network_online = online
+	_network_client = client_mode
+	_refresh_network_controls()
+
+
+func _refresh_network_controls() -> void:
+	network_address.editable = not _network_online and _network_menu_action == "join"
+	network_port.editable = not _network_online
+	network_connect_button.text = "Host Dust2" if _network_menu_action == "host" else "Join"
+	network_connect_button.disabled = _network_online or (_network_menu_action == "host" and _network_client)
+	network_connect_button.tooltip_text = "Return Offline before hosting." if _network_menu_action == "host" and _network_client else ""
+
+
+func _request_network_connection() -> void:
+	if network_menu.is_visible_in_tree() and not network_connect_button.disabled:
+		network_connection_requested.emit(_network_menu_action, network_address.text, network_port.text)
 
 
 func _build_pause_options_menu() -> void:
@@ -1945,7 +2336,12 @@ func _build_source_options_page(tab_key: String) -> void:
 
 
 func _bind_source_option_control(tab_key: String, source_name: String, control: Control) -> void:
-	if tab_key == "mouse" and source_name == "ReverseMouse" and control is CheckBox:
+	if tab_key == "multiplayer" and source_name == "NameEntry" and control is LineEdit:
+		var entry := control as LineEdit
+		entry.max_length = settings.MAX_PLAYER_NAME_LENGTH
+		entry.text = settings.player_name
+		entry.text_changed.connect(func(value: String) -> void: _options_pending["player_name"] = value)
+	elif tab_key == "mouse" and source_name == "ReverseMouse" and control is CheckBox:
 		var reverse := control as CheckBox
 		reverse.button_pressed = settings.invert_y
 		reverse.toggled.connect(
@@ -2100,6 +2496,7 @@ func _on_source_option_command(tab_key: String, command: String) -> void:
 
 func _settings_values() -> Dictionary:
 	return {
+		"player_name": settings.player_name,
 		"mouse_sensitivity": settings.mouse_sensitivity,
 		"invert_y": settings.invert_y,
 		"field_of_view": settings.field_of_view,
@@ -2114,6 +2511,7 @@ func _settings_values() -> Dictionary:
 
 
 func _restore_settings(values: Dictionary) -> void:
+	settings.update_player_name(str(values.get("player_name", settings.player_name)))
 	settings.update_input(float(values.mouse_sensitivity), bool(values.invert_y))
 	settings.update_video(
 		float(values.field_of_view),
@@ -2126,6 +2524,9 @@ func _restore_settings(values: Dictionary) -> void:
 func _options_apply() -> void:
 	var values := _options_pending.duplicate(true)
 	_restore_settings(values)
+	values.player_name = settings.player_name
+	_options_pending = values.duplicate(true)
+	_sync_source_option_controls()
 	options_apply_requested.emit(values)
 	menu_command_requested.emit("options_apply")
 	_options_snapshot = values.duplicate(true)
@@ -2162,6 +2563,9 @@ func _options_defaults() -> void:
 
 
 func _sync_source_option_controls() -> void:
+	var name_entry := options_pages.get_node_or_null("Page_multiplayer/Source_NameEntry") as LineEdit
+	if name_entry != null:
+		name_entry.text = str(_options_pending.player_name)
 	var reverse := options_pages.get_node_or_null("Page_mouse/Source_ReverseMouse") as CheckBox
 	var sensitivity := options_pages.get_node_or_null("Page_mouse/Source_Slider") as HSlider
 	var volume := options_pages.get_node_or_null("Page_audio/Source_SFX Slider") as HSlider
@@ -2270,6 +2674,7 @@ func _hide_accessibility() -> void:
 
 
 func _show_pause_options() -> void:
+	network_menu.hide()
 	pause_main_menu.visible = false
 	pause_options_menu.visible = true
 	accessibility_overlay.visible = false
@@ -2280,6 +2685,8 @@ func _show_pause_options() -> void:
 
 
 func _show_pause_main() -> void:
+	if is_instance_valid(network_menu):
+		network_menu.hide()
 	pause_options_menu.visible = false
 	accessibility_overlay.visible = false
 	pause_main_menu.visible = true
@@ -2855,6 +3262,19 @@ func update_weapon(weapon_name: String, fire_mode: String) -> void:
 		_ammo_icon.set_meta("classic_sprite", sprite_name)
 
 
+func update_defuse_kit(team: String, alive: bool, owns_kit: bool) -> void:
+	_has_defuse_kit = team == "CT" and alive and owns_kit
+	_refresh_gameplay_visibility()
+
+
+func update_defuse_progress(active: bool, elapsed: float, total: float) -> void:
+	_defuse_progress_active = active and total > 0.0
+	var ratio := clampf(elapsed / total, 0.0, 1.0) if _defuse_progress_active else 0.0
+	if is_instance_valid(_defuse_progress_fill):
+		_defuse_progress_fill.size.x = 196.0 * ratio
+	_refresh_gameplay_visibility()
+
+
 func set_buy_zone(active: bool) -> void:
 	# Mirrors CS 1.6's buyzone icon contract: shown only while the player
 	# stands in a buy zone during buy time (and never under a modal menu).
@@ -2929,11 +3349,21 @@ func update_match(
 		set_buy_zone(true)
 	elif _in_buy_zone:
 		set_buy_zone(false)
+	# First-person spectating supplies the watched actor's account separately;
+	# do not alternate it with the dead local player's value every match tick.
+	if not (_spectating and _spectator_first_person):
+		update_money(money)
+
+
+func update_money(money: int) -> void:
+	if money == _last_money:
+		return
 	money_label.text = "$%d" % money
 	# CS 1.6's account counter is always the one fixed HUD orange; on change it
 	# briefly brightens (more additive light) but never shifts hue.
 	var money_color := CLASSIC_ORANGE
 	if _last_money != -2147483648 and money != _last_money:
+		_show_money_delta(money - _last_money)
 		money_color = CLASSIC_ORANGE_BRIGHT
 		_money_flash_generation += 1
 		var generation := _money_flash_generation
@@ -2951,11 +3381,50 @@ func update_match(
 	_set_digit_row(money_digits, str(money), money_color)
 
 
+func _show_money_delta(change: int) -> void:
+	# Same-direction rewards arriving together share one row; spending replaces
+	# a gain instead of silently netting it away. Unchanged snapshots do nothing.
+	if money_delta.modulate.a > 0.0 and signi(change) == signi(money_delta_amount):
+		money_delta_amount += change
+	else:
+		money_delta_amount = change
+	if _money_delta_tween != null and _money_delta_tween.is_valid():
+		_money_delta_tween.kill()
+	var color := CLASSIC_GREEN if money_delta_amount > 0 else CLASSIC_RED
+	var symbol := "plus" if money_delta_amount > 0 else "minus"
+	_money_delta_sign.texture = load(CLASSIC_HUD_ROOT.path_join(symbol + ".png"))
+	_money_delta_sign.custom_minimum_size = _money_delta_sign.texture.get_size()
+	_money_delta_sign.set_meta("classic_sprite", symbol)
+	_money_delta_sign.modulate = _classic_sprite_modulate(color)
+	_money_delta_dollar.modulate = _classic_sprite_modulate(color)
+	_set_digit_row(money_delta_digits, str(absi(money_delta_amount)), color)
+	money_delta.modulate.a = 1.0
+	_money_delta_tween = create_tween()
+	_money_delta_tween.tween_interval(1.0)
+	_money_delta_tween.tween_property(money_delta, "modulate:a", 0.0, 1.5)
+
+
+func _clear_money_delta() -> void:
+	if _money_delta_tween != null and _money_delta_tween.is_valid():
+		_money_delta_tween.kill()
+	money_delta_amount = 0
+	if is_instance_valid(money_delta):
+		money_delta.modulate.a = 0.0
+
+
+func reset_money_presentation() -> void:
+	_last_money = -2147483648
+	_money_flash_generation += 1
+	_clear_money_delta()
+
+
 func update_objective(text: String) -> void:
 	# CS 1.6 never keeps a persistent objective string on the HUD; surface
 	# objective changes as a transient round-start style message instead.
 	if text == _objective_text:
 		return
+	if _objective_tween != null and _objective_tween.is_valid():
+		_objective_tween.kill()
 	_objective_text = text
 	# The standing mission statement is never printed by CS 1.6's HUD —
 	# only situational objective updates appear, and only briefly.
@@ -2971,16 +3440,45 @@ func update_objective(text: String) -> void:
 	get_tree().create_timer(4.0).timeout.connect(func() -> void:
 		if generation != _objective_generation or not is_instance_valid(status_label):
 			return
-		var tween := create_tween()
-		tween.tween_property(status_label, "modulate:a", 0.0, 0.4)
+		_objective_tween = create_tween()
+		_objective_tween.tween_property(status_label, "modulate:a", 0.0, 0.4)
 	)
+
+
+func set_spectating(active: bool) -> void:
+	if _spectating == active:
+		return
+	_spectating = active
+	if not active:
+		_spectator_first_person = false
+	if active:
+		clear_combat_feedback()
+		_clear_money_delta()
+		set_nightvision(false)
+	# Keep identity, the match timer, and transient round notices in separate
+	# rows. Normal first-person layout is unchanged when the camera returns.
+	spectate_label.offset_top = -105.0 if active else -72.0
+	spectate_label.offset_bottom = spectate_label.offset_top + 26.0
+	status_label.offset_top = -143.0 if active else -107.0
+	status_label.offset_bottom = status_label.offset_top + 30.0
+	update_spectate_target("")
+	_refresh_gameplay_visibility()
+
+
+func set_spectator_first_person(active: bool) -> void:
+	var next := active and _spectating
+	if _spectator_first_person == next:
+		return
+	_spectator_first_person = next
+	_refresh_gameplay_visibility()
 
 
 func update_spectate_target(target_name: String) -> void:
 	if not is_instance_valid(spectate_label):
 		return
 	spectate_label.text = (
-		"" if target_name.is_empty() else "Spectating: %s" % target_name
+		("Spectating" if _spectating else "") if target_name.is_empty()
+		else "Spectating: %s" % target_name
 	)
 
 
@@ -2990,9 +3488,44 @@ func show_hitmarker(headshot: bool) -> void:
 
 
 func show_damage() -> void:
+	if _damage_tween != null and _damage_tween.is_valid():
+		_damage_tween.kill()
 	damage_flash.color.a = 0.24
-	var tween := create_tween()
-	tween.tween_property(damage_flash, "color:a", 0.0, 0.26)
+	_damage_tween = create_tween()
+	_damage_tween.tween_property(damage_flash, "color:a", 0.0, 0.26)
+
+
+func clear_combat_feedback() -> void:
+	for tween: Tween in [_damage_tween, _flash_blind_tween]:
+		if tween != null and tween.is_valid():
+			tween.kill()
+	damage_flash.color.a = 0.0
+	flash_blind_overlay.color.a = 0.0
+
+
+func reset_match_presentation() -> void:
+	reset_money_presentation()
+	update_defuse_progress(false, 0.0, 0.0)
+	# Invalidate delayed fades before clearing the completed match's messages.
+	# Already-running tweens must be stopped too, so they cannot fade a new one.
+	_banner_generation += 1
+	_objective_generation += 1
+	for tween: Tween in [_banner_tween, _objective_tween, _radio_line_tween]:
+		if tween != null and tween.is_valid():
+			tween.kill()
+	banner_label.text = ""
+	banner_label.modulate.a = 0.0
+	_objective_text = ""
+	status_label.text = ""
+	status_label.modulate.a = 0.0
+	for row in kill_feed_box.get_children():
+		kill_feed_box.remove_child(row)
+		row.queue_free()
+	if is_instance_valid(_radio_line_label):
+		_radio_line_label.text = ""
+		_radio_line_label.modulate.a = 0.0
+	hide_radio_menu()
+	clear_combat_feedback()
 
 
 var _radio_menu_box: VBoxContainer
@@ -3088,7 +3621,6 @@ func add_kill_notice(
 	if not is_instance_valid(kill_feed_box):
 		return
 	var row := RichTextLabel.new()
-	row.bbcode_enabled = true
 	row.fit_content = true
 	row.scroll_active = false
 	row.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -3097,19 +3629,29 @@ func add_kill_notice(
 	if _vgui_font != null:
 		row.add_theme_font_override("normal_font", _vgui_font)
 	row.add_theme_font_size_override("normal_font_size", 14)
-	if killer.is_empty():
-		row.text = "[color=#%s]%s[/color] [color=#%s]died[/color]" % [
-			_kill_feed_team_hex(victim_team), victim, KILL_FEED_NEUTRAL_HEX,
-		]
-	else:
-		row.text = "[color=#%s]%s[/color] [color=#ffa000](%s%s)[/color] [color=#%s]%s[/color]" % [
-			_kill_feed_team_hex(killer_team),
-			killer,
-			weapon if not weapon.is_empty() else "?",
-			" hs" if headshot else "",
-			_kill_feed_team_hex(victim_team),
-			victim,
-		]
+	row.add_theme_color_override("font_shadow_color", Color.BLACK)
+	row.add_theme_constant_override("shadow_offset_x", 1)
+	row.add_theme_constant_override("shadow_offset_y", 1)
+	var icon := "grenade" if weapon in ["hegrenade", "c4"] else weapon
+	if weapon == "mp5": icon = "mp5navy"
+	if not _kill_feed_icons.has(icon) or icon == "headshot":
+		icon = "skull"
+	row.set_meta("weapon", weapon)
+	row.set_meta("weapon_icon", icon)
+	row.set_meta("headshot", headshot)
+	# add_text never interprets player names as markup or texture paths.
+	if not killer.is_empty():
+		row.push_color(Color(_kill_feed_team_hex(killer_team)))
+		row.add_text(killer)
+		row.pop()
+		row.add_text("  ")
+	row.add_image(_kill_feed_icons[icon], 0, 16, Color("#ffb060"))
+	if headshot:
+		row.add_image(_kill_feed_icons.headshot, 0, 16, Color("#ffb060"))
+	row.add_text("  ")
+	row.push_color(Color(_kill_feed_team_hex(victim_team)))
+	row.add_text(victim)
+	row.pop()
 	kill_feed_box.add_child(row)
 	while kill_feed_box.get_child_count() > KILL_FEED_LIMIT:
 		var oldest := kill_feed_box.get_child(0)
@@ -3125,6 +3667,8 @@ func show_banner(text: String, color: Color, duration := 1.7) -> void:
 	for non_classic_prefix in ["FREEZE TIME", "LIVE", "HEADSHOT", "HOSTILE DOWN"]:
 		if text.begins_with(non_classic_prefix):
 			return
+	if _banner_tween != null and _banner_tween.is_valid():
+		_banner_tween.kill()
 	_banner_generation += 1
 	var generation := _banner_generation
 	banner_label.text = text.replace("  •  ", " - ")
@@ -3136,11 +3680,13 @@ func show_banner(text: String, color: Color, duration := 1.7) -> void:
 	await get_tree().create_timer(duration).timeout
 	if generation != _banner_generation:
 		return
-	var tween := create_tween()
-	tween.tween_property(banner_label, "modulate:a", 0.0, 0.24)
+	_banner_tween = create_tween()
+	_banner_tween.tween_property(banner_label, "modulate:a", 0.0, 0.24)
 
 
 func set_deploy_visible(visible: bool) -> void:
+	if visible and _menu_state == "chat":
+		close_chat()
 	deploy_overlay.visible = visible
 	if visible:
 		show_team_menu()
@@ -3150,19 +3696,27 @@ func set_deploy_visible(visible: bool) -> void:
 
 
 func set_paused_visible(visible: bool) -> void:
+	if visible and _menu_state == "chat":
+		close_chat()
+	if visible and not pause_overlay.visible:
+		_pause_return_state = _menu_state
 	pause_overlay.visible = visible
 	if visible:
 		_show_pause_main()
 	else:
 		set_scoreboard_visible(false)
-	_set_menu_state("pause" if visible else "none")
+	var next_state := "pause" if visible else "none"
+	if not visible and deploy_overlay.visible:
+		next_state = "class" if _pause_return_state == "class" else "team"
+	_set_menu_state(next_state)
 	_refresh_gameplay_visibility()
 
 
 func _set_menu_state(state: String) -> void:
 	_menu_state = state
-	var modal := state != "none" and state != "scoreboard"
-	input_contract_changed.emit(state, modal or state == "scoreboard", modal)
+	var captures_keyboard := state != "none"
+	var mouse_visible := state not in ["none", "scoreboard", "chat"]
+	input_contract_changed.emit(state, captures_keyboard, mouse_visible)
 
 
 func _refresh_gameplay_visibility() -> void:
@@ -3174,15 +3728,31 @@ func _refresh_gameplay_visibility() -> void:
 	for control in _gameplay_controls:
 		if is_instance_valid(control):
 			control.visible = not modal_visible
+	if _spectating:
+		for control in _participant_controls:
+			control.visible = _spectator_first_person and not modal_visible
+	if is_instance_valid(spectate_label):
+		spectate_label.visible = _spectating and not modal_visible
 	if is_instance_valid(_buyzone_icon):
-		_buyzone_icon.visible = _in_buy_zone and not modal_visible
+		_buyzone_icon.visible = _in_buy_zone and not modal_visible and not _spectating
+	if is_instance_valid(_defuse_kit_icon):
+		_defuse_kit_icon.visible = _has_defuse_kit and not modal_visible \
+			and (not _spectating or _spectator_first_person)
+		# Stack the kit above the cart while both status icons are present.
+		_defuse_kit_icon.offset_top = -50 if _in_buy_zone else -16
+		_defuse_kit_icon.offset_bottom = _defuse_kit_icon.offset_top + 32
+	if is_instance_valid(defuse_progress_bar):
+		defuse_progress_bar.visible = (
+			_defuse_progress_active and not modal_visible
+			and (not _spectating or _spectator_first_person)
+		)
 
 
 func current_input_contract() -> Dictionary:
 	return {
 		"state": _menu_state,
 		"captures_keyboard": _menu_state != "none",
-		"mouse_visible": _menu_state != "none" and _menu_state != "scoreboard",
+		"mouse_visible": _menu_state not in ["none", "scoreboard", "chat"],
 	}
 
 
@@ -3217,9 +3787,21 @@ func accept_authoritative_deploy_selection(team_id: int, class_id: int) -> void:
 			show_class_menu(_selected_team)
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	# The gameplay root does not process offline paused input. Route only
+	# unhandled keys through its existing handler; live/online input stays
+	# on the normal Game path and is never dispatched twice.
+	if get_tree().paused and event is InputEventKey:
+		paused_input_received.emit(event)
+
+
 func handle_menu_key(keycode: Key) -> bool:
 	if keycode == KEY_ESCAPE:
 		match _menu_state:
+			"chat":
+				close_chat()
+			"team":
+				deploy_cancel_requested.emit()
 			"class":
 				show_team_menu()
 			"buy_item":
@@ -3232,6 +3814,8 @@ func handle_menu_key(keycode: Key) -> bool:
 				_hide_accessibility()
 			"pause":
 				resume_requested.emit()
+			"network":
+				_show_pause_main()
 			_:
 				return false
 		return true
@@ -3242,6 +3826,7 @@ func handle_menu_key(keycode: Key) -> bool:
 		"team":
 			var team_numbers := {1: 1, 2: 2, 5: 5, 6: 6}
 			if numeric == 0:
+				deploy_cancel_requested.emit()
 				return true
 			if team_numbers.has(numeric):
 				_select_team(int(team_numbers[numeric]))
@@ -3260,7 +3845,6 @@ func handle_menu_key(keycode: Key) -> bool:
 				return true
 			if numeric >= 1 and numeric <= BUY_CATEGORIES.size():
 				_show_buy_category(str(BUY_CATEGORIES[numeric - 1][2]))
-				_set_menu_state("buy_item")
 				return true
 		"buy_item":
 			if numeric == 0:

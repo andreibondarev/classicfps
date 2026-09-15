@@ -25,6 +25,7 @@ func _near(actual: float, expected: float, tolerance: float, message: String) ->
 func _run() -> void:
 	_test_source_constants()
 	_test_primary_and_reload_boundaries()
+	_test_secondary_boundaries()
 	_test_deploy_idle_and_grenade_states()
 	_test_shotgun_shell_reload()
 	_test_render_rate_independent_tapes()
@@ -77,9 +78,22 @@ func _test_primary_and_reload_boundaries() -> void:
 	clock.reset("knife")
 	_check(clock.begin_primary_attack(false), "knife miss starts its recovery")
 	_check(clock.next_primary_tick == 35, "knife miss uses 0.35 second recovery")
+	_check(clock.next_secondary_tick == 50, "slash delays stab for 0.5 seconds")
+	clock.advance_tick(35)
+	_check(clock.can_primary_attack() and not clock.begin_knife_attack(true, false), "recovered slash cannot bypass stab cooldown")
 	clock.reset("knife")
 	_check(clock.begin_primary_attack(true), "knife hit starts its recovery")
 	_check(clock.next_primary_tick == 40, "knife hit uses 0.4 second recovery")
+	_check(clock.next_secondary_tick == 50, "slash hit retains separate stab recovery")
+	for hit in [false, true]:
+		clock.reset("knife")
+		_check(clock.begin_knife_attack(true, hit), "stab starts")
+		var deadline := 110 if hit else 100
+		_check(clock.next_primary_tick == deadline and clock.next_secondary_tick == deadline, "stab hit/miss locks both buttons for source recovery")
+		clock.advance_tick(deadline - 1)
+		_check(not clock.can_primary_attack() and not clock.can_secondary_attack(), "stab cannot attack one tick early")
+		clock.advance_tick(1)
+		_check(clock.can_primary_attack() and clock.can_secondary_attack(), "stab recovers on deadline")
 
 	clock.reset("ak47")
 	_check(clock.begin_reload(), "AK reload starts when ready")
@@ -88,6 +102,25 @@ func _test_primary_and_reload_boundaries() -> void:
 	events = clock.advance_tick()
 	_check(events.has(WeaponClock.EVENT_RELOAD_COMPLETE), "AK reload completes exactly at tick 245")
 	_check(clock.state == WeaponClock.STATE_READY, "reload completion returns clock to ready")
+
+
+func _test_secondary_boundaries() -> void:
+	var clock := WeaponClock.new()
+	clock.reset("glock18")
+	clock.next_secondary_tick = 30
+	_check(clock.can_primary_attack() and not clock.can_secondary_attack(), "mode-toggle recovery does not lock firing")
+	clock.advance_tick(29)
+	_check(not clock.can_secondary_attack(), "secondary remains blocked through tick 29")
+	clock.advance_tick()
+	_check(clock.can_secondary_attack(), "secondary recovers exactly at tick 30")
+	_check(clock.begin_primary_attack(), "Glock primary fires when ready")
+	_check(not clock.can_secondary_attack() and clock.next_secondary_tick == clock.next_primary_tick,
+		"a shot locks both attacks for its normal fire cycle")
+	clock.reset("glock18", 100)
+	_check(clock.can_secondary_attack(), "reset clears stale secondary deadline")
+	clock.begin_deploy("glock18")
+	_check(not clock.can_secondary_attack() and clock.next_secondary_tick == clock.deploy_complete_tick,
+		"deployment still gates both buttons")
 
 
 func _test_deploy_idle_and_grenade_states() -> void:

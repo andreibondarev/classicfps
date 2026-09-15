@@ -8,6 +8,7 @@ const AK47_RANGE_METERS := 81.92
 const BODY_PROBE_SIDE_HU := 12.0
 const BODY_PROBE_CHEST_HU := 40.0
 const BODY_PROBE_FEET_HU := 2.0
+const DEFAULT_COMBAT_SKILL := 0.58
 ## Teammate clearance around a planned burst, per grenade kind. HE cannot hurt
 ## allies through Combatant's damage filter, but a flashbang blinds everyone.
 const GRENADE_TEAM_CLEARANCE_METERS := {
@@ -36,6 +37,13 @@ const UNWEDGE_DURATION_TICKS := 30
 const UNWEDGE_PATIENCE_TICKS := 70
 ## Two 32 HU hulls in contact are 0.32 m apart; allow for the resolution skin.
 const UNWEDGE_CONTACT_METERS := 0.85
+const DOOR_WAIT_MAX_TICKS := 600
+
+class ObjectiveBvhNode extends RefCounted:
+	var bounds := AABB()
+	var left := -1
+	var right := -1
+	var polygons := PackedInt32Array()
 
 var navigation_agent: NavigationAgent3D
 var current_enemy: Combatant
@@ -62,7 +70,11 @@ var _objective_polygon_vertices: Array[PackedVector3Array] = []
 var _objective_polygon_indices: Array[PackedInt32Array] = []
 var _objective_polygon_components := PackedInt32Array()
 var _objective_main_component := -1
+var _objective_polygon_bounds: Array[AABB] = []
+var _objective_bvh: Array[ObjectiveBvhNode] = []
 var _objective_portals := {}
+var _objective_traversals := {}
+var _objective_required_waypoints := {}
 var _objective_route := PackedVector3Array()
 var _objective_route_index := 0
 var _objective_route_target := Vector3.INF
@@ -73,6 +85,8 @@ var _unwedge_blocked_ticks := 0
 var _unwedge_until_tick := -1
 var _unwedge_velocity := Vector3.ZERO
 var _unwedge_last_position := Vector3.INF
+var _door_wait_until_tick := -1
+var _objective_hull_query: PhysicsShapeQueryParameters3D
 
 
 func configure(
@@ -85,7 +99,7 @@ func configure(
 	bot_index = index
 	_phase = float(index) * 1.13
 	tactics = BotTacticsScript.new()
-	tactics.reset(0xC516 + index * 977, 0.88)
+	tactics.reset(0xC516 + index * 977, DEFAULT_COMBAT_SKILL)
 	perception = BotPerceptionScript.new()
 	perception.configure(
 		Callable(self, "_perception_candidates"),
@@ -110,7 +124,7 @@ func configure_weapon(weapon_name: String) -> bool:
 		Callable(self, "_perception_probe_smoked"),
 		float(definition.range_meters),
 	)
-	tactics.reset(0xC516 + bot_index * 977, 0.88)
+	tactics.reset(0xC516 + bot_index * 977, DEFAULT_COMBAT_SKILL)
 	return true
 
 
@@ -134,8 +148,9 @@ func reset_tactics() -> void:
 	_unwedge_until_tick = -1
 	_unwedge_velocity = Vector3.ZERO
 	_unwedge_last_position = Vector3.INF
+	_door_wait_until_tick = -1
 	if is_instance_valid(tactics):
-		tactics.reset(0xC516 + bot_index * 977, 0.88)
+		tactics.reset(0xC516 + bot_index * 977, DEFAULT_COMBAT_SKILL)
 	if is_instance_valid(perception):
 		perception.reset()
 
@@ -233,6 +248,8 @@ func _advance_tactics_from_perception(samples: Array) -> Dictionary:
 			"enemy_position": sample_position,
 			"enemy_velocity": sample.get("velocity", Vector3.ZERO),
 			"distance_hu": distance_hu,
+			"observer_origin": actor.aim_point(),
+			"observer_forward": -actor.global_transform.basis.z,
 		})
 		fire_ticks.append_array(output.get("fire_ticks", []))
 		fire_events.append_array(output.get("fire_events", []))
@@ -274,6 +291,10 @@ func _apply_unwedge(command: Dictionary, delta: float) -> Dictionary:
 		moved.y = 0.0
 		travel = moved.length()
 	_unwedge_last_position = actor.global_position
+	if _objective_tick < _door_wait_until_tick:
+		command.world_velocity = Vector3.ZERO
+		command.waiting_for_door = true
+		return command
 	if _objective_tick < _unwedge_until_tick:
 		command.world_velocity = _unwedge_velocity
 		command.unwedging = true
@@ -300,6 +321,11 @@ func _apply_unwedge(command: Dictionary, delta: float) -> Dictionary:
 		# Right of way: the lower-index actor holds its line for a moment so the
 		# pair cannot sidestep into each other symmetrically.
 		return command
+	if blocker == null and _begin_returning_door_wait(desired):
+		_unwedge_blocked_ticks = 0
+		command.world_velocity = Vector3.ZERO
+		command.waiting_for_door = true
+		return command
 	_unwedge_velocity = _unwedge_escape_velocity(desired, blocker)
 	_unwedge_until_tick = _objective_tick + UNWEDGE_DURATION_TICKS
 	_unwedge_blocked_ticks = 0
@@ -310,6 +336,57 @@ func _apply_unwedge(command: Dictionary, delta: float) -> Dictionary:
 	command.world_velocity = _unwedge_velocity
 	command.unwedging = true
 	return command
+
+
+func _begin_returning_door_wait(desired: Vector3) -> bool:
+	# An open rotating leaf may block the next corner even though its doorway
+	# is open. Repeated escape sidesteps can return the bot to the touch side
+	# and reopen the same leaf forever. Let a scheduled return finish instead.
+	# This query runs only after sustained obstruction, never on every step.
+	var motion := PhysicsTestMotionParameters3D.new()
+	motion.from = actor.global_transform
+	motion.motion = desired.normalized() * 0.12
+	var collision := PhysicsTestMotionResult3D.new()
+	if not PhysicsServer3D.body_test_motion(actor.get_rid(), motion, collision):
+		return false
+	var collider := collision.get_collider() as Node
+	if collider == null or str(collider.get_meta("classname", "")) != "func_door_rotating":
+		return false
+	var scene := actor.get_tree().current_scene
+	if scene == null:
+		return false
+	var runtime: CS16BrushRuntime = scene.get("brush_runtime")
+	if runtime == null:
+		return false
+	var record := runtime.get_brush(int(collider.get_meta("entity_index", -1)))
+	var ticks := _returning_door_wait_ticks(record, int(runtime._entity_world.tick))
+	if ticks <= 0:
+		return false
+	_door_wait_until_tick = _objective_tick + ticks
+	return true
+
+
+static func _returning_door_wait_ticks(record: Dictionary, world_tick: int) -> int:
+	if (str(record.get("classname", "")) != "func_door_rotating"
+		or bool(record.get("no_auto_return", false)) or bool(record.get("start_open", false))):
+		return 0
+	var ticks := 0
+	if str(record.get("state", "")) == "open":
+		var return_tick := int(record.get("return_tick", -1))
+		var speed := float(record.get("speed", 0.0))
+		if return_tick < world_tick or speed <= 0.0:
+			return 0
+		ticks = return_tick - world_tick + ceili(absf(float(record.get("open_angle", 0.0))) * 100.0 / speed)
+	elif str(record.get("state", "")) == "closing":
+		var speed := float(record.get("motion_per_tick", 0.0))
+		if speed <= 0.0:
+			return 0
+		ticks = ceili(maxf(0.0, float(record.get("motion_total", 0.0)) - float(record.get("motion_progress", 0.0))) / speed)
+	else:
+		return 0
+	# Leave two fixed ticks for the normal mover/body update ordering.
+	ticks += 2
+	return ticks if ticks <= DOOR_WAIT_MAX_TICKS else 0
 
 
 func _unwedge_blocking_combatant(desired: Vector3) -> Combatant:
@@ -612,11 +689,15 @@ func _apply_objective(
 	objective: Dictionary,
 	delta: float,
 ) -> Dictionary:
-	var target: Vector3 = objective.get("target", actor.global_position)
-	target = _snap_objective_target(target)
+	var raw_target: Vector3 = objective.get("target", actor.global_position)
+	var target := _snap_objective_target(raw_target)
 	var stop_radius := maxf(0.0, float(objective.get("stop_radius", 0.42)))
-	var distance := actor.global_position.distance_to(target)
 	var objective_action := str(objective.get("action", ""))
+	# Hostage use/rescue is defined by the real actor/zone, not a potentially
+	# distant nearest navigable point on another floor or outside a wall.
+	var distance := actor.global_position.distance_to(
+		raw_target if objective_action in ["use_hostage", "escort_hostage"] else target
+	)
 	command.state = str(objective.get("state", "objective"))
 	command.objective_action = objective_action
 	command.objective_id = str(objective.get("objective_id", ""))
@@ -677,12 +758,7 @@ func _objective_navigation_velocity_to(
 	)
 	while (
 		_objective_route_index + 1 < _objective_route.size()
-		and (
-			actor.global_position.distance_squared_to(
-				_objective_route[_objective_route_index]
-			) < 0.16
-			or _passed_objective_waypoint(_objective_route_index)
-		)
+		and _objective_waypoint_reached(_objective_route_index)
 	):
 		_objective_route_index += 1
 	if _objective_tick >= _objective_visibility_next_tick:
@@ -721,6 +797,7 @@ func _ensure_objective_graph() -> bool:
 	_objective_polygon_indices.clear()
 	_objective_polygon_indices.resize(navigation_mesh.get_polygon_count())
 	_objective_portals.clear()
+	_objective_traversals.clear()
 	var vertices := navigation_mesh.vertices
 	var edge_owners := {}
 	for polygon_index in navigation_mesh.get_polygon_count():
@@ -761,14 +838,63 @@ func _ensure_objective_graph() -> bool:
 				] = portal
 			else:
 				edge_owners[edge] = polygon_index
+	if not _connect_objective_traversals(imported_map.navigation_links):
+		return false
 	_build_objective_components()
+	_build_objective_spatial_index()
 	_objective_graph_ready = true
 	return true
 
 
-func _nearest_objective_polygon(point: Vector3) -> int:
+func _connect_objective_traversals(links: Array[NavigationLink3D]) -> bool:
+	for link: NavigationLink3D in links:
+		if not link.enabled or (link.navigation_layers & navigation_agent.navigation_layers) == 0:
+			continue
+		var start := link.get_global_start_position()
+		var finish := link.get_global_end_position()
+		var first := _nearest_unfiltered_objective_polygon(start)
+		var second := _nearest_unfiltered_objective_polygon(finish)
+		if first < 0 or second < 0:
+			push_error("Traversal endpoints have no navigation polygons: " + str(link.name))
+			return false
+		start = _closest_point_on_objective_polygon(start, first)
+		finish = _closest_point_on_objective_polygon(finish, second)
+		if (start.distance_to(link.get_global_start_position()) > 0.08
+			or finish.distance_to(link.get_global_end_position()) > 0.08
+			or not _objective_segment_is_bsp_clear(start, start)
+			or not _objective_segment_is_bsp_clear(finish, finish)):
+			push_error("Traversal endpoints no longer match clear grounded navigation: " + str(link.name))
+			return false
+		if first == second:
+			continue
+		_objective_graph.connect_points(first, second, link.bidirectional)
+		_objective_traversals[Vector2i(first, second)] = {"start": start, "end": finish}
+		if link.bidirectional:
+			_objective_traversals[Vector2i(second, first)] = {"start": finish, "end": start}
+	return true
+
+
+func _nearest_unfiltered_objective_polygon(point: Vector3) -> int:
+	# Only loading-time authored link binding uses the unfiltered scan. Runtime
+	# objective queries retain their indexed, connected-component projection.
 	var nearest := -1
-	var nearest_distance := INF
+	var distance := INF
+	for index in _objective_polygon_vertices.size():
+		var candidate := _closest_point_on_objective_polygon(point, index)
+		var squared := candidate.distance_squared_to(point)
+		if squared < distance:
+			distance = squared
+			nearest = index
+	return nearest
+
+
+func _build_objective_spatial_index() -> void:
+	# Immutable alongside the imported graph. Index only the same connected
+	# component the exhaustive projection searched; never substitute centroids
+	# for the nearest point on the actual polygon triangles.
+	_objective_bvh.clear()
+	_objective_polygon_bounds.resize(_objective_polygon_vertices.size())
+	var eligible: Array[int] = []
 	for polygon_index in _objective_polygon_vertices.size():
 		if (
 			_objective_main_component >= 0
@@ -779,18 +905,80 @@ func _nearest_objective_polygon(point: Vector3) -> int:
 		var polygon := _objective_polygon_vertices[polygon_index]
 		if polygon.size() < 3:
 			continue
-		for triangle_index in range(1, polygon.size() - 1):
-			var closest := _closest_point_on_triangle(
-				point,
-				polygon[0],
-				polygon[triangle_index],
-				polygon[triangle_index + 1],
-			)
-			var distance := point.distance_squared_to(closest)
-			if distance < nearest_distance:
-				nearest_distance = distance
-				nearest = polygon_index
+		var bounds := AABB(polygon[0], Vector3.ZERO)
+		for vertex: Vector3 in polygon:
+			bounds = bounds.expand(vertex)
+		# Float32 AABB position+size can round inward. Pad beyond map-coordinate
+		# roundoff so lower-bound pruning cannot exclude an equal/nearer triangle.
+		_objective_polygon_bounds[polygon_index] = bounds.grow(0.0001)
+		eligible.append(polygon_index)
+	if not eligible.is_empty():
+		_build_objective_bvh_node(eligible)
+
+
+func _build_objective_bvh_node(polygons: Array[int]) -> int:
+	var node := ObjectiveBvhNode.new()
+	var node_index := _objective_bvh.size()
+	_objective_bvh.append(node)
+	node.bounds = _objective_polygon_bounds[polygons[0]]
+	for polygon_index: int in polygons:
+		node.bounds = node.bounds.merge(_objective_polygon_bounds[polygon_index])
+	if polygons.size() <= 8:
+		node.polygons = PackedInt32Array(polygons)
+		return node_index
+	var axis := node.bounds.size.max_axis_index()
+	polygons.sort_custom(func(first: int, second: int) -> bool:
+		var a := _objective_polygon_centers[first][axis]
+		var b := _objective_polygon_centers[second][axis]
+		return a < b or (a == b and first < second)
+	)
+	var middle := polygons.size() / 2
+	node.left = _build_objective_bvh_node(polygons.slice(0, middle))
+	node.right = _build_objective_bvh_node(polygons.slice(middle))
+	return node_index
+
+
+func _nearest_objective_polygon(point: Vector3) -> int:
+	if _objective_bvh.is_empty() or not point.is_finite():
+		return -1
+	var nearest := -1
+	var nearest_distance := INF
+	var pending: Array[int] = [0]
+	while not pending.is_empty():
+		var node := _objective_bvh[pending.pop_back()]
+		if _objective_bounds_distance_squared(point, node.bounds) > nearest_distance:
+			continue
+		if node.left >= 0:
+			var left_distance := _objective_bounds_distance_squared(point, _objective_bvh[node.left].bounds)
+			var right_distance := _objective_bounds_distance_squared(point, _objective_bvh[node.right].bounds)
+			# Visit the nearer child first to obtain a useful pruning distance.
+			# Equal-distance branches remain eligible to preserve polygon-ID ties.
+			if left_distance <= right_distance:
+				pending.append(node.right)
+				pending.append(node.left)
+			else:
+				pending.append(node.left)
+				pending.append(node.right)
+			continue
+		for polygon_index: int in node.polygons:
+			if _objective_bounds_distance_squared(point, _objective_polygon_bounds[polygon_index]) > nearest_distance:
+				continue
+			var polygon := _objective_polygon_vertices[polygon_index]
+			for triangle_index in range(1, polygon.size() - 1):
+				var closest := _closest_point_on_triangle(
+					point, polygon[0], polygon[triangle_index], polygon[triangle_index + 1],
+				)
+				var distance := point.distance_squared_to(closest)
+				# The old ascending exhaustive scan selected the lowest polygon ID
+				# on an exact distance tie, including shared edges/vertices.
+				if distance < nearest_distance or (distance == nearest_distance and polygon_index < nearest):
+					nearest_distance = distance
+					nearest = polygon_index
 	return nearest
+
+
+static func _objective_bounds_distance_squared(point: Vector3, bounds: AABB) -> float:
+	return point.distance_squared_to(point.clamp(bounds.position, bounds.end))
 
 
 func _build_objective_components() -> void:
@@ -821,6 +1009,42 @@ func _build_objective_components() -> void:
 
 
 func _funnel_objective_route(
+	start_position: Vector3,
+	target_position: Vector3,
+	polygon_route: PackedInt64Array,
+) -> PackedVector3Array:
+	_objective_required_waypoints.clear()
+	var result := PackedVector3Array()
+	var section_start := 0
+	var origin := start_position
+	for index in range(1, polygon_route.size()):
+		var key := Vector2i(polygon_route[index - 1], polygon_route[index])
+		if not _objective_traversals.has(key):
+			continue
+		var traversal: Dictionary = _objective_traversals[key]
+		var section := _funnel_objective_corridor(origin, traversal.start, polygon_route.slice(section_start, index))
+		if section.is_empty():
+			return PackedVector3Array()
+		_append_objective_section(result, section)
+		_objective_required_waypoints[result.size() - 1] = true
+		result.append(traversal.end)
+		_objective_required_waypoints[result.size() - 1] = true
+		origin = traversal.end
+		section_start = index
+	var final_section := _funnel_objective_corridor(origin, target_position, polygon_route.slice(section_start))
+	if final_section.is_empty():
+		return PackedVector3Array()
+	_append_objective_section(result, final_section)
+	return result
+
+
+func _append_objective_section(route: PackedVector3Array, section: PackedVector3Array) -> void:
+	for point: Vector3 in section:
+		if route.is_empty() or route[-1] != point:
+			route.append(point)
+
+
+func _funnel_objective_corridor(
 	start_position: Vector3,
 	target_position: Vector3,
 	polygon_route: PackedInt64Array,
@@ -998,37 +1222,55 @@ func _compact_objective_route(route: PackedVector3Array) -> PackedVector3Array:
 	var source_index := 0
 	while source_index < route.size() - 1:
 		var next_index := source_index + 1
-		for candidate_index in range(route.size() - 1, source_index, -1):
-			if _objective_segment_is_bsp_clear(
+		# Extend each shortcut along the corridor until the first obstruction.
+		# Searching backward from the final destination at every corner causes
+		# quadratic long-distance hull sweeps through unrelated walls (hundreds
+		# of ms per bot). Forward string pulling uses at most two sweeps per
+		# portal overall, while every accepted shortcut still passes the exact
+		# full-body clearance test. Adjacent fallback portals remain available
+		# for the movement kernel's step/jump handling, as before.
+		for candidate_index in range(source_index + 1, route.size()):
+			if not _objective_segment_is_bsp_clear(
 				route[source_index],
 				route[candidate_index],
 			):
-				next_index = candidate_index
 				break
+			next_index = candidate_index
 		compact.append(route[next_index])
 		source_index = next_index
 	return compact
 
 
 func _objective_segment_is_bsp_clear(start: Vector3, finish: Vector3) -> bool:
-	var hull := BoxShape3D.new()
-	hull.size = Vector3(32.0, 72.0, 32.0) * Combatant.GOLDSRC_UNIT
-	var query := PhysicsShapeQueryParameters3D.new()
-	query.shape = hull
-	query.collision_mask = 1
-	query.collide_with_areas = false
+	if _objective_hull_query == null:
+		var hull := BoxShape3D.new()
+		hull.size = Vector3(32.0, 72.0, 32.0) * Combatant.GOLDSRC_UNIT
+		_objective_hull_query = PhysicsShapeQueryParameters3D.new()
+		_objective_hull_query.shape = hull
+		_objective_hull_query.collision_mask = 1
+		_objective_hull_query.collide_with_areas = false
+	var query := _objective_hull_query
 	query.transform = Transform3D(
 		Basis.IDENTITY,
 		start + Vector3.UP * (36.0 * Combatant.GOLDSRC_UNIT + 0.02),
 	)
 	query.motion = finish - start
-	var cast := actor.get_world_3d().direct_space_state.cast_motion(query)
-	return not cast.is_empty() and float(cast[0]) >= 0.995
+	var space := actor.get_world_3d().direct_space_state
+	# cast_motion ignores bodies overlapping the starting hull, which can hide
+	# later walls belonging to the same concave world body. Such a segment is
+	# not a safe navigation shortcut; adjacent step/jump portals remain usable.
+	if not space.intersect_shape(query, 1).is_empty():
+		return false
+	var cast := space.cast_motion(query)
+	var clear := not cast.is_empty() and float(cast[0]) >= 0.995
+	return clear
 
 
 func _skip_visible_objective_waypoints() -> void:
 	var candidate := _objective_route_index + 1
 	while candidate < _objective_route.size():
+		if _objective_required_waypoints.has(candidate - 1):
+			break
 		if not _objective_segment_is_bsp_clear(
 			actor.global_position,
 			_objective_route[candidate],
@@ -1036,6 +1278,22 @@ func _skip_visible_objective_waypoints() -> void:
 			break
 		_objective_route_index = candidate
 		candidate += 1
+
+
+func _objective_waypoint_reached(index: int) -> bool:
+	if _objective_required_waypoints.has(index):
+		return actor.global_position.distance_squared_to(_objective_route[index]) < 0.0144
+	var offset := actor.global_position - _objective_route[index]
+	var distance_squared := offset.length_squared()
+	if Vector2(offset.x, offset.z).length_squared() <= 0.0025 and absf(offset.y) < 0.2:
+		return true
+	if distance_squared >= 0.16 and not _passed_objective_waypoint(index):
+		return false
+	# Reaching a corner's generous steering radius does not make the outgoing
+	# segment traversable. Check the whole hull before cutting that corner.
+	return index + 1 >= _objective_route.size() or _objective_segment_is_bsp_clear(
+		actor.global_position, _objective_route[index + 1]
+	)
 
 
 func _passed_objective_waypoint(waypoint_index: int) -> bool:

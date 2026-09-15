@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,55 @@ REJECTED_OUTPUT = (
     "Parse Error:",
     "Failed loading resource:",
 )
+
+
+def rejected_output(output: str) -> list[str]:
+    """Godot can return zero despite script, resource, or teardown errors."""
+    rejected = []
+    for raw_line in output.splitlines():
+        line = re.sub(r"\x1b\[[0-9;]*m", "", raw_line).strip()
+        if (
+            any(marker in line for marker in REJECTED_OUTPUT)
+            or line.startswith("ERROR:")
+            or re.search(r"ObjectDB instances? (?:were |was )?leaked", line)
+            or re.search(r"\b[A-Z][A-Z0-9_]*_FAIL\b", line)
+        ):
+            rejected.append(line)
+    return rejected
+
+
+def launch_args(executable: Path, log_path: Path) -> list[str]:
+    return [
+        str(executable),
+        "--headless",
+        "--audio-driver",
+        "Dummy",
+        "--log-file",
+        str(log_path),
+        "--quit-after",
+        "180",
+        "--",
+        "--verify-settings-storage",
+    ]
+
+
+def launch_environment(settings_path: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PROTOCOL47_SETTINGS_PATH"] = str(settings_path)
+    return environment
+
+
+def isolated_storage_confirmed(output: str, settings_path: Path) -> bool:
+    prefix = "GAME_SETTINGS_STORAGE_READY "
+    records = []
+    try:
+        for line in output.splitlines():
+            if line.startswith(prefix):
+                records.append(json.loads(line[len(prefix):]))
+    except json.JSONDecodeError:
+        return False
+    expected = {"path": str(settings_path), "fresh": True}
+    return bool(records) and all(record == expected for record in records)
 
 
 def main() -> int:
@@ -49,19 +100,11 @@ def main() -> int:
         user_data = temp_dir / "userdata"
         user_data.mkdir()
         log_path = temp_dir / "export-run.log"
-        environment = os.environ.copy()
-        environment["GODOT_USER_DATA_DIR"] = str(user_data)
+        settings_path = user_data / "protocol47.cfg"
         result = subprocess.run(
-            [
-                str(executable),
-                "--headless",
-                "--log-file",
-                str(log_path),
-                "--quit-after",
-                "180",
-            ],
+            launch_args(executable, log_path),
             cwd=temp_dir,
-            env=environment,
+            env=launch_environment(settings_path),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -72,11 +115,12 @@ def main() -> int:
         if log_path.is_file():
             output += "\n" + log_path.read_text(errors="replace")
 
-        rejected = [marker for marker in REJECTED_OUTPUT if marker in output]
-        if result.returncode != 0 or rejected:
+        rejected = rejected_output(output)
+        storage_confirmed = isolated_storage_confirmed(output, settings_path)
+        if result.returncode != 0 or rejected or not storage_confirmed:
             print(output, file=sys.stderr)
             print(
-                f"export launch rejected: exit={result.returncode}, markers={rejected}",
+                f"export launch rejected: exit={result.returncode}, markers={rejected}, isolated_settings={storage_confirmed}",
                 file=sys.stderr,
             )
             return 1

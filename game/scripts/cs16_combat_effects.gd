@@ -1,6 +1,15 @@
 class_name CS16CombatEffects
 extends Node3D
 
+signal presentation_ready
+signal network_impact(kind: String, data: Dictionary)
+signal world_audio_requested(
+	event_name: String,
+	channel: int,
+	position: Vector3,
+	overrides: Dictionary,
+)
+
 ## GoldSrc-style combat temp entities driven by the game's fixed 100 Hz tick.
 ##
 ## Source parity:
@@ -67,16 +76,31 @@ const EVENT_SOUND := "sound"
 
 static var _manifest_cache: Dictionary = {}
 static var _shell_template_cache: Dictionary = {}
+static var _shell_mesh_cache: Dictionary = {}
+static var _frame_texture_cache: Dictionary = {}
+# BaseMaterial3D deletes its generated shader when the last matching material
+# dies. Short-lived muzzle flashes and impact tracers otherwise compile that
+# shader again on every volley (hundreds of ms on macOS OpenGL). Keep one
+# material per finite render-state variant, not one per effect or shot.
+static var _shader_material_cache: Dictionary = {}
 static var _edge_faded_texture_cache: Dictionary = {}
 
 var tick := 0
-var event_log: Array[Dictionary] = []
+var _event_log := preload("res://scripts/bounded_event_log.gd").new()
+var event_log: Array[Dictionary]:
+	get:
+		return _event_log.snapshot()
+var total_effect_events: int:
+	get:
+		return _event_log.total_events
 var _sprites: Array[Dictionary] = []
 var _motions: Array[Dictionary] = []
 var _lights: Array[Dictionary] = []
 var _timed_nodes: Array[Dictionary] = []
 var _decal_nodes: Array[Node3D] = []
 var _event_serial := 0
+var presentation_is_ready := false
+var _presentation_warming := false
 
 
 static func for_scene(scene: Node) -> CS16CombatEffects:
@@ -96,6 +120,9 @@ static func release_cached_resources() -> void:
 	# instances. Test harnesses and hot-reload hosts can release them explicitly
 	# when tearing down the entire game scene.
 	_shell_template_cache.clear()
+	_shell_mesh_cache.clear()
+	_frame_texture_cache.clear()
+	_shader_material_cache.clear()
 	_manifest_cache.clear()
 	_shot_decal_texture_cache.clear()
 	_edge_faded_texture_cache.clear()
@@ -170,12 +197,130 @@ func _ready() -> void:
 	_load_manifest()
 
 
+func warm_up_presentation(entry_camera: Camera3D = null) -> void:
+	if presentation_is_ready or _presentation_warming:
+		return
+	_presentation_warming = true
+	if DisplayServer.get_name() != "headless":
+		var entry_view: SubViewport
+		if is_instance_valid(entry_camera) and entry_camera.is_inside_tree():
+			# The deployment camera need not see the player's starting geometry
+			# or viewmodel. Submit that exact world/projection offscreen as part
+			# of loading without switching the visible camera or running AI.
+			entry_view = SubViewport.new()
+			entry_view.size = Vector2i(get_viewport().get_visible_rect().size)
+			entry_view.world_3d = entry_camera.get_world_3d()
+			entry_view.msaa_3d = get_viewport().msaa_3d
+			entry_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+			add_child(entry_view)
+			var entry_projection := Camera3D.new()
+			entry_projection.projection = entry_camera.projection
+			entry_projection.keep_aspect = entry_camera.keep_aspect
+			entry_projection.fov = entry_camera.fov
+			entry_projection.size = entry_camera.size
+			entry_projection.near = entry_camera.near
+			entry_projection.far = entry_camera.far
+			entry_projection.frustum_offset = entry_camera.frustum_offset
+			entry_projection.h_offset = entry_camera.h_offset
+			entry_projection.v_offset = entry_camera.v_offset
+			entry_projection.cull_mask = entry_camera.cull_mask
+			entry_projection.environment = entry_camera.environment
+			entry_projection.attributes = entry_camera.attributes
+			entry_view.add_child(entry_projection)
+			entry_projection.global_transform = entry_camera.global_transform
+			entry_projection.make_current()
+		# Draw the finite effect variants into a tiny, undisplayed viewport while
+		# the match is loading. Retained materials then keep their GL shaders
+		# alive. Merely loading PNGs cannot warm a first-draw shader compilation.
+		var viewport := SubViewport.new()
+		viewport.size = Vector2i(64, 64)
+		viewport.own_world_3d = true
+		viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		add_child(viewport)
+		# Environment-dependent GL specialization flags must match the live
+		# viewport even for unshaded materials (ambient/radiance/tonemapping).
+		var warm_environment := WorldEnvironment.new()
+		warm_environment.environment = get_world_3d().environment
+		viewport.add_child(warm_environment)
+		viewport.msaa_3d = get_viewport().msaa_3d
+		var camera := Camera3D.new()
+		viewport.add_child(camera)
+		camera.make_current()
+		var sun := DirectionalLight3D.new()
+		sun.shadow_enabled = true
+		viewport.add_child(sun)
+		var staging := CS16CombatEffects.new()
+		viewport.add_child(staging)
+		staging.set_physics_process(false)
+		for asset: String in _manifest().sprites:
+			var sprite: Dictionary = _manifest().sprites[asset]
+			for path: String in sprite.frames:
+				_frame_texture("res://assets/vfx/" + path, asset in ["fexplo", "eexplo", "black_smoke3"])
+			for variant in range(8):
+				staging._spawn_sprite(
+					asset, Vector3(0, 0, -2), 0.1, 30.0, "warmup", 0,
+					bool(variant & 1), Color.WHITE, Vector3.ZERO,
+					37.0 if variant & 2 else 0.0, 0, false, 0, 0, bool(variant & 4),
+				)
+		staging._spawn_gravity_tracer(Vector3(0, 0, -2), Vector3.RIGHT, 0.0, 10, Color.WHITE, 0.1)
+		for decal_name: String in _manifest().decals:
+			staging.spawn_decal(decal_name, Vector3(0, 0, -2), Vector3.BACK,
+				"blood" if decal_name.begins_with("blood") else "shot", 0)
+		staging._spawn_shell("rshell", Vector3(0, 0, -2), Vector3.ZERO, 0)
+		staging._spawn_shell("pshell", Vector3(0, 0, -2), Vector3.ZERO, 0)
+		# Planting introduces a per-pixel studio material and Sprite3D's LED
+		# shader, neither of which is represented by the temp-entity sprites.
+		# Keep this real visual as a hidden, inert shader owner after drawing it;
+		# freeing its final material owners would discard the warmed GL programs.
+		var planted_visual := CS16C4World.create_planted_visual()
+		planted_visual.name = "PreparedC4Presentation"
+		planted_visual.process_mode = Node.PROCESS_MODE_DISABLED
+		viewport.add_child(planted_visual)
+		planted_visual.position = Vector3(0, 0, -2)
+		# First frame submits resources; the second covers deferred material
+		# initialization. The viewport is never attached to a visible control.
+		await _draw_preparation_frame()
+		staging.spawn_muzzle_light(Vector3(0, 0, -1))
+		# Warm the live world's positional-light specialization too. An almost
+		# zero-energy light is visually imperceptible but still selects that
+		# shader variant. It is removed before deployment, never kept in combat.
+		var world_light := OmniLight3D.new()
+		world_light.light_energy = 0.000001
+		world_light.omni_range = 256.0
+		add_child(world_light)
+		var live_camera := get_viewport().get_camera_3d()
+		if live_camera != null:
+			world_light.global_position = live_camera.global_position
+		await _draw_preparation_frame()
+		await _draw_preparation_frame()
+		world_light.queue_free()
+		planted_visual.hide()
+		planted_visual.reparent(self)
+		viewport.queue_free()
+		if is_instance_valid(entry_view):
+			entry_view.queue_free()
+		# Deferred staging teardown also belongs to loading. Do not enable the
+		# match in the same frame that still has viewport/mesh frees queued.
+		await _draw_preparation_frame()
+	presentation_is_ready = true
+	_presentation_warming = false
+	presentation_ready.emit()
+
+
+func _draw_preparation_frame() -> void:
+	# Native macOS may suspend ordinary drawing while fully occluded. Waiting
+	# only for frame_post_draw can then strand loading forever. Explicit draws
+	# are confined to preparation, never injected into gameplay/timing samples.
+	await get_tree().process_frame
+	RenderingServer.force_draw()
+
+
 func _physics_process(_delta: float) -> void:
 	advance_tick()
 
 
 func clear_event_log() -> void:
-	event_log.clear()
+	_event_log.clear()
 
 
 func advance_tick(count := 1) -> void:
@@ -266,6 +411,21 @@ func spawn_world_impact(
 	surface := "concrete",
 ) -> void:
 	var decal_name := "shot%d" % (shot_sequence % 5 + 1)
+	network_impact.emit("impact", {"position": position, "normal": normal, "sequence": shot_sequence, "surface": surface})
+	# Knife wall contact already owns knife_hitwall1.wav. Its impact packet still
+	# carries the decal/puff to clients, but must not add a bullet ricochet.
+	if surface != "knife":
+		var impact_audio := "impact.bullet"
+		if surface in ["metal", "grate", "vent", "computer"]:
+			impact_audio = "impact.ricochet_metal"
+		elif shot_sequence % 3 == 0:
+			impact_audio = "impact.ricochet"
+		world_audio_requested.emit(
+			impact_audio,
+			0, # CHAN_AUTO without introducing an effects/router preload cycle.
+			position,
+			{"pitch_min": 96, "pitch_max": 104},
+		)
 	spawn_decal(decal_name, position, normal, "shot", shot_sequence)
 	var surface_normal := normal.normalized() if normal.length_squared() > 0.0 else Vector3.UP
 	# CS 1.6 wall impacts pair the crisp dark bullet-hole decal with a brief
@@ -304,6 +464,7 @@ func spawn_blood_impact(
 	shot_sequence: int,
 ) -> void:
 	var backwards := -direction.normalized()
+	network_impact.emit("blood", {"position": position, "normal": direction, "sequence": shot_sequence, "surface": ""})
 	# TE_BLOODSPRITE sprites are brief flat splashes, not large glossy volumes.
 	_spawn_sprite(
 		"bloodspray",
@@ -328,6 +489,7 @@ func spawn_blood_impact(
 
 
 func spawn_blood_decal(position: Vector3, normal: Vector3, shot_sequence: int) -> void:
+	network_impact.emit("blood_decal", {"position": position, "normal": normal, "sequence": shot_sequence, "surface": ""})
 	spawn_decal(
 		"blood%d" % (shot_sequence % 6 + 1),
 		position,
@@ -415,14 +577,22 @@ func spawn_he_explosion(position: Vector3, normal: Vector3) -> void:
 	)
 
 
-func spawn_smoke_cloud(position: Vector3, seed := 0) -> void:
+func clear_smoke_clouds() -> void:
+	for index in range(_sprites.size() - 1, -1, -1):
+		if _sprites[index].event_type == EVENT_SMOKE_CLOUD:
+			if is_instance_valid(_sprites[index].node):
+				_sprites[index].node.queue_free()
+			_sprites.remove_at(index)
+
+
+func spawn_smoke_cloud(position: Vector3, seed := 0, fixed_seed := false) -> void:
 	# CSmokeGrenade builds one large vision-blocking cloud out of overlapping
 	# gas puffs. GoldSrc look: 10-15 LARGE billboard puffs whose individual
 	# rounded silhouettes and per-puff shading (darker undersides) stay
 	# readable against the background — a lumpy boiling cluster, never one
 	# saturated featureless fog slab.
 	var serial := _next_serial()
-	var base_seed := serial * 7 + seed * 131
+	var base_seed := seed * 131 if fixed_seed else serial * 7 + seed * 131
 	var rim_count := SMOKE_CLOUD_PUFF_COUNT - SMOKE_CLOUD_CORE_PUFFS
 	for index in range(SMOKE_CLOUD_PUFF_COUNT):
 		var puff_seed := base_seed + index * 13
@@ -732,13 +902,18 @@ func spawn_decal(
 	var material := StandardMaterial3D.new()
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.blend_mode = BaseMaterial3D.BLEND_MODE_MUL
+	# The destination already contains the surface lighting. Lighting this
+	# modulation mask again turns its white surround into a dark rectangle.
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	# Bilinear sampling, exactly like the GoldSrc GL renderer draws decals:
 	# nearest sampling magnified the 3-4 texel {shot pockmark into solid hard
 	# squares; linear restores the round soft-edged pockmark falloff.
 	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	var decal_texture := load("res://assets/vfx/%s" % str(decal.texture)) as Texture2D
+	# The boosted texture does not retain its source PNG. Keep that source
+	# resident too, otherwise every impact reloads it before the boost-cache hit.
+	var decal_texture := _frame_texture("res://assets/vfx/%s" % str(decal.texture), false)
 	if family == "shot":
 		# GoldSrc converts {-prefixed decals into darkness-alpha textures
 		# (R_DecalTexture) and stamps them as near-black marks. The straight
@@ -760,6 +935,12 @@ func spawn_decal(
 	# multiplicative identity, exactly matching GoldSrc decal modulation
 	# against the already-lit destination surface.
 	material.albedo_color = Color.WHITE
+	# Godot 4.7 Mobile divides fragment RGB by two for its non-HDR2D
+	# framebuffer before multiply blending. Restore multiplicative identity;
+	# the material's color input is sRGB, so express the factor in that space.
+	if RenderingServer.get_current_rendering_method() == "mobile" and not get_viewport().use_hdr_2d:
+		material.albedo_color = Color(2.0, 2.0, 2.0).linear_to_srgb()
+	_retain_shader_material("decal", material)
 	mesh.material = material
 	var instance := MeshInstance3D.new()
 	instance.name = "GoldSrcDecal_%s" % decal_name
@@ -853,6 +1034,7 @@ func _spawn_sprite(
 	_load_manifest()
 	var sprite: Dictionary = _manifest().get("sprites", {}).get(asset_name, {})
 	if sprite.is_empty():
+		push_error("Missing required combat sprite: " + asset_name)
 		return null
 	var frame_paths: Array[String] = []
 	for frame_path: Variant in sprite.frames:
@@ -910,6 +1092,13 @@ func _spawn_sprite(
 	)
 	material.albedo_texture = _frame_texture(frame_paths[0], edge_fade)
 	material.albedo_color = color_modulate
+	_retain_shader_material(
+		"sprite:%d:%d:%d:%d" % [
+			material.blend_mode, material.billboard_mode,
+			int(material.no_depth_test), material.texture_filter,
+		],
+		material,
+	)
 	mesh.material = material
 	var instance := MeshInstance3D.new()
 	instance.name = "GoldSrcSprite_%s" % asset_name
@@ -925,6 +1114,7 @@ func _spawn_sprite(
 	if lifetime_ticks_override > 0:
 		duration_ticks = lifetime_ticks_override
 	_sprites.append({
+		"event_type": event_type,
 		"node": instance,
 		"material": material,
 		"frames": frame_paths,
@@ -960,12 +1150,21 @@ func _spawn_sprite(
 	return instance
 
 
+static func _retain_shader_material(key: String, material: StandardMaterial3D) -> void:
+	if not _shader_material_cache.has(key):
+		_shader_material_cache[key] = material
+
+
 static func _frame_texture(path: String, edge_fade: bool) -> Texture2D:
-	var source := load(path) as Texture2D
+	# Retain source frames between effects. ResourceLoader's cache alone does
+	# not keep an otherwise unreferenced frame alive after a sprite advances.
+	if edge_fade and _edge_faded_texture_cache.has(path):
+		return _edge_faded_texture_cache[path]
+	if not _frame_texture_cache.has(path):
+		_frame_texture_cache[path] = load(path) as Texture2D
+	var source := _frame_texture_cache[path] as Texture2D
 	if not edge_fade or source == null:
 		return source
-	if _edge_faded_texture_cache.has(path):
-		return _edge_faded_texture_cache[path]
 	# GoldSrc's big explosion frames paint low-level glow haze right up to the
 	# sprite border. At CS scales that reveals the billboard's straight quad
 	# edges as hard lines over the sky and against geometry. Rolling the outer
@@ -1030,10 +1229,15 @@ func _spawn_shell(
 	var template := _shell_template(shell_name)
 	if template.is_empty():
 		return null
-	var shell := CharacterModelScript._create_instance(
-		"GoldSrcShell_%s" % shell_name,
-		template,
-	)
+	# Brass has immutable geometry/materials; only its instance transform moves.
+	# Upload each shell type once instead of rebuilding it for every bullet.
+	if not _shell_mesh_cache.has(shell_name):
+		var source := CharacterModelScript._create_instance("ShellTemplate", template)
+		_shell_mesh_cache[shell_name] = source.mesh
+		source.free()
+	var shell := MeshInstance3D.new()
+	shell.name = "GoldSrcShell_%s" % shell_name
+	shell.mesh = _shell_mesh_cache[shell_name]
 	add_child(shell)
 	shell.global_position = position
 	shell.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -1171,6 +1375,7 @@ func _spawn_gravity_tracer(
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 	material.albedo_color = color
+	_retain_shader_material("gravity_tracer", material)
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_LINES, material)
 	mesh.surface_set_color(color)
@@ -1430,7 +1635,7 @@ func _record(event_type: String, payload: Dictionary) -> void:
 	event.type = event_type
 	event.tick = tick
 	event.serial = _next_serial()
-	event_log.append(event)
+	_event_log.append(event)
 
 
 func _next_serial() -> int:

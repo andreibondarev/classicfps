@@ -4,7 +4,7 @@ const EXPECTED_SOURCE_HUD_SHA256 := "0c85c594323d9a19cbb53907fe0a6f6aab3070583dc
 const REQUIRED_CORE := [
 	"number_0", "number_1", "number_2", "number_3", "number_4",
 	"number_5", "number_6", "number_7", "number_8", "number_9",
-	"divider", "cross", "dollar", "stopwatch", "suit_full", "radar",
+	"divider", "cross", "dollar", "stopwatch", "suit_full", "radar", "defuser",
 ]
 const CAPTURE_RESOLUTIONS := [
 	Vector2i(640, 480),
@@ -78,7 +78,7 @@ func _run() -> void:
 		"staged hud.txt matches the manifest hash",
 	)
 	var sprites: Dictionary = manifest.get("sprites", {})
-	_check(sprites.size() == 35, "manifest contains all 35 core HUD masks")
+	_check(sprites.size() == 36, "manifest contains all 36 core HUD masks")
 	for sprite_name in REQUIRED_CORE:
 		_check(sprites.has(sprite_name), "manifest contains %s" % sprite_name)
 	var verified_sheets := {}

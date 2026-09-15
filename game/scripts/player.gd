@@ -8,6 +8,7 @@ signal hit_confirmed(headshot: bool)
 signal flash_blinded(seconds: float)
 signal weapon_drop_requested(weapon_name: String, dropped_clip: int, dropped_reserve: int)
 signal died
+var spawn_serial := 0
 
 # GoldSrc BSP coordinates are imported at one Godot unit per 100 GoldSrc units.
 # Keep the original values visible here so movement can be audited against
@@ -30,7 +31,9 @@ const CL_SIDE_SPEED := 400.0
 const CL_MOVE_SPEED_KEY := 0.52
 const SV_MAX_SPEED := 320.0
 const RUN_SPEED := 250.0 * WORLD_SCALE
-const WALK_SPEED := 208.0 * WORLD_SCALE
+# Shift applies after the weapon cap so walking is a distinct, readable pace
+# rather than AK movement merely falling from 221 to 208 HU/s.
+const WALK_SPEED := 130.0 * WORLD_SCALE
 const CROUCH_SPEED := 83.25 * WORLD_SCALE
 const GROUND_ACCEL := 5.0
 const AIR_ACCEL := 10.0
@@ -45,28 +48,30 @@ const BUNNYJUMP_CROP_FACTOR := 0.8
 const FLOOR_NORMAL_MINIMUM := 0.7
 const FLOOR_CATEGORIZE_DISTANCE := 2.0 * WORLD_SCALE
 const STEP_HEIGHT := 18.0 * WORLD_SCALE
+# V_CalcNormalRefdef eases the rendered eye toward an upward-moving player
+# origin at 150 HU/s and never lets it trail by more than one legal step. The
+# collision hull still climbs immediately; this is presentation-only.
+const STAIR_VIEW_SPEED := 150.0 * WORLD_SCALE
+const STAIR_VIEW_MAX_OFFSET := 18.0 * WORLD_SCALE
 const MovementKernelScript = preload("res://scripts/goldsrc_movement.gd")
 const WeaponClockScript = preload("res://scripts/cs16_weapon_clock.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
 const ViewModelScript = preload("res://scripts/mdl_viewmodel.gd")
+const CharacterModelScript = preload("res://scripts/mdl_character_model.gd")
+const NetworkControllerScript = preload("res://scripts/network_human_controller.gd")
 const GrenadeScript = preload("res://scripts/grenade.gd")
 const AudioRouterScript = preload("res://scripts/cs16_audio_event_router.gd")
 const AudioCatalogScript = preload("res://scripts/cs16_audio_catalog.gd")
 const AUDIO_ENTITY_ID := 1
+# Internal audio namespace, not an ENet peer ID or a wire entity number.
+# Keep remote voices clear of map entities, bots and grenade fallback IDs.
+const REMOTE_AUDIO_ENTITY_BASE := 0x10000000
+const MAX_HUMAN_SLOT := 32
 const FOOTSTEP_INTERVAL_TICKS := 30
 const FOOTSTEP_MINIMUM_SPEED := 220.0 * WORLD_SCALE
 const HE_PIN_AUDIO_TICK := 66
-const RELOAD_AUDIO_STAGES := {
-	"ak47": [
-		{"offset": 35, "event": "ak47.clip_out"},
-		{"offset": 154, "event": "ak47.clip_in"},
-	],
-	"deagle": [
-		{"offset": 47, "event": "deagle.clip_out"},
-		{"offset": 113, "event": "deagle.clip_in"},
-	],
-}
+const RELOAD_AUDIO_STAGES := AudioCatalogScript.RELOAD_AUDIO_STAGES
 const WEAPONS := WeaponRegistryScript.WEAPONS
 const RECOIL_PATTERN := [
 	Vector2(0.0, 0.74), Vector2(0.18, 0.82), Vector2(-0.12, 0.91),
@@ -76,6 +81,7 @@ const RECOIL_PATTERN := [
 ]
 
 var controls_enabled := false
+var post_round_movement_enabled := false
 # Freeze time keeps movement and weapons locked but, as in CS 1.6, the
 # player can still look around.
 var look_enabled := false
@@ -98,6 +104,9 @@ var equipment := {
 }
 var weapon_modes := {}
 var _burst_shots_remaining := 0
+var _burst_spread := 0.0
+var _glock_recorded_burst := false
+var _glock_trigger_consumed := false
 var _next_burst_tick := -1
 
 var _yaw := 0.0
@@ -116,12 +125,17 @@ var _recoil_index := 0
 var _last_shot_at := -10.0
 var _ak_accuracy := 0.2
 var _ak_shots_fired := 0
+var _accuracy_recovery_tick := -1
 var _deagle_accuracy := 0.9
-var _deagle_last_fire := 0.0
+var _deagle_last_fire := -1.0
 var _shot_sequence := 0
+var _knife_swing := 0
 var _recoil_direction := -1.0
 var _punch_degrees := Vector2.ZERO
 var _movement_grounded := false
+var _stair_view_offset := 0.0
+var _grenade_release_view := Vector2.ZERO
+var _grenade_release_view_latched := false
 
 var camera: Camera3D
 var collider: CollisionShape3D
@@ -134,16 +148,34 @@ var weapon_anchor: Node3D
 var viewmodel: MdlViewModel
 var muzzle_light: OmniLight3D
 var settings: Node
+var character_model: MdlCharacterModel
+var _remote_human_slot := 0
+
+
+func configure_remote_human(human_slot: int) -> bool:
+	# The host roster assigns a stable slot BEFORE adding the pawn to the tree.
+	# Ownership cannot change in place: that would also require transferring
+	# camera/listener state and rebuilding presentation. Peer binding is separate.
+	if is_inside_tree() or is_node_ready() or human_slot < 2 or human_slot > MAX_HUMAN_SLOT:
+		return false
+	_remote_human_slot = human_slot
+	return true
+
+
+func is_local_human() -> bool:
+	return _remote_human_slot == 0
 
 
 func _ready() -> void:
-	if team == TEAM_UNASSIGNED:
-		configure_identity(TEAM_TERRORIST, "Player")
+	if team == TEAM_UNASSIGNED and is_local_human():
+		configure_identity(TEAM_TERRORIST, get_node("/root/GameSettings").player_name)
 	super._ready()
-	add_to_group("player")
-	Input.use_accumulated_input = false
+	add_to_group("human_players")
+	if is_local_human():
+		add_to_group("player")
+		Input.use_accumulated_input = false
 	settings = get_node("/root/GameSettings")
-	collision_layer = 4
+	collision_layer = 4 if is_local_human() else 2
 	collision_mask = 1 | 2
 	floor_max_angle = acos(FLOOR_NORMAL_MINIMUM)
 	floor_snap_length = FLOOR_CATEGORIZE_DISTANCE
@@ -152,9 +184,14 @@ func _ready() -> void:
 	has_helmet = true
 	_rng.seed = 0xC516
 	_initialize_starting_loadout()
-	_configure_input()
-	combat_controller = HumanCombatController.new()
-	combat_controller.name = "HumanController"
+	if is_local_human():
+		_configure_input()
+		combat_controller = HumanCombatController.new()
+		combat_controller.name = "HumanController"
+	else:
+		combat_controller = NetworkControllerScript.new()
+		combat_controller.name = "NetworkHumanController"
+		set_process_input(false)
 	add_child(combat_controller)
 	combat_controller.possess(self)
 	_build_body()
@@ -163,9 +200,15 @@ func _ready() -> void:
 	weapon_clock.reset(active_weapon)
 	combat_effects = CombatEffectsScript.for_scene(get_tree().current_scene)
 	audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
-	_build_viewmodel()
-	_apply_settings()
-	settings.changed.connect(_apply_settings)
+	if is_local_human():
+		_build_viewmodel()
+		_apply_settings()
+		settings.changed.connect(_apply_settings)
+	else:
+		character_model = CharacterModelScript.new()
+		character_model.name = "PlayerModel"
+		add_child(character_model)
+		_refresh_character_model()
 	health_changed.emit(health, armor)
 	ammo_changed.emit(clip, reserve, reloading)
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)
@@ -220,10 +263,42 @@ func _build_body() -> void:
 	camera = Camera3D.new()
 	camera.name = "PlayerCamera"
 	camera.position.y = STAND_EYE
-	camera.current = true
+	camera.current = is_local_human()
 	camera.fov = 74.0
 	camera.near = 0.035
 	add_child(camera)
+	if not is_local_human():
+		# Godot auto-selects the first camera even when current was false.
+		camera.clear_current(false)
+		camera.cull_mask = 0
+
+
+func _refresh_character_model() -> void:
+	if not is_instance_valid(character_model) or team not in [TEAM_TERRORIST, TEAM_COUNTER_TERRORIST]:
+		return
+	var skin := str(get_meta("cs16_player_skin", TargetActor.skin_for_team(team, _remote_human_slot - 1)))
+	if character_model.skin_name == skin and character_model.weapon_name == active_weapon:
+		character_model.reset_animation()
+	elif not character_model.load_character(skin, active_weapon):
+		push_error("Remote human character could not load: %s/%s" % [skin, active_weapon])
+	# Removing C4 after death can switch the active inventory item. Reloading
+	# that weapon presentation must not reset the corpse back into a live pose.
+	if not alive:
+		character_model.play_death()
+
+
+func _update_character_motion() -> void:
+	if is_instance_valid(character_model):
+		character_model.set_locomotion(Vector2(velocity.x, velocity.z).length() > 0.01,
+			not _standing, _movement_grounded)
+		character_model.set_aim_pitch(camera.rotation.x)
+
+
+func _play_weapon_action(first_person_action: String, world_action := "") -> void:
+	if is_instance_valid(viewmodel):
+		viewmodel.play_action(first_person_action)
+	if is_instance_valid(character_model) and not world_action.is_empty():
+		character_model.play_action(world_action)
 
 
 func _build_viewmodel() -> void:
@@ -234,6 +309,7 @@ func _build_viewmodel() -> void:
 	viewmodel.name = "GoldSrcViewModel"
 	weapon_anchor.add_child(viewmodel)
 	viewmodel.load_weapon(active_weapon)
+	viewmodel.set_silenced(bool(weapon_modes.get(active_weapon, false)))
 
 	muzzle_light = OmniLight3D.new()
 	muzzle_light.name = "MuzzleFlash"
@@ -248,7 +324,7 @@ func _build_viewmodel() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not alive:
+	if not is_local_human() or not alive:
 		return
 	if radio_menu_open and event is InputEventKey:
 		return
@@ -260,6 +336,8 @@ func _input(event: InputEvent) -> void:
 
 
 func _apply_mouse_look(relative: Vector2) -> void:
+	if not is_local_human():
+		return
 	var radians_per_pixel: float = deg_to_rad(settings.mouse_sensitivity)
 	var vertical_sign := -1.0 if settings.invert_y else 1.0
 	_yaw -= relative.x * radians_per_pixel
@@ -271,8 +349,47 @@ func _apply_mouse_look(relative: Vector2) -> void:
 	_sync_view_angles()
 
 
+func input_view_angles() -> Vector2:
+	# The rendered camera/body also contain authoritative recoil punch.
+	return Vector2(wrapf(_yaw, -PI, PI), _pitch)
+
+
+## Player input uses Godot's positive-up pitch, while GoldSrc grenade math uses
+## positive-down pitch. Keep the conversion at the input/ballistics boundary so
+## the shared trajectory functions can retain their original convention.
+static func grenade_goldsrc_angles(view_angles_radians: Vector2) -> Vector2:
+	return Vector2(
+		-rad_to_deg(view_angles_radians.y),
+		rad_to_deg(view_angles_radians.x) + 90.0,
+	)
+
+
+func _latch_grenade_release_view() -> void:
+	if _grenade_release_view_latched:
+		return
+	_grenade_release_view = input_view_angles()
+	_grenade_release_view_latched = true
+
+
+func _clear_grenade_release_view() -> void:
+	_grenade_release_view_latched = false
+
+
+func _apply_command_look(command: Dictionary) -> void:
+	if command.has("view_angles"):
+		var angles: Variant = command.view_angles
+		if typeof(angles) == TYPE_VECTOR2 and angles.is_finite():
+			_yaw = wrapf(angles.x, -PI, PI)
+			_pitch = clampf(angles.y, deg_to_rad(-89.0), deg_to_rad(89.0))
+			_sync_view_angles()
+		return
+	var relative: Vector2 = command.get("look_delta", Vector2.ZERO)
+	if not relative.is_zero_approx():
+		_apply_mouse_look(relative)
+
+
 func _apply_settings() -> void:
-	if is_instance_valid(camera):
+	if is_local_human() and is_instance_valid(camera):
 		camera.fov = settings.field_of_view
 
 
@@ -298,6 +415,7 @@ func _sync_view_angles() -> void:
 			deg_to_rad(-89.0),
 			deg_to_rad(89.0),
 		)
+		spectator_view_pitch = camera.rotation.x
 
 
 func _drop_punch_angle() -> void:
@@ -305,16 +423,20 @@ func _drop_punch_angle() -> void:
 	_sync_view_angles()
 
 
+func can_simulate_movement() -> bool:
+	return alive and (controls_enabled or (post_round_movement_enabled and look_enabled))
+
+
 func _physics_process(delta: float) -> void:
+	if network_read_only:
+		return
 	_advance_weapon_simulation_tick()
-	if not controls_enabled or not alive:
+	if not can_simulate_movement():
 		velocity = Vector3.ZERO
 		last_command = {}
 		if look_enabled and alive and is_instance_valid(combat_controller):
 			var idle_command := combat_controller.gather_command(delta)
-			var idle_look: Vector2 = idle_command.get("look_delta", Vector2.ZERO)
-			if not idle_look.is_zero_approx():
-				_apply_mouse_look(idle_look)
+			_apply_command_look(idle_command)
 			# CS 1.6 freeze time: weapon handling stays live even though the
 			# feet are frozen — only movement and attacks are withheld.
 			var idle_weapon := str(idle_command.get("weapon", ""))
@@ -322,27 +444,86 @@ func _physics_process(delta: float) -> void:
 				switch_weapon(idle_weapon)
 			if bool(idle_command.get("reload", false)):
 				_start_reload()
+		_update_character_motion()
 		return
 
 	var command := combat_controller.gather_command(delta)
+	if not bool(command.get("fire", false)) or bool(command.get("fire_pressed", false)):
+		_glock_trigger_consumed = false
 	if objective_movement_locked:
 		command.crouch = objective_crouch_locked
 	last_command = command
 	_drop_punch_angle()
+	_apply_command_look(command)
+	var horizontal_distance := simulate_movement(command, delta)
+	if _movement_grounded and horizontal_distance > 0.0:
+		_step_distance += horizontal_distance
+		_apply_view_bob()
+
+	if not str(command.weapon).is_empty():
+		switch_weapon(command.weapon)
+	if not controls_enabled:
+		# Survivors may move through the post-round countdown without reopening
+		# attacks/objective actions after the round result has been finalized.
+		if bool(command.get("reload", false)):
+			_start_reload()
+		_update_character_motion()
+		return
+	if bool(command.get("secondary_pressed", false)) and _try_secondary():
+		# A successful secondary action wins this tick, as in ItemPostFrame.
+		# Do not rely on a primary lockout to suppress simultaneous clicks.
+		command.fire = false
+		command.fire_pressed = false
+
+	var active_definition: Dictionary = WEAPONS[active_weapon]
+	if not command.fire and not command.fire_pressed and not command.secondary_pressed:
+		_recover_weapon_accuracy()
+	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
+		if command.fire_pressed:
+			_try_fire()
+		if weapon_clock.state == WeaponClockScript.STATE_GRENADE_PINNED and not command.fire:
+			_release_held_grenade()
+	elif active_weapon == "glock18":
+		# A held press that began during cooldown may fire once when ready.
+		# Do not consume it merely because its first physics tick was too early.
+		# Burst mode, unlike semi-auto, repeats complete bursts while held.
+		if (command.fire or command.fire_pressed) and (bool(weapon_modes.get("glock18", false)) or not _glock_trigger_consumed):
+			var prior_shot := _shot_sequence
+			var prior_deadline: int = weapon_clock.next_primary_tick
+			_try_fire()
+			if _shot_sequence != prior_shot or weapon_clock.next_primary_tick != prior_deadline:
+				_glock_trigger_consumed = true
+	elif command.fire and bool(active_definition.automatic):
+		_try_fire()
+	elif command.fire_pressed:
+		_try_fire()
+	if command.reload:
+		_start_reload()
+	if bool(command.get("drop", false)):
+		_try_drop_active_weapon()
+	_update_character_motion()
+
+
+## The shared movement step has no weapon, damage, audio, objective or input
+## side effects. Client reconciliation may replay it without replaying combat.
+## The caller supplies an already-applied view yaw and authoritative locks.
+func simulate_movement(command: Dictionary, delta: float) -> float:
+	# Categorizing ground may itself settle the hull onto a lower tread. Preserve
+	# the pre-categorization origin so downward stairs cancel upward-only view
+	# smoothing on the same tick instead of one frame late.
+	var view_origin_y := global_position.y
 	_movement_grounded = movement_kernel.categorize_ground(velocity)
-	var look_delta: Vector2 = command.look_delta
-	if not look_delta.is_zero_approx():
-		_apply_mouse_look(look_delta)
-	_update_crouch(delta, command.crouch)
-	_walking = command.walk
-	var input: Vector2 = command.movement
+	var wants_crouch := objective_crouch_locked if objective_movement_locked else bool(command.get("crouch", false))
+	_update_crouch(delta, wants_crouch)
+	_walking = bool(command.get("walk", false))
+	var input: Vector2 = command.get("movement", Vector2.ZERO)
 	var wish_direction: Vector3 = Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, _yaw)
 	if wish_direction.length_squared() > 1.0:
 		wish_direction = wish_direction.normalized()
-	var wish_speed := _movement_speed(not _standing, _walking) * minf(1.0, input.length())
+	var wish_speed := _movement_speed(wants_crouch, _walking) * minf(1.0, input.length())
 
 	var was_on_floor := _movement_grounded
-	var jump_pressed := _consume_jump_press(command.jump)
+	var jump_pressed := _consume_jump_press(bool(command.get("jump", false)))
 	var jumped := was_on_floor and jump_pressed
 	if was_on_floor:
 		velocity.y = 0.0
@@ -373,34 +554,11 @@ func _physics_process(delta: float) -> void:
 	else:
 		# PM_PlayerMove clears residual downward velocity after categorizing a landing.
 		velocity.y = 0.0
-	var horizontal_distance := Vector2(
+	_update_stair_view_smoothing(delta, global_position.y - view_origin_y, _movement_grounded)
+	return Vector2(
 		global_position.x - previous.x,
 		global_position.z - previous.z,
 	).length()
-	if _movement_grounded and horizontal_distance > 0.0:
-		_step_distance += horizontal_distance
-		_apply_view_bob()
-
-	if not str(command.weapon).is_empty():
-		switch_weapon(command.weapon)
-	if bool(command.get("secondary_pressed", false)):
-		_try_secondary()
-
-	var active_definition: Dictionary = WEAPONS[active_weapon]
-	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
-		if command.fire_pressed:
-			_try_fire()
-		if weapon_clock.state == WeaponClockScript.STATE_GRENADE_PINNED and not command.fire:
-			weapon_clock.release_grenade(clip <= 1)
-			_consume_weapon_clock_events(weapon_clock.take_events())
-	elif command.fire and bool(active_definition.automatic):
-		_try_fire()
-	elif command.fire_pressed:
-		_try_fire()
-	if command.reload:
-		_start_reload()
-	if bool(command.get("drop", false)):
-		_try_drop_active_weapon()
 
 
 func _advance_weapon_simulation_tick(count := 1) -> void:
@@ -538,11 +696,16 @@ func _maximum_speed(walking: bool) -> float:
 	if client_max_speed_ups <= 0.0:
 		client_max_speed_ups = float(
 			WEAPONS[active_weapon].zoom_speed
-			if camera.fov < 89.0
+			if weapon_is_zoomed()
 			else WEAPONS[active_weapon].max_speed
 		)
-	var command_speed_ups := CL_FORWARD_SPEED * (CL_MOVE_SPEED_KEY if walking else 1.0)
+	var command_speed_ups := minf(CL_FORWARD_SPEED, minf(CL_BACK_SPEED, CL_SIDE_SPEED))
 	var maximum_ups := minf(SV_MAX_SPEED, minf(client_max_speed_ups, command_speed_ups))
+	# Applying +speed before the weapon clamp made common rifles almost as fast
+	# as running (AK: 208 versus 221 HU/s). Scale the resolved cap so walking is
+	# consistently 52% speed with every weapon and client max-speed override.
+	if walking:
+		maximum_ups *= CL_MOVE_SPEED_KEY
 	return maximum_ups * WORLD_SCALE
 
 
@@ -579,32 +742,27 @@ func _update_crouch(delta: float, wants_crouch: bool) -> void:
 		_standing = true
 		_duck_elapsed = 0.0
 		_apply_hull(STAND_HEIGHT)
-		camera.position.y = STAND_EYE
+		_set_camera_eye(STAND_EYE)
 		return
 
 	if not _standing:
 		_apply_hull(CROUCH_HEIGHT)
-		camera.position.y = CROUCH_EYE
+		_set_camera_eye(CROUCH_EYE)
 		return
 
-	# CS completes ducking immediately in the air. On the ground it uses
-	# PM_SplineFraction over TIME_TO_DUCK, changing to hull 1 at completion.
-	_duck_elapsed = (
-		DUCK_TIME
-		if _is_air_ducking()
-		else minf(DUCK_TIME, _duck_elapsed + delta)
-	)
-	var fraction := _spline_fraction(_duck_elapsed / DUCK_TIME)
-	camera.position.y = lerpf(STAND_EYE, CROUCH_EYE, fraction)
-	if _duck_elapsed >= DUCK_TIME:
-		_standing = false
-		_apply_hull(CROUCH_HEIGHT)
-		camera.position.y = CROUCH_EYE
-		if _is_air_ducking():
-			# GoldSrc air-duck keeps the origin height and raises the hull
-			# bottom 18 HU — the legs tuck up. This is what lets a jump+duck
-			# clear crates a plain jump cannot (the crouch-jump).
-			global_position.y += AIR_DUCK_FOOT_LIFT
+	# Enter the gameplay stance on the first simulated input tick. The old path
+	# waited through the full 0.4 s view spline before changing the hull, speed,
+	# animation and eye height, which read as input lag. Standing up still checks
+	# clearance above, so the immediate duck cannot wedge the player in ceilings.
+	var air_duck := _is_air_ducking()
+	_duck_elapsed = DUCK_TIME
+	_standing = false
+	_apply_hull(CROUCH_HEIGHT)
+	_set_camera_eye(CROUCH_EYE)
+	if air_duck:
+		# GoldSrc air-duck keeps the origin height and raises the hull bottom
+		# 18 HU — the legs tuck up and preserve crouch-jump clearance.
+		global_position.y += AIR_DUCK_FOOT_LIFT
 
 
 ## PM_CategorizePosition's two-unit sweep reports no contact for a hull that
@@ -660,14 +818,44 @@ func _can_use_standing_hull() -> bool:
 
 func _apply_view_bob() -> void:
 	var speed_ratio: float = clampf(Vector2(velocity.x, velocity.z).length() / RUN_SPEED, 0.0, 1.0)
-	var motion_scale := 0.0 if settings.reduced_motion else 1.0
+	# Server-owned remote aim must not depend on the host's accessibility settings.
+	var motion_scale := 0.0 if not is_local_human() or settings.reduced_motion else 1.0
 	var eye_height := STAND_EYE if _standing else CROUCH_EYE
-	camera.position.y = eye_height + sin(_step_distance * 10.5) * 0.018 * speed_ratio * motion_scale
-	viewmodel.set_bob(
-		abs(sin(_step_distance * 10.5)) * 0.006 * speed_ratio * motion_scale,
-		sin(_step_distance * 5.25) * 0.0025 * speed_ratio * motion_scale,
+	_set_camera_eye(
+		eye_height + sin(_step_distance * 10.5) * 0.018 * speed_ratio * motion_scale
 	)
+	if is_instance_valid(viewmodel):
+		viewmodel.set_bob(
+			abs(sin(_step_distance * 10.5)) * 0.006 * speed_ratio * motion_scale,
+			sin(_step_distance * 5.25) * 0.0025 * speed_ratio * motion_scale,
+		)
 	_update_footstep_audio()
+
+
+func _set_camera_eye(eye_height: float) -> void:
+	if is_instance_valid(camera):
+		camera.position.y = eye_height + _stair_view_offset
+
+
+func _update_stair_view_smoothing(delta: float, vertical_move: float, on_ground: bool) -> void:
+	# Valve's original client stores a lagging copy of the player origin. Express
+	# the same state as a local camera offset so the authoritative collision body,
+	# hitboxes and network position remain untouched.
+	if not on_ground or vertical_move < -0.000001:
+		_stair_view_offset = 0.0
+	else:
+		if vertical_move > 0.000001:
+			_stair_view_offset -= vertical_move
+		if _stair_view_offset < 0.0:
+			_stair_view_offset += maxf(0.0, delta) * STAIR_VIEW_SPEED
+			_stair_view_offset = clampf(
+				_stair_view_offset,
+				-STAIR_VIEW_MAX_OFFSET,
+				0.0,
+			)
+		else:
+			_stair_view_offset = 0.0
+	_set_camera_eye(STAND_EYE if _standing else CROUCH_EYE)
 
 
 func _update_footstep_audio() -> void:
@@ -736,7 +924,7 @@ func _emit_audio(
 		return -1
 	return audio_router.emit_catalog_event(
 		event_name,
-		AUDIO_ENTITY_ID,
+		audio_entity_id(),
 		channel,
 		AudioRouterScript.meters_to_hu(global_position),
 		overrides,
@@ -744,7 +932,7 @@ func _emit_audio(
 
 
 func audio_entity_id() -> int:
-	return AUDIO_ENTITY_ID
+	return AUDIO_ENTITY_ID if is_local_human() else REMOTE_AUDIO_ENTITY_BASE + _remote_human_slot
 
 
 func _emit_audio_descriptor(event_name: String, descriptor: Dictionary) -> int:
@@ -754,7 +942,7 @@ func _emit_audio_descriptor(event_name: String, descriptor: Dictionary) -> int:
 		return -1
 	return audio_router.emit_descriptor(
 		event_name,
-		AUDIO_ENTITY_ID,
+		audio_entity_id(),
 		descriptor,
 		AudioRouterScript.meters_to_hu(global_position),
 	)
@@ -778,6 +966,8 @@ func _emit_due_audio() -> void:
 
 
 func _try_fire(burst_followup := false) -> void:
+	if network_read_only:
+		return
 	if reloading and not _interrupt_shell_reload():
 		return
 	if active_weapon == "c4":
@@ -789,7 +979,9 @@ func _try_fire(burst_followup := false) -> void:
 		return
 	if active_weapon in ["hegrenade", "flashbang", "smokegrenade"]:
 		if clip > 0 and weapon_clock.begin_primary_attack():
-			viewmodel.play_action("pullpin")
+			_clear_grenade_release_view()
+			_play_weapon_action("pullpin")
+			publish_combat_presentation("grenade_action", {"weapon": active_weapon, "action": "pullpin"})
 			_schedule_audio("he.pull_pin", HE_PIN_AUDIO_TICK)
 		return
 	if clip <= 0:
@@ -806,6 +998,9 @@ func _try_fire(burst_followup := false) -> void:
 		return
 	if not burst_followup and not weapon_clock.begin_primary_attack():
 		return
+	# Some model reload tails outlast the ammo transfer deadline (e.g. G3SG1).
+	# Starting a shot replaces that animation and must cancel its pending sounds.
+	_audio_schedule.clear()
 	var definition: Dictionary = WEAPONS[active_weapon]
 	var burst_enabled := (
 		str(definition.secondary) == "burst"
@@ -817,7 +1012,9 @@ func _try_fire(burst_followup := false) -> void:
 			+ WeaponClockScript.ticks_from_seconds(float(definition.burst_primary))
 		)
 		_burst_shots_remaining = mini(2, clip - 1)
-		_next_burst_tick = weapon_clock.tick + 10
+		_next_burst_tick = weapon_clock.tick + (5 if active_weapon == "famas" else 10)
+	if not burst_followup:
+		_glock_recorded_burst = active_weapon == "glock18" and burst_enabled and clip >= 3
 	var now := WeaponClockScript.seconds_from_ticks(weapon_clock.tick)
 	clip -= 1
 	_store_active_ammunition()
@@ -825,11 +1022,18 @@ func _try_fire(burst_followup := false) -> void:
 	var fire_event := "%s.fire" % active_weapon
 	if bool(weapon_modes.get(active_weapon, false)) and active_weapon in ["usp", "m4a1"]:
 		fire_event = "%s.fire_silenced" % active_weapon
-	elif burst_enabled:
+	elif burst_enabled and (active_weapon != "glock18" or _glock_recorded_burst):
 		fire_event = "%s.fire_burst" % active_weapon
-	_emit_audio(fire_event, AudioRouterScript.CHAN_WEAPON)
+	# The Glock burst sample already contains three shots. Short magazines use
+	# one single-shot sample per real bullet so they cannot sound a phantom third.
+	if not (active_weapon == "glock18" and burst_followup and _glock_recorded_burst):
+		_emit_audio(fire_event, AudioRouterScript.CHAN_WEAPON)
 
 	var spread := _weapon_spread()
+	if burst_followup:
+		spread = 0.05 if active_weapon == "glock18" else _burst_spread
+	elif burst_enabled:
+		_burst_spread = spread
 	var effect_sequence := _shot_sequence
 	var direction := Ballistics.spread_direction(
 		-camera.global_transform.basis.z,
@@ -844,7 +1048,7 @@ func _try_fire(burst_followup := false) -> void:
 		combat_effects.spawn_weapon_shot(
 			active_weapon,
 			effect_sequence,
-			first_person_shot_effect_origin(),
+			first_person_shot_effect_origin() if is_local_human() else camera.global_position,
 			direction,
 			camera.global_transform.basis.x,
 			camera.global_transform.basis.y,
@@ -864,17 +1068,23 @@ func _try_fire(burst_followup := false) -> void:
 			)
 			_fire_cs_bullet(origin, pellet_direction, effect_sequence)
 
-	_record_weapon_shot(now)
-	_apply_weapon_kickback()
+	if not burst_followup:
+		_record_weapon_shot(now)
+		_apply_weapon_kickback()
+	publish_combat_presentation("shot", {"weapon": active_weapon, "sequence": effect_sequence,
+		"origin": origin, "direction": direction, "right": camera.global_basis.x,
+		"up": camera.global_basis.y, "punch": _punch_degrees})
 	_last_shot_at = now
 	_sync_view_angles()
-	if active_weapon in ["usp", "m4a1"]:
+	if is_instance_valid(viewmodel) and active_weapon in ["usp", "m4a1"]:
 		viewmodel._start_animation(
 			"shoot1" if bool(weapon_modes.get(active_weapon, false)) else "shoot1_unsil",
 			false,
 		)
 	else:
-		viewmodel.play_action("fire")
+		_play_weapon_action("fire")
+	if is_instance_valid(character_model):
+		character_model.play_action("shoot")
 
 
 func first_person_shot_effect_origin() -> Vector3:
@@ -896,16 +1106,16 @@ func first_person_shot_effect_origin() -> Vector3:
 	return muzzle - (-view.z * 0.72 + view.x * 0.235 - view.y * 0.155)
 
 
-func _try_secondary() -> void:
-	if reloading or not alive or not weapon_clock.can_primary_attack():
-		return
+func _try_secondary() -> bool:
+	if network_read_only or reloading or not alive or not weapon_clock.can_secondary_attack():
+		return false
 	if active_weapon == "knife":
 		_fire_knife(true)
-		return
+		return true
 	var definition: Dictionary = WEAPONS[active_weapon]
 	var secondary := str(definition.secondary)
 	if secondary == "none":
-		return
+		return false
 	if secondary == "zoom":
 		var levels: Array = definition.zoom_levels
 		var current_index := int(weapon_modes.get(active_weapon, 0))
@@ -916,12 +1126,19 @@ func _try_secondary() -> void:
 		weapon_clock.next_primary_tick = weapon_clock.tick + 30
 	elif secondary in ["burst", "silencer"]:
 		weapon_modes[active_weapon] = not bool(weapon_modes.get(active_weapon, false))
-		weapon_clock.next_primary_tick = (
+		var toggle_deadline: int = (
 			weapon_clock.tick
 			+ WeaponClockScript.ticks_from_seconds(
 				float(definition.get("secondary_seconds", 0.3))
 			)
 		)
+		# Glock/FAMAS mode changes delay the next toggle, not the next shot.
+		# Silencer attachment still locks primary attack for its animation.
+		weapon_clock.next_secondary_tick = toggle_deadline
+		if secondary == "silencer":
+			weapon_clock.next_primary_tick = toggle_deadline
+		else:
+			play_fire_mode_feedback()
 		weapon_changed.emit(
 			str(definition.name),
 			"BURST FIRE" if secondary == "burst" and bool(weapon_modes[active_weapon])
@@ -929,103 +1146,105 @@ func _try_secondary() -> void:
 		)
 		if secondary == "silencer":
 			var attaching := bool(weapon_modes[active_weapon])
-			viewmodel._start_animation(
-				"add_silencer" if attaching else "detach_silencer",
-				false,
-			)
+			if is_instance_valid(viewmodel):
+				viewmodel.set_silenced(attaching)
+				viewmodel._start_animation(
+					"add_silencer" if attaching else "detach_silencer",
+					false,
+				)
 			_emit_audio(
 				"%s.silencer_on" % active_weapon
 				if attaching
 				else "%s.silencer_off" % active_weapon,
 				AudioRouterScript.CHAN_ITEM,
 			)
+	return true
+
+
+func play_fire_mode_feedback() -> void:
+	# Local confirmation only; remote players' toggles are not world sounds.
+	if is_local_human():
+		_emit_audio("weapon.mode_switch", AudioRouterScript.CHAN_ITEM,
+			{"volume": 0.35, "attenuation": AudioRouterScript.ATTN_NONE})
+
+
+func weapon_is_zoomed() -> bool:
+	# Camera FOV is a display setting, not authoritative scope state. In
+	# particular a remote pawn's default 74-degree camera is not a scoped AWP.
+	return str(WEAPONS[active_weapon].secondary) == "zoom" and int(weapon_modes.get(active_weapon, 0)) > 0
+
+
+func is_crouching() -> bool:
+	return not _standing
 
 
 func _weapon_spread() -> float:
-	var planar_speed := Vector2(velocity.x, velocity.z).length()
-	if active_weapon == "ak47":
-		if not _movement_grounded:
-			return 0.04 + 0.4 * _ak_accuracy
-		if planar_speed > 140.0 * WORLD_SCALE:
-			return 0.04 + 0.07 * _ak_accuracy
-		return 0.0275 * _ak_accuracy
-	if active_weapon == "deagle":
-		if not _movement_grounded:
-			return 1.5 * (1.0 - _deagle_accuracy)
-		if planar_speed > 0.0:
-			return 0.25 * (1.0 - _deagle_accuracy)
-		if not _standing:
-			return 0.115 * (1.0 - _deagle_accuracy)
-		return 0.13 * (1.0 - _deagle_accuracy)
-	var item: Dictionary = WEAPONS[active_weapon]
-	if int(item.pellets) > 1:
-		return float(item.cone)
-	var zoomed := camera.fov < 89.0
-	match active_weapon:
-		"awp":
-			return 0.85 if not _movement_grounded else (0.25 if planar_speed > 140.0 * WORLD_SCALE else (0.0 if zoomed else 0.001))
-		"scout":
-			return 0.2 if not _movement_grounded else (0.075 if planar_speed > 170.0 * WORLD_SCALE else (0.0 if zoomed else 0.007))
-		"g3sg1":
-			return 0.45 if not _movement_grounded else (0.15 if planar_speed > 0.0 else (0.035 if not _standing else 0.055))
-		"sg550":
-			return 0.45 if not _movement_grounded else (0.15 if planar_speed > 0.0 else (0.04 if not _standing else 0.05))
-		"aug":
-			return 0.115 if not _movement_grounded else (0.049 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
-		"sg552":
-			return 0.125 if not _movement_grounded else (0.05 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
-		"famas":
-			return 0.09 if not _movement_grounded else (0.044 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
-		"galil":
-			return 0.1 if not _movement_grounded else (0.054 if planar_speed > 140.0 * WORLD_SCALE else 0.0075)
-		"m4a1":
-			return 0.1 if not _movement_grounded else (0.045 if planar_speed > 140.0 * WORLD_SCALE else 0.004)
-		"m249":
-			return 0.145 if not _movement_grounded else (0.064 if planar_speed > 140.0 * WORLD_SCALE else 0.006)
-		"mp5":
-			return 0.04 if _movement_grounded else 0.2
-		"mac10":
-			return 0.03 if _movement_grounded else 0.375
-		"ump45":
-			return 0.04 if _movement_grounded else 0.24
-		"tmp":
-			return 0.03 if _movement_grounded else 0.25
-		"p90":
-			return 0.3 if not _movement_grounded else (0.115 if planar_speed > 170.0 * WORLD_SCALE else 0.045)
-	if not _movement_grounded:
-		return 1.5 * (1.0 - _deagle_accuracy)
-	if planar_speed > 0.0:
-		return 0.25 * (1.0 - _deagle_accuracy)
-	if not _standing:
-		return 0.115 * (1.0 - _deagle_accuracy)
-	return 0.13 * (1.0 - _deagle_accuracy)
+	var accuracy := _ak_accuracy
+	if active_weapon == "g3sg1":
+		accuracy = Ballistics.sniper_accuracy(active_weapon,
+			WeaponClockScript.seconds_from_ticks(weapon_clock.tick) - _deagle_last_fire if _deagle_last_fire >= 0.0 else -1.0)
+	return Ballistics.weapon_spread(
+		active_weapon, _movement_grounded, Vector2(velocity.x, velocity.z).length(),
+		not _standing, weapon_is_zoomed(), accuracy, _deagle_accuracy,
+		bool(weapon_modes.get(active_weapon, false)),
+	)
 
 
 func _record_weapon_shot(now: float) -> void:
-	if active_weapon == "ak47":
-		if now - _last_shot_at > 0.4:
-			_ak_shots_fired = 0
-		_ak_accuracy = 0.2
+	if Ballistics.AUTOMATIC_ACCURACY.has(active_weapon):
 		_ak_shots_fired += 1
-		_ak_accuracy = minf(
-			1.25,
-			float(_ak_shots_fired * _ak_shots_fired * _ak_shots_fired) / 200.0 + 0.35,
-		)
+		_ak_accuracy = Ballistics.automatic_accuracy(active_weapon, _ak_shots_fired)
+		_accuracy_recovery_tick = -1
 		return
-	if _deagle_last_fire > 0.0:
-		_deagle_accuracy = clampf(
-			_deagle_accuracy - (0.4 - (now - _deagle_last_fire)) * 0.35,
-			0.55,
-			0.9,
-		)
+	if active_weapon in ["g3sg1", "sg550"]:
+		_ak_accuracy = Ballistics.sniper_accuracy(active_weapon, now - _deagle_last_fire if _deagle_last_fire >= 0.0 else -1.0)
+	if _deagle_last_fire >= 0.0:
+		_deagle_accuracy = Ballistics.pistol_accuracy(active_weapon, _deagle_accuracy, now - _deagle_last_fire)
 	_deagle_last_fire = now
 
 
+func _reset_weapon_accuracy() -> void:
+	_ak_accuracy = Ballistics.base_accuracy(active_weapon)
+	_ak_shots_fired = 0
+	_accuracy_recovery_tick = -1
+	_deagle_accuracy = Ballistics.base_accuracy(active_weapon)
+	_deagle_last_fire = -1.0
+
+
+func _recover_weapon_accuracy() -> void:
+	if not Ballistics.AUTOMATIC_ACCURACY.has(active_weapon) or _ak_shots_fired <= 0:
+		return
+	# ItemPostFrame: release clamps to 15, waits 0.4s, then loses one shot per
+	# 0.0225s (observed at the next 100Hz tick), not a full reset on every tap.
+	if _accuracy_recovery_tick < 0:
+		_ak_shots_fired = mini(_ak_shots_fired, 15)
+		_accuracy_recovery_tick = weapon_clock.tick + 40
+	elif weapon_clock.tick > _accuracy_recovery_tick:
+		_ak_shots_fired -= 1
+		_accuracy_recovery_tick = weapon_clock.tick + 2
+		if _ak_shots_fired == 0:
+			_ak_accuracy = Ballistics.base_accuracy(active_weapon)
+
+
 func _apply_weapon_kickback() -> void:
-	if active_weapon == "deagle":
+	if active_weapon == "glock18":
+		return # Original Glock has viewmodel kick but no punch-angle recoil.
+	if str(WEAPONS[active_weapon].category) == "pistol":
 		_punch_degrees.x -= 2.0
 		return
-	if active_weapon != "ak47":
+	var seed := (_shot_sequence - 1) & 0xff
+	if active_weapon in ["m3", "xm1014"]:
+		var low := (4 if _movement_grounded else 8) if active_weapon == "m3" else (3 if _movement_grounded else 7)
+		var high := (6 if _movement_grounded else 11) if active_weapon == "m3" else (5 if _movement_grounded else 10)
+		_punch_degrees.x -= Ballistics.shared_random_long(seed + 1, low, high)
+		return
+	if active_weapon in ["g3sg1", "sg550"]:
+		_punch_degrees.x -= Ballistics.shared_random_float(seed + 4, 0.75, 1.75 if active_weapon == "g3sg1" else 1.25) + _punch_degrees.x * 0.25
+		_punch_degrees.y += Ballistics.shared_random_float(seed + 5, -0.75, 0.75)
+		return
+	var parameters: Array = preload("res://scripts/cs16_weapon_recoil.gd").parameters(
+		active_weapon, _movement_grounded, Vector2(velocity.x, velocity.z).length() > 0.0, not _standing)
+	if parameters.is_empty():
 		var item: Dictionary = WEAPONS[active_weapon]
 		var category := str(item.category)
 		var kick := 0.9
@@ -1039,19 +1258,9 @@ func _apply_weapon_kickback() -> void:
 			kick = 1.0
 		_punch_degrees.x = maxf(_punch_degrees.x - kick, -12.0)
 		return
-	var planar_speed := Vector2(velocity.x, velocity.z).length()
-	var parameters: Array[float]
-	if planar_speed > 0.0:
-		parameters = [1.5, 0.45, 0.225, 0.05, 6.5, 2.5, 7.0]
-	elif not _movement_grounded:
-		parameters = [2.0, 1.0, 0.5, 0.35, 9.0, 6.0, 5.0]
-	elif not _standing:
-		parameters = [0.9, 0.35, 0.15, 0.025, 5.5, 1.5, 9.0]
-	else:
-		parameters = [1.0, 0.375, 0.175, 0.0375, 5.75, 1.75, 8.0]
 	var shot_count := maxi(_ak_shots_fired, 1)
-	var kick_up := parameters[0] + (float(shot_count) * parameters[2] if shot_count > 1 else 0.0)
-	var kick_lateral := parameters[1] + (float(shot_count) * parameters[3] if shot_count > 1 else 0.0)
+	var kick_up: float = parameters[0] + (float(shot_count) * parameters[2] if shot_count > 1 else 0.0)
+	var kick_lateral: float = parameters[1] + (float(shot_count) * parameters[3] if shot_count > 1 else 0.0)
 	_punch_degrees.x = maxf(_punch_degrees.x - kick_up, -parameters[4])
 	_punch_degrees.y = clampf(
 		_punch_degrees.y + kick_lateral * _recoil_direction,
@@ -1105,7 +1314,7 @@ func _fire_cs_bullet(
 		var damageable := hit_collider and hit_collider.has_method("receive_bullet_damage")
 		var is_world_surface := not damageable
 		var surface_type := (
-			Ballistics.SURFACE_CONCRETE
+			Ballistics.surface_for_hit(hit)
 			if is_world_surface
 			else Ballistics.SURFACE_DEFAULT
 		)
@@ -1130,7 +1339,7 @@ func _fire_cs_bullet(
 				hit.position,
 				self,
 			)
-			if is_instance_valid(combat_effects):
+			if is_instance_valid(combat_effects) and (hit_collider is Combatant or hit_collider is CS16Hostage):
 				combat_effects.spawn_blood_impact(
 					hit.position,
 					direction,
@@ -1153,7 +1362,8 @@ func _fire_cs_bullet(
 					)
 			hit_confirmed.emit(hit_group == Ballistics.HitGroup.HEAD)
 		else:
-			_spawn_impact(hit.position, hit.normal, effect_sequence)
+			if is_instance_valid(combat_effects):
+				combat_effects.spawn_world_impact(hit.position, hit.normal, effect_sequence, surface_type)
 		if not bool(step.can_continue):
 			break
 		# The imported BSP uses one StaticBody for the entire world. Excluding
@@ -1179,6 +1389,8 @@ func _hit_group_for_impact(
 	hit_collider: Object,
 	hit_position: Vector3,
 ) -> int:
+	if hit_collider is Combatant:
+		return hit_collider.hit_group_at(hit_position)
 	if (
 		not hit_collider is Node3D
 		or not hit_collider.has_method("head_height")
@@ -1218,16 +1430,15 @@ func _fire_knife(stab := false) -> void:
 	var end := origin + forward * range_units * WORLD_SCALE
 	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 | 2, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if not weapon_clock.begin_primary_attack(not hit.is_empty()):
+	if not weapon_clock.begin_knife_attack(stab, not hit.is_empty()):
 		return
-	if stab:
-		weapon_clock.next_primary_tick = (
-			weapon_clock.tick
-			+ WeaponClockScript.ticks_from_seconds(float(WEAPONS.knife.secondary_seconds))
-		)
-	_emit_audio("knife.stab" if stab else "knife.slash", AudioRouterScript.CHAN_WEAPON)
-	viewmodel.play_action("knife")
+	var action := ("stab_miss" if hit.is_empty() else "stab") if stab else ("midslash1" if _knife_swing % 2 == 0 else "midslash2")
+	if not stab:
+		_knife_swing += 1
+	_play_weapon_action(action, "shoot")
+	publish_combat_presentation("knife_action", {"action": action})
 	if hit.is_empty():
+		_emit_audio("knife.slash", AudioRouterScript.CHAN_WEAPON)
 		return
 	var hit_collider: Object = hit.collider
 	var base_damage := int(WEAPONS.knife.stab_damage if stab else WEAPONS.knife.damage)
@@ -1239,7 +1450,7 @@ func _fire_knife(stab := false) -> void:
 			hit_collider.call("facing_direction"),
 		)
 		var hit_group := _hit_group_for_impact(hit_collider, hit.position)
-		_emit_audio("knife.hit", AudioRouterScript.CHAN_ITEM)
+		_emit_audio("knife.stab" if stab else "knife.hit", AudioRouterScript.CHAN_ITEM)
 		hit_collider.call(
 			"receive_melee_damage",
 			base_damage,
@@ -1258,7 +1469,7 @@ func _fire_knife(stab := false) -> void:
 		hit_confirmed.emit(hit_group == Ballistics.HitGroup.HEAD)
 	elif hit_collider and hit_collider.has_method("apply_damage"):
 		# Breakables and other world props keep the generic damage entry point.
-		_emit_audio("knife.hit", AudioRouterScript.CHAN_ITEM)
+		_emit_audio("knife.stab" if stab else "knife.hit", AudioRouterScript.CHAN_ITEM)
 		hit_collider.call(
 			"apply_damage",
 			float(base_damage),
@@ -1275,24 +1486,41 @@ func _fire_knife(stab := false) -> void:
 
 func _spawn_thrown_grenade() -> void:
 	if active_weapon not in ["hegrenade", "flashbang", "smokegrenade"] or clip <= 0:
+		_clear_grenade_release_view()
 		return
 	clip -= 1
 	_store_active_ammunition()
 	ammo_changed.emit(clip, reserve, false)
-	viewmodel.play_action("throw")
+	_play_weapon_action("throw", "throw")
+	publish_combat_presentation("grenade_action", {"weapon": active_weapon, "action": "throw"})
 	var grenade: HEGrenade = GrenadeScript.new()
 	get_tree().current_scene.add_child(grenade)
-	var view_pitch := rad_to_deg(camera.rotation.x)
-	var goldsrc_yaw := rad_to_deg(rotation.y) + 90.0
+	var release_view: Vector2 = (
+		_grenade_release_view
+		if _grenade_release_view_latched
+		else input_view_angles()
+	)
+	var goldsrc_angles := grenade_goldsrc_angles(release_view)
 	grenade.launch(
-		Ballistics.he_throw_origin(camera.global_position, view_pitch, goldsrc_yaw),
-		Ballistics.he_throw_velocity(view_pitch, goldsrc_yaw, velocity),
+		Ballistics.he_throw_origin(camera.global_position, goldsrc_angles.x, goldsrc_angles.y),
+		Ballistics.he_throw_velocity(goldsrc_angles.x, goldsrc_angles.y, velocity),
 		self,
 		active_weapon,
 	)
+	_clear_grenade_release_view()
+
+
+func _release_held_grenade() -> void:
+	if weapon_clock.state != WeaponClockScript.STATE_GRENADE_PINNED:
+		return
+	_latch_grenade_release_view()
+	weapon_clock.release_grenade(clip <= 1)
+	_consume_weapon_clock_events(weapon_clock.take_events())
 
 
 func _start_reload() -> void:
+	if network_read_only:
+		return
 	var definition: Dictionary = WEAPONS[active_weapon]
 	var magazine := int(definition.magazine)
 	if reloading or magazine <= 0 or clip >= magazine or reserve <= 0 or not alive:
@@ -1304,7 +1532,14 @@ func _start_reload() -> void:
 	_audio_schedule.clear()
 	for stage: Dictionary in RELOAD_AUDIO_STAGES.get(active_weapon, []):
 		_schedule_audio(str(stage.event), int(stage.offset))
-	viewmodel.play_action("reload")
+	if active_weapon == "xm1014":
+		# start_reload MDL event: frame 20 at 30 fps.
+		_schedule_audio("xm1014.reload_start", 67)
+	if weapon_clock.is_shell_reloading():
+		_schedule_audio("m3.insert" if active_weapon == "m3" else "shotgun.insert",
+			weapon_clock.next_primary_tick - weapon_clock.tick)
+	_play_weapon_action("reload", "reload")
+	publish_combat_presentation("reload", {"weapon": active_weapon})
 
 
 func _complete_reload() -> void:
@@ -1318,11 +1553,7 @@ func _complete_reload() -> void:
 	reserve -= loaded
 	_store_active_ammunition()
 	reloading = false
-	if active_weapon == "ak47":
-		_ak_accuracy = 0.2
-		_ak_shots_fired = 0
-	elif active_weapon == "deagle":
-		_deagle_accuracy = 0.9
+	_reset_weapon_accuracy()
 	ammo_changed.emit(clip, reserve, reloading)
 
 
@@ -1340,11 +1571,17 @@ func _insert_reload_shell() -> void:
 		ammo_changed.emit(clip, reserve, reloading)
 	if clip >= magazine or reserve <= 0:
 		_finish_shell_reload()
+	else:
+		# Start the next insertion as the previous shell seats, not every frame.
+		_emit_audio("m3.insert" if active_weapon == "m3" else "shotgun.insert", AudioRouterScript.CHAN_WEAPON)
 
 
 func _finish_shell_reload() -> void:
 	weapon_clock.finish_shell_reload()
 	reloading = false
+	_audio_schedule.clear()
+	if active_weapon == "m3":
+		_emit_audio("m3.pump", AudioRouterScript.CHAN_WEAPON)
 	_store_active_ammunition()
 	ammo_changed.emit(clip, reserve, reloading)
 
@@ -1362,34 +1599,42 @@ func _interrupt_shell_reload() -> bool:
 
 
 func switch_weapon(weapon: String) -> void:
+	if network_read_only:
+		return
 	if not WEAPONS.has(weapon) or not owns_weapon(weapon) or weapon == active_weapon:
 		return
 	_store_active_ammunition()
 	reloading = false
 	_audio_schedule.clear()
+	_clear_grenade_release_view()
 	previous_weapon = active_weapon
 	active_weapon = weapon
+	_knife_swing = 0
+	if str(WEAPONS[active_weapon].secondary) == "zoom":
+		weapon_modes[active_weapon] = 0
 	_burst_shots_remaining = 0
+	_glock_recorded_burst = false
 	_next_burst_tick = -1
-	camera.fov = settings.field_of_view
+	_glock_trigger_consumed = false
+	camera.fov = settings.field_of_view if is_local_human() else 74.0
 	weapon_clock.begin_deploy(active_weapon)
-	if active_weapon == "ak47":
-		_ak_accuracy = 0.2
-		_ak_shots_fired = 0
-	elif active_weapon == "deagle":
-		_deagle_accuracy = 0.9
+	_reset_weapon_accuracy()
 	if ammunition.has(active_weapon):
 		clip = int(ammunition[active_weapon].clip)
 		reserve = int(ammunition[active_weapon].reserve)
 	else:
 		clip = -1
 		reserve = -1
-	viewmodel.load_weapon(active_weapon)
-	viewmodel.play_action("switch")
-	if active_weapon == "deagle":
-		_schedule_audio("deagle.deploy", 3)
-	elif active_weapon == "ak47":
-		_schedule_audio("ak47.bolt", 37)
+	if is_instance_valid(viewmodel):
+		viewmodel.load_weapon(active_weapon)
+		viewmodel.set_silenced(bool(weapon_modes.get(active_weapon, false)))
+		viewmodel.play_action("switch")
+	_refresh_character_model()
+	for stage: Dictionary in AudioCatalogScript.DEPLOY_AUDIO_STAGES.get(active_weapon, []):
+		if int(stage.offset) == 0:
+			_emit_audio(str(stage.event), AudioRouterScript.CHAN_WEAPON)
+		else:
+			_schedule_audio(str(stage.event), int(stage.offset))
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)
 	ammo_changed.emit(clip, reserve, false)
 
@@ -1401,6 +1646,8 @@ func _is_droppable_gun(weapon: String) -> bool:
 
 
 func _try_drop_active_weapon() -> void:
+	if network_read_only:
+		return
 	# CS 1.6 `drop`: only guns leave the inventory; knife/grenades/C4 keep the
 	# key inert (the carried C4 has its own drop contract in game.gd).
 	if not _is_droppable_gun(active_weapon):
@@ -1484,6 +1731,10 @@ func grant_item(item_id: String, amount := 1) -> bool:
 		canonical = canonical.trim_prefix("weapon_")
 	if WEAPONS.has(canonical):
 		var definition: Dictionary = WEAPONS[canonical]
+		if not owns_weapon(canonical) and str(definition.secondary) == "silencer":
+			# Fresh human loadouts start suppressed; re-grants of owned guns
+			# must not undo a player's deliberate mode selection.
+			weapon_modes[canonical] = true
 		if str(definition.category) == "grenade":
 			owned_weapons[canonical] = true
 			if not ammunition.has(canonical):
@@ -1544,10 +1795,15 @@ func _initialize_starting_loadout() -> void:
 	owned_weapons.clear()
 	ammunition.clear()
 	weapon_modes.clear()
+	previous_weapon = ""
+	for item: String in equipment:
+		equipment[item] = false
 	owned_weapons.knife = true
 	ammunition.knife = {"clip": -1, "reserve": -1}
 	var pistol := "usp" if team == TEAM_COUNTER_TERRORIST else "glock18"
 	owned_weapons[pistol] = true
+	if pistol == "usp":
+		weapon_modes[pistol] = true
 	ammunition[pistol] = {
 		"clip": int(WEAPONS[pistol].magazine),
 		"reserve": int(WEAPONS[pistol].reserve),
@@ -1583,7 +1839,7 @@ func refill_armor() -> void:
 
 func _spawn_impact(position: Vector3, normal: Vector3, effect_sequence := 0) -> void:
 	if is_instance_valid(combat_effects):
-		combat_effects.spawn_world_impact(position, normal, effect_sequence)
+		combat_effects.spawn_world_impact(position, normal, effect_sequence, "knife")
 
 
 func spawn_incoming_tracer(_from: Vector3, _to: Vector3) -> void:
@@ -1607,24 +1863,32 @@ func _on_combatant_damaged(
 	_headshot: bool,
 ) -> void:
 	health_changed.emit(health, armor)
-	_emit_audio("player.pain", AudioRouterScript.CHAN_VOICE)
+	_emit_audio(last_damage_impact_audio, AudioRouterScript.CHAN_VOICE)
 
 
 func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
 	controls_enabled = false
+	post_round_movement_enabled = false
 	objective_movement_locked = false
 	objective_crouch_locked = false
 	reloading = false
 	_audio_schedule.clear()
+	_clear_grenade_release_view()
 	_emit_audio(
 		"player.headshot_death" if headshot else "player.death",
 		AudioRouterScript.CHAN_VOICE,
 	)
 	weapon_clock.reset(active_weapon, weapon_clock.tick)
+	if is_instance_valid(character_model):
+		character_model.play_death()
 	died.emit()
 
 
 func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
+	post_round_movement_enabled = false
+	flash_blind_until_frame = -1
+	flash_blind_total_seconds = 0.0
+	spawn_serial += 1
 	_store_active_ammunition()
 	reloading = false
 	var starting_armor := armor
@@ -1645,19 +1909,21 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_yaw = 0.0
 	_pitch = 0.0
 	_punch_degrees = Vector2.ZERO
-	_ak_accuracy = 0.2
-	_ak_shots_fired = 0
-	_deagle_accuracy = 0.9
-	_deagle_last_fire = 0.0
+	_reset_weapon_accuracy()
 	_burst_shots_remaining = 0
+	_glock_recorded_burst = false
 	_next_burst_tick = -1
 	_last_shot_at = -10.0
+	_glock_trigger_consumed = false
 	_audio_schedule.clear()
+	_clear_grenade_release_view()
 	_next_footstep_tick = weapon_clock.tick
 	_left_foot = false
 	_footstep_serial = 0
-	muzzle_light.visible = false
+	if is_instance_valid(muzzle_light):
+		muzzle_light.visible = false
 	_movement_grounded = false
+	_stair_view_offset = 0.0
 	if is_instance_valid(movement_kernel):
 		movement_kernel.grounded = false
 		movement_kernel.ground_normal = Vector3.UP
@@ -1666,10 +1932,14 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_apply_hull(STAND_HEIGHT)
 	camera.rotation = Vector3.ZERO
 	camera.position.y = STAND_EYE
-	weapon_anchor.rotation = Vector3.ZERO
-	weapon_anchor.position = Vector3.ZERO
-	viewmodel.load_weapon(active_weapon)
-	viewmodel.position = viewmodel.base_position
+	if is_instance_valid(weapon_anchor):
+		weapon_anchor.rotation = Vector3.ZERO
+		weapon_anchor.position = Vector3.ZERO
+	if is_instance_valid(viewmodel):
+		viewmodel.load_weapon(active_weapon)
+		viewmodel.set_silenced(bool(weapon_modes.get(active_weapon, false)))
+		viewmodel.position = viewmodel.base_position
+	_refresh_character_model()
 	health_changed.emit(health, armor)
 	ammo_changed.emit(clip, reserve, reloading)
 	weapon_changed.emit(WEAPONS[active_weapon].name, WEAPONS[active_weapon].mode)

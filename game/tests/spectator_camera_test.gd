@@ -60,6 +60,9 @@ func _run() -> void:
 	# ~3 s of physics frames crosses the 2 s activation delay.
 	await _advance_seconds(3.0)
 	_check(game.spectator_camera.active, "spectating activates after ~2 s")
+	_check(not game.player.viewmodel.is_visible_in_tree() and not game.hud.crosshair.visible
+		and not game.hud.get_node("HUDRoot/ClassicVitals").visible,
+		"death chase hides the local weapon and combat HUD")
 	_check(
 		game.spectator_camera.camera.current,
 		"spectator chase camera becomes the current camera",
@@ -90,6 +93,60 @@ func _run() -> void:
 		cam_forward.dot(to_head) > 0.9,
 		"chase camera looks toward the spectated teammate",
 	)
+
+	# Space cycles chase -> first-person -> free-fly -> chase while retaining the
+	# current target. Free fly uses normal movement actions.
+	var space := InputEventKey.new()
+	space.keycode = KEY_SPACE
+	space.pressed = true
+	spectated.health = 73
+	spectated.armor = 42
+	spectated.has_helmet = true
+	spectated.weapon_clip = 17
+	game.spectator_camera._unhandled_input(space)
+	_check(game.spectator_camera.is_first_person(),
+		"Space switches third-person chase to first-person POV")
+	_check(game.hud.spectate_label.text == "Spectating: %s (First Person)" % spectated.display_name,
+		"HUD identifies first-person mode and its target")
+	var expected_view: Transform3D = spectated.spectator_view_transform()
+	var first_forward: Vector3 = -game.spectator_camera.camera.global_basis.z
+	_check(game.spectator_camera.camera.global_position.distance_to(
+		expected_view.origin + -expected_view.basis.z * 0.08) < 0.001,
+		"first-person camera occupies the target eye viewpoint")
+	_check(first_forward.dot(-expected_view.basis.z) > 0.999,
+		"first-person camera follows the target's actual aim direction")
+	_check(game.hud.get_node("HUDRoot/ClassicVitals").visible
+		and game.hud.get_node("HUDRoot/ClassicAmmo").visible
+		and game.hud.get_node("HUDRoot/ClassicMoney").visible
+		and game.hud.crosshair.visible,
+		"first-person spectating shows the target combat HUD")
+	_check(game.hud.health_label.text == "73" and game.hud.armor_label.text == "42"
+		and game.hud.ammo_label.text == "17",
+		"first-person spectator HUD uses target health, armor and ammunition")
+	space.pressed = false
+	game.spectator_camera._unhandled_input(space)
+	space.pressed = true
+	game.spectator_camera._unhandled_input(space)
+	_check(game.spectator_camera.is_free_fly(), "Space switches first-person POV to free fly")
+	_check(game.hud.spectate_label.text == "Spectating: Free Look",
+		"HUD identifies free-fly mode")
+	_check(not game.hud.get_node("HUDRoot/ClassicVitals").visible
+		and not game.hud.get_node("HUDRoot/ClassicAmmo").visible
+		and not game.hud.crosshair.visible,
+		"free fly hides participant-only HUD values")
+	var free_start: Vector3 = game.spectator_camera.camera.global_position
+	Input.action_press("move_forward")
+	game.spectator_camera._physics_process(0.25)
+	Input.action_release("move_forward")
+	_check(game.spectator_camera.camera.global_position.distance_to(free_start) > 0.5,
+		"WASD moves the free-fly camera independently")
+	space.pressed = false
+	game.spectator_camera._unhandled_input(space)
+	space.pressed = true
+	game.spectator_camera._unhandled_input(space)
+	_check(game.spectator_camera.mode == game.spectator_camera.MODE_CHASE
+		and game.spectator_camera.target == spectated,
+		"Space returns free fly to the current third-person target")
 
 	# Manual cycle mirrors fire/secondary clicks.
 	var before_cycle = game.spectator_camera.target
@@ -127,6 +184,9 @@ func _run() -> void:
 	]
 	game._consume_round_events(reset_events)
 	_check(game.player.alive, "round reset revives the player")
+	_check(game.player.viewmodel.is_visible_in_tree() and game.hud.crosshair.visible
+		and game.hud.get_node("HUDRoot/ClassicVitals").visible,
+		"respawn restores local weapon and combat HUD")
 	_check(
 		not game.spectator_camera.active and not game.spectator_camera.pending,
 		"round reset ends spectating",

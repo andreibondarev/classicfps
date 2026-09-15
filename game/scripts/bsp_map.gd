@@ -2,8 +2,9 @@ class_name BspMap
 extends Node3D
 
 const SPAWN_FLOOR_EPSILON := 0.001
+const DUST2_SHADOW_LIFT := 0.14
 
-## GoldSrc-faithful surface shader: WAD texture (trilinear mipmaps, like
+## Legacy-style surface shader: WAD texture (trilinear mipmaps, like
 ## gl_texturemode GL_LINEAR_MIPMAP_LINEAR) multiplied by the per-face lightmap
 ## atlas sampled via UV2. The raw dust2 luxels carry the map's yellow-green
 ## `_light 255 255 128` sun verbatim; GoldSrc never shows that raw product —
@@ -14,10 +15,24 @@ const SPAWN_FLOOR_EPSILON := 0.001
 ## gamma-lift the luxel, desaturate its tint, roll the x2 overbright into a
 ## soft shoulder instead of a hard per-channel clip (preserves brick detail in
 ## sun), and keep GoldSrc's ambient floor so shade never crushes to black.
-## The gamma-space product survives Godot's linear pipeline via pow 2.2.
+## Evaluate the authored response in the same encoded space on every backend.
+## Only the final product is converted for a linear-output renderer. This
+## preserves Compatibility's material response; the response itself still
+## needs comparison with original-engine reference captures.
 const LIGHTMAP_SHADER_FRAGMENT := """
-uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+// Deliberately raw data sampling: this legacy response and its filtering are
+// defined on encoded WAD texels, not automatically decoded sRGB texels.
+uniform sampler2D albedo_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D lightmap_tex : filter_linear, repeat_disable;
+uniform float shadow_lift = 0.0;
+
+vec3 bsp_output_color(vec3 encoded) {
+	if (OUTPUT_IS_SRGB) {
+		return encoded;
+	}
+	return mix(pow((encoded + vec3(0.055)) / 1.055, vec3(2.4)),
+		encoded / 12.92, lessThanEqual(encoded, vec3(0.04045)));
+}
 
 // GoldSrc uploads WAD textures through its texgamma 2.0 / gamma 2.5 ramp:
 // on screen every texel is lifted by ~pow 0.85, which flattens the speckly
@@ -63,6 +78,11 @@ vec3 goldsrc_light(vec2 uv2) {
 	// as warm dim brown (~RGB 90,70,50 on screen), never a black void. Lift
 	// only the dark end so lit areas and shadow gradients are untouched.
 	light_factor += vec3(0.30, 0.24, 0.175) * exp(-light_factor / vec3(0.16));
+	// Dust2 readability adjustment, not an engine-parity claim. Preserve the
+	// baked gradients and leave bright surfaces/texlights completely unchanged.
+	float shadow_weight = 1.0 - smoothstep(0.18, 0.65,
+		dot(light_factor, vec3(0.299, 0.587, 0.114)));
+	light_factor += vec3(shadow_lift * shadow_weight);
 	return pow(light_factor, vec3(2.2));
 }
 """
@@ -76,7 +96,7 @@ render_mode unshaded, cull_disabled, specular_disabled;
 	+ """
 void fragment() {
 	vec4 albedo = texture(albedo_tex, UV);
-	ALBEDO = goldsrc_texture_wash(albedo.rgb) * goldsrc_light(UV2);
+	ALBEDO = bsp_output_color(goldsrc_texture_wash(albedo.rgb) * goldsrc_light(UV2));
 }
 """
 )
@@ -101,7 +121,7 @@ void fragment() {
 	float width = max(fwidth(mask), 0.0001);
 	ALPHA = clamp((mask - 0.5) / min(width, 0.35) + 0.5, 0.0, 1.0);
 	ALPHA_SCISSOR_THRESHOLD = 0.05;
-	ALBEDO = goldsrc_texture_wash(albedo.rgb) * goldsrc_light(UV2);
+	ALBEDO = bsp_output_color(goldsrc_texture_wash(albedo.rgb) * goldsrc_light(UV2));
 }
 """
 )
@@ -115,6 +135,7 @@ var collision_face_count := 0
 var world_collision_face_count := 0
 var submodel_collision_face_count := 0
 var navigation_region: NavigationRegion3D
+var navigation_links: Array[NavigationLink3D] = []
 var collision_face_textures: Array[String] = []
 var _collision_faces := PackedVector3Array()
 var _model_bounds := {}
@@ -132,10 +153,20 @@ var _world_root: Node3D
 var _lightmap_texture: Texture2D
 var _lightmap_shader: Shader
 var _lightmap_cutout_shader: Shader
+var shadow_lift := 0.0
+
+
+static func lift_shadow_tint(tint: Color, amount: float) -> Color:
+	# Same encoded-light adjustment as the BSP shader, before material color
+	# conversion. Alpha is preserved, including the missing-probe sentinel.
+	var luma := tint.r * 0.299 + tint.g * 0.587 + tint.b * 0.114
+	var lift := amount * (1.0 - smoothstep(0.18, 0.65, luma))
+	return Color(tint.r + lift, tint.g + lift, tint.b + lift, tint.a)
 
 
 func load_map(map_path: String) -> bool:
 	source_path = map_path
+	shadow_lift = DUST2_SHADOW_LIFT if map_path.get_base_dir().get_file() == "de_dust2" else 0.0
 	var file := FileAccess.open(map_path, FileAccess.READ)
 	if file == null:
 		push_error("Could not open converted map: %s" % map_path)
@@ -303,7 +334,24 @@ func load_map(map_path: String) -> bool:
 
 	_build_collision_bodies()
 	navigation_region.bake_navigation_mesh(false)
+	_load_navigation_links()
 	return get_child_count() > 0
+
+
+func _load_navigation_links() -> void:
+	# Hand-authored traversal metadata lives outside regenerated BSP exports.
+	# A link expresses a real jump/drop, never a change to hull or step height.
+	var path := "res://assets/navigation/%s.tscn" % source_path.get_base_dir().get_file()
+	if not ResourceLoader.exists(path):
+		return
+	var scene := load(path) as PackedScene
+	if scene == null:
+		push_error("Invalid map traversal scene: " + path)
+		return
+	var owner := scene.instantiate()
+	add_child(owner)
+	for link: NavigationLink3D in owner.find_children("*", "NavigationLink3D", true, false):
+		navigation_links.append(link)
 
 
 func texture_name_for_face(face_index: int) -> String:
@@ -428,6 +476,7 @@ func _material_for_group(group: Dictionary, map_root: String, has_uv2: bool = fa
 		)
 		lightmapped.set_shader_parameter("albedo_tex", albedo_texture)
 		lightmapped.set_shader_parameter("lightmap_tex", _lightmap_texture)
+		lightmapped.set_shader_parameter("shadow_lift", shadow_lift)
 		return lightmapped
 	if bool(group.get("transparent", false)):
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
@@ -581,7 +630,10 @@ func _build_collision_bodies() -> void:
 		body.name = "ModelCollision"
 		body.collision_layer = 1
 		body.collision_mask = 0
-		body.sync_to_physics = true
+		# The source brush clock already updates on physics ticks. Godot's
+		# sync_to_physics listens for LOCAL transform changes, not movement of
+		# this parent root; enabling it leaves the collider at its old pose.
+		body.sync_to_physics = false
 		body.set_meta("model_index", model_index)
 		body.set_meta("entity_index", int(_model_entity_indices.get(model_index, -1)))
 		body.set_meta("classname", str(_model_classnames.get(model_index, "")))
@@ -594,8 +646,7 @@ func _build_collision_bodies() -> void:
 		root.add_child(body)
 		# Collision lives as an identity-local child of the shared model root:
 		# brush-runtime motion applied to the root carries the visual and the
-		# collider together, and AnimatableBody3D syncs from its global
-		# transform when any ancestor moves.
+		# collider together through ordinary global-transform notifications.
 		_model_collision_bodies[model_index] = body
 		submodel_collision_face_count += int(model_faces.size() / 3)
 	collision_face_count = world_collision_face_count + submodel_collision_face_count

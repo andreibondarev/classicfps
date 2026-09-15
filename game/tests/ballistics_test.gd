@@ -2,6 +2,7 @@ extends SceneTree
 
 const Ballistics := preload("res://scripts/cs16_ballistics.gd")
 const GrenadeScript := preload("res://scripts/grenade.gd")
+const PlayerScript := preload("res://scripts/player.gd")
 
 var failures: Array[String] = []
 
@@ -29,6 +30,8 @@ func _run() -> void:
 	_test_knife_backstab_and_armor()
 	_test_penetration()
 	_test_shared_spread()
+	_test_live_spread_and_materials()
+	await _test_ray_material_faces()
 	_test_he_grenade_math()
 	await _test_grenade_configuration()
 
@@ -38,6 +41,85 @@ func _run() -> void:
 	else:
 		print("GAME_BALLISTICS_TEST_FAIL: %s" % ", ".join(failures))
 		quit(1)
+
+
+func _test_live_spread_and_materials() -> void:
+	_near(Ballistics.weapon_spread("ak47", true, 0.0, false, false, 0.2, 0.9), 0.0055, 0.000001, "rested AK first-shot cone")
+	_near(Ballistics.weapon_spread("mp5", true, 0.0, false, false, 0.75, 0.55), 0.03, 0.000001, "MP5 uses its canonical weapon ID and accuracy-scaled cone")
+	_near(Ballistics.weapon_spread("mp5", false, 0.0, false, false, 0.75, 0.9), 0.15, 0.000001, "airborne SMG penalty scales with its own accuracy")
+	_near(Ballistics.weapon_spread("awp", true, 0.0, false, true, 0.2, 0.9), 0.001, 0.000001, "standing scoped AWP retains source minimum spread")
+	_check(Ballistics.weapon_spread("deagle", true, 0.0, true, false, 0.2, 0.9) < Ballistics.weapon_spread("deagle", true, 0.0, false, false, 0.2, 0.9), "crouching tightens pistol spread")
+	var world := Node3D.new()
+	world.set_meta("face_textures", ["concrete"])
+	var brush := StaticBody3D.new()
+	world.add_child(brush)
+	brush.set_meta("face_textures", ["wood", "metal", "grate", "vent", "tile", "computer"])
+	for face in range(6):
+		_check(Ballistics.surface_for_hit({"collider": brush, "face_index": face}) == [Ballistics.SURFACE_WOOD, Ballistics.SURFACE_METAL, Ballistics.SURFACE_GRATE, Ballistics.SURFACE_VENT, Ballistics.SURFACE_TILE, Ballistics.SURFACE_COMPUTER][face], "bullet material uses collider-local face %d" % face)
+	_check(Ballistics.surface_for_hit({"collider": brush, "face_index": -1}) == Ballistics.SURFACE_CONCRETE, "missing face has safe concrete fallback")
+	brush.remove_meta("face_textures")
+	_check(Ballistics.surface_for_hit({"collider": brush, "face_index": 0}) == Ballistics.SURFACE_CONCRETE, "world texture lookup walks collider ancestors")
+	world.free()
+
+
+func _test_ray_material_faces() -> void:
+	# Fabricated hit dictionaries cannot catch a backend returning face_index=-1
+	# or a collision accelerator reordering the collider-local triangle indices.
+	var textures := ["wood", "metal", "grate", "vent", "tile", "computer"]
+	var surfaces := [Ballistics.SURFACE_WOOD, Ballistics.SURFACE_METAL,
+		Ballistics.SURFACE_GRATE, Ballistics.SURFACE_VENT,
+		Ballistics.SURFACE_TILE, Ballistics.SURFACE_COMPUTER]
+	var faces := PackedVector3Array()
+	for face in range(textures.size()):
+		var center := Vector3(float(face) * 2.0, 0, 0)
+		faces.append(center + Vector3(-0.4, -0.4, 0))
+		faces.append(center + Vector3(0.4, -0.4, 0))
+		faces.append(center + Vector3(0, 0.4, 0))
+	var shape := ConcavePolygonShape3D.new()
+	shape.set_faces(faces)
+	shape.backface_collision = true
+	var world := Node3D.new()
+	world.set_meta("face_textures", textures)
+	root.add_child(world)
+	var world_body := StaticBody3D.new()
+	var brush := AnimatableBody3D.new()
+	brush.sync_to_physics = false
+	var brush_textures := textures.duplicate()
+	brush_textures.reverse()
+	brush.set_meta("face_textures", brush_textures)
+	brush.position = Vector3(0, 0, -5)
+	var bodies: Array[PhysicsBody3D] = [world_body, brush]
+	for body: PhysicsBody3D in bodies:
+		body.collision_layer = 1
+		body.collision_mask = 0
+		var collider := CollisionShape3D.new()
+		collider.shape = shape
+		body.add_child(collider)
+		world.add_child(body)
+	for placement in range(2):
+		if placement == 1:
+			brush.position = Vector3(0.5, 1, -6)
+			brush.rotation.y = 0.3
+		# physics_frame is emitted before physics callbacks/server synchronization;
+		# allow a completed step to publish the brush's updated transform.
+		await physics_frame
+		await physics_frame
+		for body: PhysicsBody3D in bodies:
+			for face in range(textures.size()):
+				var center := body.to_global(Vector3(float(face) * 2.0, 0, 0))
+				var direction := body.global_basis.z
+				var hit := world.get_world_3d().direct_space_state.intersect_ray(
+					PhysicsRayQueryParameters3D.create(center + direction, center - direction, 1))
+				_check(not hit.is_empty(), "material ray hits triangle %d at placement %d" % [face, placement])
+				if hit.is_empty():
+					continue
+				_check(hit.get("collider") == body, "material ray resolves the intended collision body")
+				_check(int(hit.get("face_index", -1)) == face, "ray preserves collider-local face index %d" % face)
+				var expected: String = surfaces[face if body == world_body else surfaces.size() - 1 - face]
+				_check(Ballistics.surface_for_hit(hit) == expected,
+					"real ray resolves %s from the correct body's texture table" % expected)
+	world.queue_free()
+	await process_frame
 
 
 func _test_weapon_constants_and_range() -> void:
@@ -302,6 +384,18 @@ func _test_he_grenade_math() -> void:
 	_near(Ballistics.he_throw_speed_meters(0.0), 6.0, 0.0001, "level HE throw speed is 600 units/s")
 	_near(Ballistics.he_throw_speed_meters(-90.0), 7.5, 0.0001, "upward HE throw caps at 750 units/s")
 	_near(Ballistics.he_throw_speed_meters(90.0), 0.0, 0.0001, "straight-down HE throw has zero launch speed")
+	var upward_angles := PlayerScript.grenade_goldsrc_angles(Vector2(0.0, deg_to_rad(45.0)))
+	var downward_angles := PlayerScript.grenade_goldsrc_angles(Vector2(0.0, deg_to_rad(-45.0)))
+	_near(upward_angles.x, -45.0, 0.0001, "Godot look-up pitch converts to GoldSrc's negative pitch")
+	_near(downward_angles.x, 45.0, 0.0001, "Godot look-down pitch converts to GoldSrc's positive pitch")
+	_check(
+		Ballistics.he_throw_velocity(upward_angles.x, upward_angles.y, Vector3.ZERO).y > 0.0,
+		"looking up launches a grenade upward",
+	)
+	_check(
+		Ballistics.he_throw_velocity(downward_angles.x, downward_angles.y, Vector3.ZERO).y < 0.0,
+		"looking down launches a grenade downward",
+	)
 	var throw_velocity := Ballistics.he_throw_velocity(0.0, 0.0, Vector3(1.0, 0.0, 0.0))
 	_near(throw_velocity.x, 6.9088465, 0.0001, "HE inherits full player velocity")
 	_near(throw_velocity.y, 1.0418891, 0.0001, "level HE throw has the original upward bias")

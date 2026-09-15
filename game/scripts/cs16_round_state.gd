@@ -70,6 +70,8 @@ var config := {
 	"max_rounds": 0,
 	"win_limit": 0,
 	"halftime": false,
+	"limit_teams": 2,
+	"join_spawn_ticks": 20 * TICK_RATE,
 	"scenario": ScenarioRulesScript.SCENARIO_BOMB,
 }
 
@@ -125,12 +127,15 @@ func register_player(
 ) -> void:
 	players[player_id] = {
 		"team": team,
-		"alive": true,
-		"money": clampi(money, 0, MAX_MONEY),
+		"alive": team in [TEAM_T, TEAM_CT],
+		"money": clampi(money, 0, MAX_MONEY) if team in [TEAM_T, TEAM_CT] else 0,
 		"has_c4": false,
 		"has_defuser": has_defuser,
 		"kills": 0,
 		"deaths": 0,
+		"team_changed": false,
+		"choosing_appearance": false,
+		"round_spawns": 0,
 	}
 
 
@@ -233,6 +238,170 @@ func set_player_alive(
 		_emit("player_death", {"player_id": player_id, "killer_id": killer_id})
 	if phase in [PHASE_LIVE, PHASE_BOMB]:
 		_check_elimination()
+
+
+func can_enter_observer(player_id: String) -> bool:
+	if not players.has(player_id):
+		return false
+	return (str(players[player_id].team) not in [TEAM_T, TEAM_CT]
+		or not bool(players[player_id].alive) or phase in [PHASE_DEPLOY, PHASE_FREEZE])
+
+
+func disconnect_player(player_id: String, position := Vector3.ZERO) -> bool:
+	# CHalfLifeMultiplay::ClientDisconnected drops C4, removes the player and
+	# checks win conditions without taking the PlayerKilled reward/death path.
+	# The caller owns world-node removal and must consume these events before
+	# freeing the actor. Historical planter IDs must not be recycled to a new peer.
+	if not players.has(player_id) or not position.is_finite():
+		return false
+	var departing: Dictionary = players[player_id]
+	if plant_actor == player_id:
+		_cancel_plant("disconnected")
+	if bomb_owner == player_id:
+		bomb_owner = ""
+		if bomb_state in [BOMB_CARRIED, BOMB_PLANTING]:
+			bomb_state = BOMB_DROPPED
+			bomb_position = position
+			_emit("bomb_dropped", {
+				"player_id": player_id, "position": position, "reason": "disconnected",
+			})
+	if defuse_actor == player_id:
+		_cancel_defuse("disconnected")
+	plant_retry_deadline_by_actor.erase(player_id)
+	players.erase(player_id)
+	_emit("player_disconnected", {
+		"player_id": player_id, "team": str(departing.team),
+		"position": position, "had_defuser": bool(departing.has_defuser),
+	})
+	_check_elimination()
+	return true
+
+
+func team_counts() -> Dictionary:
+	var counts := {TEAM_T: 0, TEAM_CT: 0}
+	for row: Dictionary in players.values():
+		if counts.has(str(row.team)):
+			counts[str(row.team)] += 1
+	return counts
+
+
+func default_join_team(capacities: Dictionary, tied_team := TEAM_T) -> String:
+	# SelectDefaultTeam's base CS branch: roster size, then losing score,
+	# then the caller's random tie break. Dead members still occupy slots.
+	var counts := team_counts()
+	var selected := tied_team if tied_team in [TEAM_T, TEAM_CT] else TEAM_T
+	if counts[TEAM_T] != counts[TEAM_CT]:
+		selected = TEAM_T if counts[TEAM_T] < counts[TEAM_CT] else TEAM_CT
+	elif terrorist_score != ct_score:
+		selected = TEAM_T if terrorist_score < ct_score else TEAM_CT
+	if counts[selected] >= int(capacities.get(selected, 0)):
+		selected = TEAM_CT if selected == TEAM_T else TEAM_T
+		if counts[selected] >= int(capacities.get(selected, 0)):
+			return ""
+	return selected
+
+
+func team_selection_error(player_id: String, selected: String, capacities: Dictionary, replaced_player_id := "") -> String:
+	if not players.has(player_id) or selected not in [TEAM_T, TEAM_CT]:
+		return "invalid_team"
+	var row: Dictionary = players[player_id]
+	var counts := team_counts()
+	if not replaced_player_id.is_empty():
+		if replaced_player_id == player_id or not players.has(replaced_player_id) or str(players[replaced_player_id].team) != selected:
+			return "invalid_replacement"
+		counts[selected] -= 1
+	if counts[selected] >= int(capacities.get(selected, 0)):
+		return "team_full"
+	var previous := str(row.team)
+	var other := TEAM_CT if selected == TEAM_T else TEAM_T
+	var leaving := 1 if previous == other else 0
+	if previous != selected and int(config.limit_teams) > 0 and (
+		int(counts[selected]) + 1 > int(counts[other]) - leaving + int(config.limit_teams)
+	):
+		return "team_stacked"
+	if not bool(row.alive) and bool(row.team_changed):
+		return "already_changed"
+	if phase == PHASE_INTERMISSION:
+		return "match_over"
+	return ""
+
+
+func select_player_team(player_id: String, selected: String, capacities: Dictionary,
+		position := Vector3.ZERO, replaced_player_id := "") -> Dictionary:
+	# A trusted roster transaction may replace one member on this side. The
+	# caller commits that removal synchronously after successful selection.
+	var reason := team_selection_error(player_id, selected, capacities, replaced_player_id)
+	if not reason.is_empty():
+		return {"accepted": false, "reason": reason}
+	var row: Dictionary = players[player_id]
+	var was_observer := str(row.team) not in [TEAM_T, TEAM_CT]
+	var selection_death := bool(row.alive) and phase != PHASE_DEPLOY
+	if selection_death:
+		# Same-team appearance changes also use Kill(). Observer entry has
+		# its own frag-restoring rule; normal team selection does not.
+		set_player_alive(player_id, false, position)
+		row.kills = int(row.kills) - 1
+	row.team = selected
+	row.alive = false
+	row.has_defuser = false
+	row.choosing_appearance = true
+	row.team_changed = phase != PHASE_DEPLOY
+	if was_observer:
+		row.money = START_MONEY
+	players[player_id] = row
+	return {"accepted": true, "reason": "", "selection_death": selection_death}
+
+
+func can_spawn_joined_player(player_id: String) -> bool:
+	if not players.has(player_id) or phase not in [PHASE_FREEZE, PHASE_LIVE, PHASE_BOMB]:
+		return false
+	var row: Dictionary = players[player_id]
+	if str(row.team) not in [TEAM_T, TEAM_CT] or bool(row.alive) or bool(row.choosing_appearance) or int(row.round_spawns) > 0:
+		return false
+	var counts := team_counts()
+	# The normal base-game respawn window starts with live play, not freeze.
+	var live_start := round_started_tick + int(config.freeze_ticks)
+	return (counts[TEAM_T] == 0 or counts[TEAM_CT] == 0
+		or tick <= live_start + int(config.join_spawn_ticks))
+
+
+func finish_player_appearance(player_id: String) -> bool:
+	if not players.has(player_id) or not bool(players[player_id].choosing_appearance):
+		return false
+	players[player_id].choosing_appearance = false
+	if not can_spawn_joined_player(player_id):
+		return false
+	players[player_id].alive = true
+	players[player_id].round_spawns = int(players[player_id].round_spawns) + 1
+	return true
+
+
+func enter_observer(player_id: String, position := Vector3.ZERO) -> bool:
+	if not can_enter_observer(player_id):
+		return false
+	# HandleMenu_ChooseTeam permits alive players only during freeze; their
+	# suicide counts a death but restores the deducted frag. Initial deploy
+	# has not joined the match, so it must not synthesize a death.
+	if bool(players[player_id].alive) and phase == PHASE_FREEZE:
+		set_player_alive(player_id, false, position)
+	if plant_actor == player_id:
+		_cancel_plant("observer")
+	if bomb_owner == player_id:
+		drop_bomb(player_id, position)
+	if defuse_actor == player_id:
+		_cancel_defuse("observer")
+	var player: Dictionary = players[player_id]
+	player.team = "UNASSIGNED"
+	player.alive = false
+	player.has_c4 = false
+	player.has_defuser = false
+	player.money = 0
+	player.choosing_appearance = false
+	player.team_changed = phase != PHASE_DEPLOY
+	players[player_id] = player
+	if phase in [PHASE_LIVE, PHASE_BOMB]:
+		_check_elimination()
+	return true
 
 
 func grant_kill(player_id: String) -> void:
@@ -485,7 +654,9 @@ func _start_round(distribute_accounts := true) -> void:
 	for player_id: String in players:
 		var player: Dictionary = players[player_id]
 		var survived_previous_round := bool(player.alive)
-		player.alive = true
+		player.alive = str(player.team) in [TEAM_T, TEAM_CT] and not bool(player.choosing_appearance)
+		player.round_spawns = 1 if player.alive else 0
+		player.team_changed = false
 		player.has_c4 = false
 		# CS equipment is carried by survivors, but a defuse kit is a dropped
 		# death item and must not be resurrected with a respawning CT.
@@ -507,7 +678,7 @@ func _start_round(distribute_accounts := true) -> void:
 func _assign_bomb() -> void:
 	var candidates: Array[String] = []
 	for player_id: String in players:
-		if str(players[player_id].team) == TEAM_T:
+		if str(players[player_id].team) == TEAM_T and bool(players[player_id].alive):
 			candidates.append(player_id)
 	candidates.sort()
 	if candidates.is_empty():
@@ -733,14 +904,27 @@ func _grant_objective_score(player_id: String, amount: int, reason: String) -> v
 func _check_elimination() -> void:
 	if phase not in [PHASE_LIVE, PHASE_BOMB]:
 		return
-	var alive_t := _alive_count(TEAM_T)
-	var alive_ct := _alive_count(TEAM_CT)
+	# TeamExterminationCheck requires both teams to contain spawnable players.
+	# An empty side (or one entirely in ChooseAppearance) is not a dead team.
+	# Count in one pass: this runs every simulation tick, including ordinary 5v5.
+	var alive_t := 0
+	var alive_ct := 0
+	var spawnable_t := 0
+	var spawnable_ct := 0
+	for player: Dictionary in players.values():
+		if str(player.team) == TEAM_T:
+			alive_t += int(bool(player.alive))
+			spawnable_t += int(not bool(player.choosing_appearance))
+		elif str(player.team) == TEAM_CT:
+			alive_ct += int(bool(player.alive))
+			spawnable_ct += int(not bool(player.choosing_appearance))
+	var both_spawnable := spawnable_t > 0 and spawnable_ct > 0
 	if alive_ct == 0 and alive_t == 0:
 		# TeamExterminationCheck: with both sides populated the CT-wipe branch
 		# carries no alive-T guard, so a same-tick mutual wipe awards Terrorists.
 		# Only an unpopulated side falls through to WINSTATUS_DRAW, which scores
 		# nothing and queues no account.
-		if _team_size(TEAM_T) > 0 and _team_size(TEAM_CT) > 0:
+		if both_spawnable:
 			_end_round(
 				TEAM_T,
 				"terrorists_win",
@@ -748,6 +932,8 @@ func _check_elimination() -> void:
 			)
 		else:
 			_end_round("", "round_draw", 0)
+		return
+	if not both_spawnable:
 		return
 	if alive_ct == 0 and alive_t > 0:
 		_end_round(
@@ -873,6 +1059,7 @@ func _apply_halftime_if_needed() -> void:
 		# restarts the economy, so every player returns to mp_startmoney.
 		var before := int(player.money)
 		player.money = START_MONEY
+		player.has_defuser = false
 		players[player_id] = player
 		if before != START_MONEY:
 			_emit("money", {

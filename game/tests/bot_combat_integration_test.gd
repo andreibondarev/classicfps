@@ -50,6 +50,7 @@ func _run() -> void:
 	_test_actor_render_schedule_equivalence()
 	_test_rear_damage_reaction()
 	_test_grenade_carry_and_throw()
+	await _test_weapon_specific_fire()
 
 	scene.queue_free()
 	await process_frame
@@ -58,6 +59,32 @@ func _run() -> void:
 		quit(0)
 		return
 	quit(1)
+
+
+func _test_weapon_specific_fire() -> void:
+	_prepare_duel(30, 90)
+	shooter.configure_weapon("mp5")
+	shooter._try_fire(victim, victim.aim_point(), 0)
+	var shot: Dictionary = shooter.shot_trace[-1]
+	_check(is_zero_approx(float(shot.spread)), "fresh MP5 uses source zero-accuracy first shot")
+	shooter._try_fire(victim, victim.aim_point(), 8)
+	_check(is_equal_approx(float(shooter.shot_trace[-1].spread), (1.0 / 220.1 + 0.45) * 0.2), "MP5 follow-up uses its own airborne accuracy curve")
+	for weapon: String in ["m3", "xm1014"]:
+		shooter.configure_weapon(weapon)
+		victim.reset_target(Vector3(0.0, 0.0, -0.8))
+		victim.set_physics_process(false)
+		victim.active = false
+		victim.health = 1000000
+		victim.armor = 0
+		await physics_frame
+		await process_frame
+		var health_before := victim.health
+		shooter._try_fire(victim, victim.aim_point(), 100)
+		shot = shooter.shot_trace[-1]
+		_check(int(shot.pellet_count) == (9 if weapon == "m3" else 6), "%s fires a full shell" % weapon)
+		_check(int(shot.health_damage) == health_before - victim.health, "%s trace reports actual combined pellet damage" % weapon)
+		_check(int(shot.health_damage) > int(BallisticsScript.weapon_profile(weapon).base_damage) * 4, "%s inflicts more than a single headshot pellet at close range" % weapon)
+	shooter.configure_weapon("ak47")
 
 
 func _make_actor(

@@ -1,11 +1,8 @@
 class_name CS16RadarDisplay
 extends Control
 
-## Counter-Strike 1.6's radar background is a neutral dark translucent square;
-## the client redraws blips over it every frame. GameHUD owns the background
-## square; this control owns only live contacts clamped to the square edges.
-## CS 1.6 draws no center marker and no border — the panel is player-centric,
-## so the (unmarked) center implicitly means "you".
+## GameHUD owns the classic green radar disc; this control draws live contacts
+## clamped to its rim. The panel is player-centric: its center means "you".
 
 const SOURCE_SIZE := Vector2(128.0, 128.0)
 const CENTER := Vector2(64.0, 64.0)
@@ -23,6 +20,13 @@ var observer_position := Vector3.ZERO
 var observer_yaw := 0.0
 var contacts: Array[Dictionary] = []
 var _has_blinking_contact := false
+
+
+static func bomb_contact(team: String, alive: bool, state: String, position: Vector3) -> Array[Dictionary]:
+	# Original client radar: loose/planted C4 is Terrorist-only information.
+	if team != "T" or not alive or state not in ["dropped", "planted"]:
+		return []
+	return [{"id": "bomb", "kind": "bomb", "state": state, "position": position, "alive": true}]
 
 
 func _ready() -> void:
@@ -79,7 +83,7 @@ func _draw() -> void:
 			continue
 		var kind := str(contact.get("kind", "teammate"))
 		if kind == "bomb":
-			# The planted-bomb blip blinks red at the classic half-second beat.
+			# Dropped/planted bomb blips blink red at a half-second beat.
 			var phase := fmod(
 				float(Time.get_ticks_msec()) / 1000.0, BOMB_BLINK_PERIOD * 2.0
 			)
@@ -98,8 +102,12 @@ func _draw() -> void:
 				color = HOSTAGE_COLOR
 		# Classic blips are small solid squares; contacts above/below the
 		# observer grow a "T" bar pointing at their altitude.
+		if kind == "bomb" and contact.get("state", "planted") == "planted":
+			draw_line(point - Vector2(3, 3), point + Vector2(3, 3), color, 2.0)
+			draw_line(point + Vector2(-3, 3), point + Vector2(3, -3), color, 2.0)
+			continue
 		draw_rect(Rect2(point + Vector2(-2.0, -2.0), Vector2(4.0, 4.0)), color)
-		if kind != "teammate":
+		if kind not in ["teammate", "bomb"]:
 			continue
 		if height_hu > 64.0:
 			draw_rect(Rect2(point + Vector2(-1.0, -8.0), Vector2(2.0, 6.0)), color)

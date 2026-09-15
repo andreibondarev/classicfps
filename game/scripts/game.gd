@@ -26,6 +26,7 @@ const BreakableDebrisScript = preload("res://scripts/cs16_breakable_debris_prese
 const HostageStateScript = preload("res://scripts/cs16_hostage_state.gd")
 const SpectatorCameraScript = preload("res://scripts/cs16_spectator_camera.gd")
 const HostageActorScript = preload("res://scripts/cs16_hostage.gd")
+const RemoteRosterScript = preload("res://scripts/remote_human_roster.gd")
 
 const MATCH_MAX_ROUNDS := 30
 const MATCH_WIN_LIMIT := 16
@@ -115,6 +116,7 @@ const BUY_GRANTS := {
 }
 
 var player: PlayerController
+var combat_effects: CS16CombatEffects
 var hud: GameHUD
 var targets: Array[TargetActor] = []
 var allied_bots: Array[TargetActor] = []
@@ -148,9 +150,13 @@ var audio_router: CS16AudioEventRouter
 var audio_playback: CS16AudioPlaybackAdapter
 var _next_c4_beep_tick := -1
 var _c4_beep_index := 0
+var _objective_audio_schedule: Array[Dictionary] = []
 var round_state: RefCounted
 var _consumed_round_events := 0
+var _round_loadout_reset_pending := false
 var _last_hud_second := -1
+var _last_hud_money := -1
+var _scoreboard_refresh_seconds := 0.0
 var _c4_equipped := false
 var _c4_drop_animation_played := false
 var _bot_site_assignments: Dictionary = {}
@@ -172,7 +178,17 @@ var breakable_runtime: CS16BreakableRuntime
 var breakable_debris: CS16BreakableDebrisPresenter
 var hostage_state: CS16HostageState
 var hostage_actors: Dictionary = {}
-var _player_use_was_down := false
+var _human_use_was_down: Dictionary = {}
+# Existing local capture probes may reset their edge without clearing peers.
+var _player_use_was_down: bool:
+	get:
+		return bool(_human_use_was_down.get("player", false))
+	set(value):
+		_human_use_was_down["player"] = value
+# A separate host-local namespace; neither peer IDs nor reusable pawn slots.
+var _next_remote_brush_activator := 0x100000000
+var _remote_brush_activator_ids: Dictionary = {}
+var _remote_trigger_cameras: Dictionary = {}
 var _brush_touch_pairs: Dictionary = {}
 var _hostage_paths: Dictionary = {}
 var _hostage_path_indices: Dictionary = {}
@@ -185,14 +201,39 @@ var trigger_camera_entity_id := -1
 var trigger_camera_return_tick := -1
 var spectator_camera: CS16SpectatorCamera
 var _trigger_camera_controls_enabled := false
+var remote_roster: Node
+var _bot_brush_activator_ids: Dictionary = {}
+var _human_death_serials: Dictionary = {}
+var _network_client_mode := false
+var _next_network_item_id := 1
+var _network_objective_result := ""
+var network_client_view: Node3D
+var _network_menu_join_pending := false
+var _network_menu_deadline_ms := 0
+var _returning_offline := false
+const SprayScript = preload("res://scripts/cs16_spray.gd")
+var sprays: CS16Spray
+const NetworkClientViewScript = preload("res://scripts/network_client_view.gd")
 
 
 func _ready() -> void:
-	process_mode = Node.PROCESS_MODE_ALWAYS
+	# Gameplay children inherit this pause behavior. HUD and networking opt
+	# into ALWAYS separately, so offline menus can still resume or quit.
+	process_mode = Node.PROCESS_MODE_PAUSABLE
+	var network := get_node("/root/NetworkSession")
+	_network_client_mode = (network.is_online() or network.is_connecting()) and not network.is_host
 	_select_map_from_command_line()
 	_build_audio_runtime()
+	sprays = SprayScript.new()
+	sprays.name = "SprayPaint"
+	add_child(sprays)
 	_build_environment()
+	combat_effects = CombatEffectsScript.for_scene(self)
+	combat_effects.network_impact.connect(_publish_network_impact)
+	combat_effects.world_audio_requested.connect(_emit_world_audio)
+	audio_router.event_started.connect(_publish_network_audio)
 	get_node("/root/GameSettings").changed.connect(_apply_performance_settings)
+	get_node("/root/GameSettings").changed.connect(_apply_player_name)
 	if not _build_imported_map():
 		_build_arena()
 		allied_spawns.assign(FALLBACK_ALLIED_SPAWNS)
@@ -202,7 +243,11 @@ func _ready() -> void:
 	_build_entity_world()
 	_spawn_player()
 	_build_trigger_camera()
-	_spawn_targets()
+	if not _network_client_mode:
+		_spawn_targets()
+	player.combat_effects = combat_effects
+	for bot: TargetActor in allied_bots + targets:
+		bot.combat_effects = combat_effects
 	_build_hostages()
 	_build_bomb_sites()
 	_build_round_state()
@@ -212,8 +257,496 @@ func _ready() -> void:
 	_update_tactical_hud()
 	hud.set_deploy_visible(true)
 	_build_deploy_camera()
+	_build_network_roster()
+	network.status_changed.connect(_on_network_role_changed)
+	_on_network_role_changed(str(network.status))
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_apply_performance_settings()
+	_prepare_gameplay_presentation()
+
+
+var bot_asset_preparation: Dictionary = {}
+
+
+func _build_network_roster() -> void:
+	var network := get_node("/root/NetworkSession")
+	var ordered_bots := _all_bots()
+	ordered_bots.sort_custom(func(left: TargetActor, right: TargetActor) -> bool: return left.name.naturalnocasecmp_to(right.name) < 0)
+	for index in ordered_bots.size():
+		_bot_brush_activator_ids[ordered_bots[index].get_instance_id()] = entity_world.entity_count() + index + 2
+	remote_roster = RemoteRosterScript.new()
+	remote_roster.name = "RemoteHumanRoster"
+	add_child(remote_roster)
+	remote_roster.human_added.connect(_on_remote_human_added)
+	remote_roster.human_removing.connect(_on_remote_human_removing)
+	remote_roster.bind_session(network)
+	if not network.chat_received.is_connected(_on_network_chat_received):
+		network.chat_received.connect(_on_network_chat_received)
+	if not _network_client_mode and not network.bind_game_actions(_handle_network_action):
+		push_error("Game could not bind authoritative network actions")
+	if not _network_client_mode and not network.bind_chat(_handle_network_chat):
+		push_error("Game could not bind authoritative network chat")
+
+
+func _on_network_role_changed(_status: String) -> void:
+	var network := get_node("/root/NetworkSession")
+	if _pause_menu_open():
+		# Starting/joining while an offline menu is open must release the
+		# simulation pause without dismissing the local menu.
+		get_tree().paused = not network.is_online()
+	if (network.is_online() or network.is_connecting()) and not network.is_host and not is_instance_valid(network_client_view):
+		_network_client_mode = true
+		network.unbind_game_actions(_handle_network_action)
+		network.unbind_chat(_handle_network_chat)
+		network_client_view = NetworkClientViewScript.new()
+		network_client_view.name = "NetworkClientView"
+		add_child(network_client_view)
+		network_client_view.bind_game(self, network)
+	hud.update_network_status(str(network.status), network.is_online() or network.is_connecting(), _network_client_mode)
+	if _network_client_mode and not network.is_online() and not network.is_connecting() and _status != "OFFLINE" and not _returning_offline:
+		_network_menu_join_pending = false
+		_set_paused(true)
+		hud.show_network_menu("join")
+
+
+func _exit_tree() -> void:
+	var session := get_node_or_null("/root/NetworkSession")
+	if is_instance_valid(session):
+		session.unbind_game_actions(_handle_network_action)
+		session.unbind_chat(_handle_network_chat)
+		if session.chat_received.is_connected(_on_network_chat_received):
+			session.chat_received.disconnect(_on_network_chat_received)
+
+
+func _chat_actor_for_peer(peer_id: int) -> PlayerController:
+	if peer_id == 1:
+		return player
+	return _remote_join_actor(peer_id)
+
+
+func _chat_recipient_peers(sender_peer_id: int, sender_team: String, team_only: bool) -> Array[int]:
+	var recipients: Array[int] = []
+	var candidate_peers: Array[int] = [1]
+	if is_instance_valid(remote_roster):
+		candidate_peers.append_array(remote_roster.peer_ids())
+	for peer_id: int in candidate_peers:
+		var actor := _chat_actor_for_peer(peer_id)
+		if not is_instance_valid(actor):
+			continue
+		if not team_only or peer_id == sender_peer_id \
+				or (sender_team in ["T", "CT"] and actor.team == sender_team):
+			recipients.append(peer_id)
+	return recipients
+
+
+func _handle_network_chat(peer_id: int, team_only: bool, text: String) -> bool:
+	var sender := _chat_actor_for_peer(peer_id)
+	if not is_instance_valid(sender):
+		return false
+	var recipients := _chat_recipient_peers(peer_id, sender.team, team_only)
+	return get_node("/root/NetworkSession").publish_chat(
+		_round_id_for_actor(sender),
+		sender.display_name,
+		sender.team,
+		team_only,
+		text,
+		recipients,
+	)
+
+
+func _on_network_chat_received(message: Dictionary) -> void:
+	if is_instance_valid(hud):
+		hud.add_chat_message(message)
+
+
+func _on_chat_submitted(text: String, team_only: bool) -> void:
+	var network := get_node("/root/NetworkSession")
+	var cleaned: String = network.sanitize_chat_text(text)
+	if cleaned.is_empty():
+		return
+	if network.is_online():
+		if not network.request_chat(cleaned, team_only):
+			hud.show_banner("CHAT UNAVAILABLE", Color("#ffca66"), 1.5)
+		return
+	# Offline practice keeps the exact same presentation path without inventing
+	# a transport peer or pretending bots are chat participants.
+	hud.add_chat_message({"sender_id": "player", "sender_name": player.display_name,
+		"team": player.team, "team_only": team_only, "text": cleaned})
+
+
+func _handle_network_action(peer_id: int, command: Dictionary) -> Dictionary:
+	var result: Dictionary
+	match str(command.action):
+		"spray":
+			result = {"accepted": false, "reason": "action_unavailable"}
+			if _spray_for_human(_remote_join_actor(peer_id)):
+				result = {"accepted": true, "reason": ""}
+		"join_team":
+			result = select_remote_join_team(peer_id, str(command.value))
+		"join_class":
+			result = select_remote_join_class(peer_id, int(command.value))
+		"select_weapon":
+			result = select_remote_weapon(peer_id, str(command.value))
+		"secondary", "drop_weapon", "reload_weapon":
+			result = remote_weapon_action(peer_id, str(command.action), str(command.value))
+		"buy_item":
+			var human := _remote_join_actor(peer_id)
+			if not is_instance_valid(human):
+				result = {"accepted": false, "reason": "unknown_peer"}
+			else:
+				var purchase := _purchase_for_human(human, str(command.value))
+				result = {"accepted": purchase.allowed, "reason": "" if purchase.allowed else purchase.reason}
+		"radio":
+			var human := _remote_join_actor(peer_id)
+			if not is_instance_valid(human):
+				result = {"accepted": false, "reason": "unknown_peer"}
+			elif not match_started or _match_concluded or not human.alive \
+					or human.team not in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+				result = {"accepted": false, "reason": "action_unavailable"}
+			else:
+				_broadcast_radio_message(human, str(command.value), peer_id)
+				result = {"accepted": true, "reason": ""}
+		_:
+			return {"accepted": false, "reason": "internal_error"}
+	var human := _remote_join_actor(peer_id)
+	if is_instance_valid(human):
+		result.actor_id = _round_id_for_actor(human)
+		result.team = human.team
+		result.class_id = int(human.get_meta("cs16_class_id", 0))
+	return result
+
+
+func select_remote_weapon(peer_id: int, weapon: String) -> Dictionary:
+	var human := _remote_join_actor(peer_id)
+	if not is_instance_valid(human):
+		return {"accepted": false, "reason": "unknown_peer"}
+	if not match_started or _match_concluded or not human.alive or not (human.controls_enabled or human.look_enabled):
+		return {"accepted": false, "reason": "action_unavailable"}
+	if not human.WEAPONS.has(weapon) or not human.owns_weapon(weapon):
+		return {"accepted": false, "reason": "weapon_not_owned"}
+	# Same deploy, reload cancellation, ammo preservation and lastinv semantics
+	# as a local human. Never grant a weapon or accept client ammunition.
+	human.switch_weapon(weapon)
+	return {"accepted": true, "reason": ""}
+
+
+func remote_weapon_action(peer_id: int, action: String, expected_weapon: String) -> Dictionary:
+	var human := _remote_join_actor(peer_id)
+	if not is_instance_valid(human):
+		return {"accepted": false, "reason": "unknown_peer"}
+	if not match_started or _match_concluded or not human.alive:
+		return {"accepted": false, "reason": "action_unavailable"}
+	# Reliable action ordering cannot make a delayed click/drop apply to a
+	# different weapon after pickup, depletion or another authoritative switch.
+	if human.active_weapon != expected_weapon:
+		return {"accepted": false, "reason": "weapon_changed"}
+	if action == "secondary":
+		if not human.controls_enabled or human.reloading or not human.weapon_clock.can_secondary_attack():
+			return {"accepted": false, "reason": "action_unavailable"}
+		if expected_weapon != "knife" and str(human.WEAPONS[expected_weapon].secondary) == "none":
+			return {"accepted": false, "reason": "action_unavailable"}
+		human._try_secondary()
+	elif action == "reload_weapon":
+		if human.reloading or not (human.controls_enabled or human.look_enabled):
+			return {"accepted": false, "reason": "action_unavailable"}
+		human._start_reload()
+		if not human.reloading:
+			return {"accepted": false, "reason": "action_unavailable"}
+	elif action == "drop_weapon":
+		if not human.controls_enabled and (expected_weapon != "c4" or not human.look_enabled):
+			return {"accepted": false, "reason": "action_unavailable"}
+		if expected_weapon == "c4":
+			if not _request_human_c4_drop(human):
+				return {"accepted": false, "reason": "not_droppable"}
+		elif human._is_droppable_gun(expected_weapon) and human.owns_weapon(expected_weapon):
+			human._try_drop_active_weapon()
+		else:
+			return {"accepted": false, "reason": "not_droppable"}
+	else:
+		return {"accepted": false, "reason": "internal_error"}
+	return {"accepted": true, "reason": ""}
+
+
+func _on_remote_human_added(actor_id: String, _peer_id: int, actor: PlayerController) -> void:
+	_remote_brush_activator_ids[actor_id] = _next_remote_brush_activator
+	_next_remote_brush_activator += 1
+	actor.combat_effects = combat_effects
+	actor.audio_router = audio_router
+	actor.weapon_drop_requested.connect(_on_human_weapon_drop.bind(actor))
+	actor.combatant_eliminated.connect(_on_human_eliminated)
+	round_state.register_player(actor_id, Combatant.TEAM_UNASSIGNED)
+	bomb_knowledge.register_actor(actor_id, Combatant.TEAM_UNASSIGNED)
+	_update_scoreboard()
+
+
+func _remote_join_actor(peer_id: int) -> PlayerController:
+	var session := get_node("/root/NetworkSession")
+	if not session.is_host or not session.has_input_peer(peer_id) or not is_instance_valid(remote_roster):
+		return null
+	return remote_roster.actor_for_peer(peer_id)
+
+
+func select_remote_join_team(peer_id: int, selected_team: String) -> Dictionary:
+	var human := _remote_join_actor(peer_id)
+	if not is_instance_valid(human):
+		return {"accepted": false, "reason": "unknown_peer"}
+	if not match_started or _match_concluded:
+		return {"accepted": false, "reason": "match_not_live"}
+	if selected_team not in ["T", "CT"]:
+		return {"accepted": false, "reason": "invalid_team"}
+	var actor_id := _round_id_for_actor(human)
+	if human.team != Combatant.TEAM_UNASSIGNED:
+		return {"accepted": false, "reason": "already_joined"}
+	var capacities := {"T": mini(5, terrorist_team_spawns.size()), "CT": mini(5, counter_terrorist_team_spawns.size())}
+	var replacement: TargetActor
+	var slot := -1
+	if int(round_state.team_counts()[selected_team]) >= int(capacities[selected_team]):
+		var bots := _all_bots()
+		bots.reverse()
+		for bot: TargetActor in bots:
+			if bot.team == selected_team and (not is_instance_valid(replacement) or not bot.alive):
+				replacement = bot
+				if not bot.alive:
+					break
+		if is_instance_valid(replacement):
+			var positions: Array = allied_spawns if allied_bots.has(replacement) else target_spawns
+			var index := allied_bots.find(replacement) if allied_bots.has(replacement) else targets.find(replacement)
+			var team_spawns: Array = terrorist_team_spawns if selected_team == "T" else counter_terrorist_team_spawns
+			slot = team_spawns.find(positions[index])
+	else:
+		var used := _used_team_spawn_slots(selected_team)
+		for candidate in int(capacities[selected_team]):
+			if not used.has(candidate):
+				slot = candidate
+				break
+	var replaced_id := str(replacement.name) if is_instance_valid(replacement) else ""
+	var reason: String = round_state.team_selection_error(actor_id, selected_team, capacities, replaced_id)
+	if not reason.is_empty() or slot < 0:
+		return {"accepted": false, "reason": reason if not reason.is_empty() else "no_spawn_slot"}
+	# Validate before removing any bot. Selection and replacement are one
+	# synchronous host transaction; clients never supply the replaced identity.
+	var result: Dictionary = round_state.select_player_team(actor_id, selected_team, capacities, human.global_position, replaced_id)
+	if not result.accepted:
+		return result
+	human.configure_identity(selected_team, human.display_name)
+	human.set_meta("network_spawn_slot", slot)
+	human.set_meta("cs16_class_id", 0)
+	if is_instance_valid(replacement):
+		_remove_replaced_bot(replacement)
+	_refresh_roster_spawns()
+	_refresh_bomb_knowledge_roster()
+	_sync_round_public_state()
+	_update_scoreboard()
+	return {"accepted": true, "actor_id": actor_id, "team": selected_team, "replaced_bot": replaced_id}
+
+
+func select_remote_join_class(peer_id: int, class_id: int) -> Dictionary:
+	var human := _remote_join_actor(peer_id)
+	if not is_instance_valid(human):
+		return {"accepted": false, "reason": "unknown_peer"}
+	var actor_id := _round_id_for_actor(human)
+	if class_id not in [1, 2, 3, 4] or not human.has_meta("network_spawn_slot"):
+		return {"accepted": false, "reason": "invalid_class"}
+	if _match_concluded or not bool(round_state.players.get(actor_id, {}).get("choosing_appearance", false)):
+		return {"accepted": false, "reason": "not_choosing_class"}
+	human.set_meta("cs16_class_id", class_id)
+	human.set_meta("cs16_player_skin", _class_skin(human.team, class_id))
+	var spawned: bool = round_state.finish_player_appearance(actor_id)
+	if spawned:
+		_spawn_remote_human(human, false)
+	_sync_round_public_state()
+	_update_scoreboard()
+	return {"accepted": true, "spawned": spawned, "actor_id": actor_id, "class_id": class_id}
+
+
+func _used_team_spawn_slots(team: String) -> Dictionary:
+	var spawns: Array = terrorist_team_spawns if team == "T" else counter_terrorist_team_spawns
+	var used := {}
+	if player.team == team:
+		used[spawns.find(player_spawn)] = true
+	for bot: TargetActor in _all_bots():
+		if bot.team != team:
+			continue
+		var positions: Array = allied_spawns if allied_bots.has(bot) else target_spawns
+		var index := allied_bots.find(bot) if allied_bots.has(bot) else targets.find(bot)
+		used[spawns.find(positions[index])] = true
+	for human: PlayerController in _human_players_stable():
+		if human.team == team and human.has_meta("network_spawn_slot"):
+			used[int(human.get_meta("network_spawn_slot"))] = true
+	return used
+
+
+func _spawn_remote_human(human: PlayerController, keep_loadout: bool) -> void:
+	var spawns: Array = terrorist_team_spawns if human.team == "T" else counter_terrorist_team_spawns
+	human.set_meta("cs16_player_skin", _class_skin(human.team, int(human.get_meta("cs16_class_id", 1))))
+	human.reset_player(spawns[int(human.get_meta("network_spawn_slot"))], keep_loadout)
+	human.visible = true
+	human.collision_layer = 2
+	human.look_enabled = true
+	human.controls_enabled = phase in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB]
+	human.set_physics_process(true)
+	var opponents: Array = counter_terrorist_team_spawns if human.team == "T" else terrorist_team_spawns
+	if not opponents.is_empty():
+		human.face_toward(opponents[0])
+	player.collision_layer = _local_player_collision_layer() if player.alive else 0
+
+
+func _local_player_collision_layer(excluding_actor_id := "") -> int:
+	if get_node("/root/NetworkSession").is_host and is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			if actor_id != excluding_actor_id and remote_roster.actor_for_id(actor_id).has_meta("network_spawn_slot"):
+				return 2 | 4
+	return 4
+
+
+func _remove_replaced_bot(bot: TargetActor) -> void:
+	var actor_id := str(bot.name)
+	var activator_id := _brush_activator_id(bot)
+	bot.alive = false
+	bot.active = false
+	bot.collision_layer = 0
+	bot.set_physics_process(false)
+	round_state.disconnect_player(actor_id, bot.global_position)
+	_consume_new_round_trace()
+	_sync_round_public_state()
+	bomb_knowledge.unregister_actor(actor_id)
+	for voice: Dictionary in audio_router.active_voices():
+		if int(voice.entity_id) == bot.audio_entity_id():
+			audio_router.stop_voice(int(voice.voice_id), "bot_replaced")
+	if is_instance_valid(hostage_state):
+		for hostage_id: String in hostage_state.hostages:
+			if str(hostage_state.hostages[hostage_id].leader_id) == actor_id:
+				hostage_state.release_invalid_leader(hostage_id, false)
+				_hostage_paths.erase(hostage_id)
+				_hostage_path_indices.erase(hostage_id)
+				_hostage_path_targets.erase(hostage_id)
+		_sync_hostage_actors()
+	_hostage_bot_assignments.erase(actor_id)
+	_bot_site_assignments.erase(actor_id)
+	if _bot_defuser_id == actor_id:
+		_reset_bot_defuser_assignment()
+	if is_instance_valid(brush_runtime):
+		brush_runtime.clear_activator_position(activator_id)
+	for key: String in _brush_touch_pairs.keys():
+		if int(_brush_touch_pairs[key].activator_id) == activator_id:
+			entity_world.queue_touch(int(_brush_touch_pairs[key].entity_id), activator_id, EntityWorldScript.TOUCH_EXIT)
+			_brush_touch_pairs.erase(key)
+	if spectator_camera.target == bot:
+		spectator_camera._advance_after_target_loss()
+	if allied_bots.has(bot):
+		allied_spawns.remove_at(allied_bots.find(bot))
+		allied_bots.erase(bot)
+	else:
+		target_spawns.remove_at(targets.find(bot))
+		targets.erase(bot)
+	_bot_brush_activator_ids.erase(bot.get_instance_id())
+	remove_child(bot)
+	bot.queue_free()
+
+
+func _on_remote_human_removing(actor_id: String, _peer_id: int, actor: PlayerController) -> void:
+	sprays._cooldowns.erase(actor.get_instance_id())
+	# Roster lookup remains valid until this callback finishes. In particular,
+	# bomb_dropped needs the departing actor's orientation before it is freed.
+	if not is_inside_tree() or is_queued_for_deletion():
+		return
+	_human_use_was_down.erase(actor_id)
+	_human_death_serials.erase(actor_id)
+	if actor.has_meta("network_spawn_slot"):
+		actor.remove_meta("network_spawn_slot")
+	player.collision_layer = _local_player_collision_layer(actor_id) if player.alive else 0
+	_remote_trigger_cameras.erase(actor_id)
+	var activator_id := int(_remote_brush_activator_ids.get(actor_id, -1))
+	if is_instance_valid(brush_runtime):
+		brush_runtime.clear_activator_position(activator_id)
+	for pair_key: String in _brush_touch_pairs.keys():
+		var pair: Dictionary = _brush_touch_pairs[pair_key]
+		if int(pair.activator_id) == activator_id:
+			entity_world.queue_touch(int(pair.entity_id), activator_id, EntityWorldScript.TOUCH_EXIT)
+			_brush_touch_pairs.erase(pair_key)
+	_remote_brush_activator_ids.erase(actor_id)
+	if is_instance_valid(round_state):
+		round_state.disconnect_player(actor_id, actor.global_position)
+		_consume_new_round_trace()
+		_sync_round_public_state()
+	if is_instance_valid(bomb_knowledge):
+		bomb_knowledge.unregister_actor(actor_id)
+	if is_instance_valid(audio_router):
+		var entity_id := actor.audio_entity_id()
+		for voice: Dictionary in audio_router.active_voices():
+			if int(voice.entity_id) == entity_id:
+				audio_router.stop_voice(int(voice.voice_id), "human_disconnected")
+	if is_instance_valid(hostage_state):
+		for hostage_id: String in hostage_state.hostages:
+			if str(hostage_state.hostages[hostage_id].leader_id) == actor_id:
+				hostage_state.release_invalid_leader(hostage_id, false)
+				_hostage_paths.erase(hostage_id)
+				_hostage_path_indices.erase(hostage_id)
+				_hostage_path_targets.erase(hostage_id)
+				var hostage: CS16Hostage = hostage_actors.get(hostage_id)
+				if is_instance_valid(hostage):
+					hostage.set_motion_velocity_hu(Vector3.ZERO)
+		_sync_hostage_actors()
+	if is_instance_valid(spectator_camera) and spectator_camera.target == actor:
+		spectator_camera._advance_after_target_loss()
+	_update_scoreboard()
+
+
+func _prepare_gameplay_presentation() -> void:
+	# start_match already waits for the effects-ready signal. Do all finite
+	# cold weapon I/O/conversion before that signal can permit deployment.
+	if DisplayServer.get_name() != "headless":
+		if not await player.viewmodel.prepare_weapon_assets(player.WEAPONS.keys()):
+			return
+		if not await _prepare_bot_presentation_assets():
+			return
+		if using_imported_map:
+			for bot: TargetActor in _all_bots():
+				if not bot.combat_controller._ensure_objective_graph():
+					push_error("Cannot prepare bot navigation before deployment")
+					return
+				await get_tree().process_frame
+	combat_effects.warm_up_presentation(player.camera)
+
+
+func _bot_presentation_requests() -> Array[Dictionary]:
+	var requests: Array[Dictionary] = []
+	var seen := {}
+	for bot: TargetActor in _all_bots():
+		# Both sides are possible after team selection and halftime. Use the
+		# actual roster indices, rather than loading every weapon for every skin.
+		for side: String in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+			var skin := TargetScript.skin_for_team(side, bot.index)
+			var weapons := BotBuyPlanScript.presentation_weapons(side, bot.index)
+			if side == Combatant.TEAM_TERRORIST and scenario == ScenarioRulesScript.SCENARIO_BOMB:
+				weapons.append("c4")
+			for weapon: String in weapons:
+				var key := skin + ":" + weapon
+				if not seen.has(key):
+					seen[key] = true
+					requests.append({"skin": skin, "weapon": weapon})
+	return requests
+
+
+func _prepare_bot_presentation_assets() -> bool:
+	var started := Time.get_ticks_usec()
+	var memory_before := Performance.get_monitor(Performance.MEMORY_STATIC)
+	var templates_before := MdlCharacterModel._template_cache.size()
+	var requests := _bot_presentation_requests()
+	var loading_slices := 0
+	for request: Dictionary in requests:
+		if MdlCharacterModel.character_assets_prepared(request.skin, request.weapon):
+			continue
+		if not MdlCharacterModel.prepare_character_assets(request.skin, request.weapon):
+			push_error("Cannot prepare bot presentation: %s/%s" % [request.skin, request.weapon])
+			return false
+		loading_slices += 1
+		await get_tree().process_frame
+	bot_asset_preparation = {"requests": requests.size(), "loading_slices": loading_slices,
+		"new_templates": MdlCharacterModel._template_cache.size() - templates_before,
+		"elapsed_ms": float(Time.get_ticks_usec() - started) / 1000.0,
+		"static_memory_delta_bytes": Performance.get_monitor(Performance.MEMORY_STATIC) - memory_before}
+	return true
 
 
 func _build_deploy_camera() -> void:
@@ -366,6 +899,7 @@ func _build_hostages() -> void:
 			yaw_degrees,
 		)
 		var actor: CS16Hostage = HostageActorScript.new()
+		actor.set_meta("entity_index", entity_index)
 		actor.configure(hostage_id, skin)
 		actor.auto_advance_animation = false
 		actor.use_requested.connect(_on_hostage_use_requested)
@@ -454,28 +988,48 @@ func _on_trigger_camera_use(event: Dictionary, entity_id: int) -> void:
 		return
 	var properties := _ordered_entity_properties(camera_entity)
 	var source_origin := _source_vector(camera_entity.get("origin", {}))
-	trigger_camera.global_position = Vector3(
+	var camera_position := Vector3(
 		source_origin.x,
 		source_origin.z,
 		-source_origin.y,
 	) * GOLDSRC_UNIT
+	var camera_transform := Transform3D(Basis.IDENTITY, camera_position)
 	var target_position := _entity_target_position(str(properties.get("target", "")))
 	if target_position != Vector3.INF:
-		trigger_camera.look_at(target_position, Vector3.UP)
+		camera_transform = camera_transform.looking_at(target_position, Vector3.UP)
 	else:
 		var yaw := deg_to_rad(float(properties.get("angle", "0")))
 		var forward := Vector3(cos(yaw), 0.0, -sin(yaw))
-		trigger_camera.look_at(trigger_camera.global_position + forward, Vector3.UP)
+		camera_transform = camera_transform.looking_at(camera_position + forward, Vector3.UP)
+	var wait_seconds := maxf(0.0, float(properties.get("wait", "0")))
+	var return_tick := int(entity_world.tick) + maxi(1, roundi(wait_seconds * float(EntityWorldScript.TICK_RATE)))
+	var activator_id := int(event.get("activator_id", -1))
+	if activator_id >= 0x100000000:
+		# The host viewport belongs only to the local human. Retain the remote
+		# camera's authoritative state for later owner snapshot presentation.
+		# A departed activator never falls back to the host, even for delayed IO.
+		for actor_id: String in _remote_brush_activator_ids:
+			if int(_remote_brush_activator_ids[actor_id]) != activator_id:
+				continue
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if not is_instance_valid(human) or not human.alive:
+				return
+			var prior: Dictionary = _remote_trigger_cameras.get(actor_id, {})
+			_remote_trigger_cameras[actor_id] = {
+				"entity_id": entity_id, "transform": camera_transform,
+				"return_tick": return_tick, "fov": human.camera.fov,
+				"controls_enabled": bool(prior.get("controls_enabled", human.controls_enabled)),
+			}
+			human.controls_enabled = false
+			return
+		return
+	trigger_camera.global_transform = camera_transform
 	trigger_camera.fov = player.camera.fov
 	_trigger_camera_controls_enabled = player.controls_enabled
 	player.controls_enabled = false
 	trigger_camera.current = true
 	trigger_camera_entity_id = entity_id
-	var wait_seconds := maxf(0.0, float(properties.get("wait", "0")))
-	trigger_camera_return_tick = (
-		int(entity_world.tick)
-		+ maxi(1, roundi(wait_seconds * float(EntityWorldScript.TICK_RATE)))
-	)
+	trigger_camera_return_tick = return_tick
 	if is_instance_valid(hud):
 		hud.update_objective(
 			"SECURITY CAMERA %d" % entity_id
@@ -483,6 +1037,10 @@ func _on_trigger_camera_use(event: Dictionary, entity_id: int) -> void:
 
 
 func _advance_trigger_camera() -> void:
+	for actor_id: String in _remote_trigger_cameras.keys():
+		var human: PlayerController = remote_roster.actor_for_id(actor_id)
+		if not is_instance_valid(human) or not human.alive or int(entity_world.tick) >= int(_remote_trigger_cameras[actor_id].return_tick):
+			_end_remote_trigger_camera(actor_id)
 	if (
 		trigger_camera_entity_id < 0
 		or trigger_camera_return_tick < 0
@@ -491,6 +1049,14 @@ func _advance_trigger_camera() -> void:
 	):
 		return
 	_end_trigger_camera()
+
+
+func _end_remote_trigger_camera(actor_id: String, restore_controls := true) -> void:
+	var state: Dictionary = _remote_trigger_cameras.get(actor_id, {})
+	_remote_trigger_cameras.erase(actor_id)
+	var human: PlayerController = remote_roster.actor_for_id(actor_id)
+	if restore_controls and is_instance_valid(human) and not state.is_empty():
+		human.controls_enabled = human.alive and bool(state.controls_enabled) and phase in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB]
 
 
 func _end_trigger_camera() -> void:
@@ -518,12 +1084,21 @@ func _build_spectator_camera() -> void:
 
 
 func _living_spectate_teammates() -> Array[Combatant]:
+	if is_instance_valid(network_client_view):
+		return network_client_view.spectate_teammates()
 	var mates: Array[Combatant] = []
 	if not is_instance_valid(player):
 		return mates
 	for bot in _all_bots():
-		if is_instance_valid(bot) and bot.alive and bot.team == player.team:
+		if is_instance_valid(bot) and bot.alive and (
+			player.team == Combatant.TEAM_UNASSIGNED or bot.team == player.team
+		):
 			mates.append(bot)
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if human.alive and (player.team == Combatant.TEAM_UNASSIGNED or human.team == player.team):
+				mates.append(human)
 	return mates
 
 
@@ -571,28 +1146,57 @@ func _entity_target_position(targetname: String) -> Vector3:
 	return Vector3.INF
 
 
-func _process_player_world_use() -> void:
+func _process_player_world_use() -> Dictionary:
+	var selections := {}
 	if not is_instance_valid(player):
-		return
-	var use_down := bool(player.last_command.get("use", false))
-	var use_pressed := use_down and not _player_use_was_down
-	_player_use_was_down = use_down
+		return selections
+	for human: PlayerController in _human_players_stable():
+		selections[_round_id_for_actor(human)] = _process_human_world_use(human)
+	return selections
+
+
+func _process_human_world_use(human: PlayerController) -> Dictionary:
+	var actor_id := _round_id_for_actor(human)
+	var use_down := human.alive and human.controls_enabled and bool(human.last_command.get("use", false))
+	var use_pressed := use_down and not bool(_human_use_was_down.get(actor_id, false))
+	_human_use_was_down[actor_id] = use_down
 	if (
-		not use_pressed
-		or phase != RoundStateScript.PHASE_LIVE
+		not use_down
+		or phase not in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB]
 	):
-		return
+		return {}
+	var selected := PlayerUseResolverScript.select_candidate(
+		human.global_position,
+		human.camera.global_position,
+		-human.camera.global_transform.basis.z,
+		_world_use_candidates(human, bomb_planted),
+	)
+	if not use_pressed:
+		return selected
+	var selected_node: Node = selected.get("node")
+	if is_instance_valid(selected_node) and selected_node.has_method("request_source_use"):
+		selected_node.call("request_source_use", human)
+	elif selected.has("brush_entity_id"):
+		_queue_brush_use(int(selected.brush_entity_id), human)
+	# C4's selected held-use is consumed by the authoritative round tick.
+	return selected
+
+
+func _world_use_candidates(actor: Combatant, include_c4 := false) -> Array:
 	var candidates: Array = []
+	if include_c4:
+		candidates.append({"id": "c4", "origin": bomb_position, "usable": bomb_planted})
 	for candidate_node: Node in get_tree().get_nodes_in_group("source_use_targets"):
-		if (
-			not candidate_node.has_method("source_use_origin")
-			or not candidate_node.has_method("source_use_usable")
-		):
+		var origin: Variant = (
+			candidate_node.call("source_use_origin") if candidate_node.has_method("source_use_origin")
+			else (candidate_node.global_position if candidate_node is Node3D else Vector3.INF)
+		)
+		if not origin is Vector3 or origin == Vector3.INF:
 			continue
 		candidates.append({
 			"id": str(candidate_node.name),
-			"origin": candidate_node.call("source_use_origin"),
-			"usable": bool(candidate_node.call("source_use_usable", player)),
+			"origin": origin,
+			"usable": bool(candidate_node.call("source_use_usable", actor)) if candidate_node.has_method("source_use_usable") else true,
 			"node": candidate_node,
 		})
 	if brush_runtime != null:
@@ -606,23 +1210,10 @@ func _process_player_world_use() -> void:
 			candidates.append({
 				"id": "brush_%03d" % entity_id,
 				"origin": _brush_world_aabb(entity_id).get_center(),
-				"usable": player.alive,
+				"usable": actor.alive,
 				"brush_entity_id": entity_id,
 			})
-	var selected := PlayerUseResolverScript.select_candidate(
-		player.global_position,
-		player.camera.global_position,
-		-player.camera.global_transform.basis.z,
-		candidates,
-	)
-	var selected_node: Node = selected.get("node")
-	if (
-		is_instance_valid(selected_node)
-		and selected_node.has_method("request_source_use")
-	):
-		selected_node.call("request_source_use", player)
-	elif selected.has("brush_entity_id"):
-		_queue_brush_use(int(selected.brush_entity_id), player)
+	return candidates
 
 
 func _queue_brush_use(entity_id: int, actor: Combatant) -> bool:
@@ -640,11 +1231,25 @@ func _queue_brush_use(entity_id: int, actor: Combatant) -> bool:
 func _queue_brush_touches() -> void:
 	if brush_runtime == null:
 		return
+	var touch_actors: Array[Node3D] = []
+	for actor: Combatant in _live_combatants_stable():
+		touch_actors.append(actor)
+	var hostage_ids := hostage_actors.keys()
+	hostage_ids.sort()
+	for hostage_id: String in hostage_ids:
+		var hostage: CS16Hostage = hostage_actors[hostage_id]
+		if is_instance_valid(hostage) and hostage.alive and not hostage.rescued:
+			touch_actors.append(hostage)
+	var movement_contacts := {}
+	for actor: Node3D in touch_actors:
+		if actor is TargetActor or actor is CS16Hostage:
+			movement_contacts[actor] = actor.take_brush_contacts()
 	var current_pairs := {}
 	for raw_entity_id: Variant in _sorted_brush_entity_ids():
 		var entity_id := int(raw_entity_id)
 		if not entity_world.has_capability(entity_id, EntityWorldScript.CAP_TOUCH):
 			continue
+		var allows_hostage_touch := str(brush_runtime.get_brush(entity_id).classname) != "func_button"
 		# CharacterBody safe margins stop a hull a fraction short of an exact
 		# brush-plane overlap. GoldSrc still reports that collision contact as a
 		# touch, so grow the query by a tiny physical-contact tolerance.
@@ -653,18 +1258,25 @@ func _queue_brush_touches() -> void:
 		)
 		if brush_bounds.size.is_zero_approx():
 			continue
-		for actor: Combatant in _live_combatants_stable():
+		for actor: Node3D in touch_actors:
+			# Source doors accept living non-player touchers. Buttons retain
+			# their player-only contract; hostages do not press them by contact.
+			if actor is CS16Hostage and not allows_hostage_touch:
+				continue
 			var activator_id := _brush_activator_id(actor)
 			var pair_key := "%d:%d" % [entity_id, activator_id]
 			var actor_size := (
-				_player_hull_size()
-				if actor == player
+				_human_hull_size(actor as PlayerController)
+				if actor is PlayerController
 				else TargetActor.STANDING_HULL_SIZE
 			)
-			if not _aabb_touches(
-				_feet_hull_aabb(actor.global_position, actor_size),
-				brush_bounds,
-			):
+			if actor is CS16Hostage:
+				actor_size = CS16Hostage.HULL_SIZE
+			var actor_bounds := _feet_hull_aabb(actor.global_position, actor_size)
+			var touching := _aabb_touches(actor_bounds, brush_bounds)
+			if not touching and movement_contacts.has(actor):
+				touching = movement_contacts[actor].has(entity_id)
+			if not touching:
 				continue
 			current_pairs[pair_key] = {
 				"entity_id": entity_id,
@@ -708,8 +1320,8 @@ func _process_breakable_touches() -> void:
 		var bounds := _model_world_aabb(int(record.model_index))
 		for actor: Combatant in _live_combatants_stable():
 			var actor_size := (
-				_player_hull_size()
-				if actor == player
+				_human_hull_size(actor as PlayerController)
+				if actor is PlayerController
 				else TargetActor.STANDING_HULL_SIZE
 			)
 			var actor_bounds := _feet_hull_aabb(
@@ -754,6 +1366,11 @@ func _live_combatants_stable() -> Array[Combatant]:
 	var actors: Array[Combatant] = []
 	if is_instance_valid(player) and player.alive:
 		actors.append(player)
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if human.alive and human.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+				actors.append(human)
 	var bots := _all_bots()
 	bots.sort_custom(func(left: TargetActor, right: TargetActor) -> bool:
 		return left.name.naturalnocasecmp_to(right.name) < 0
@@ -764,10 +1381,18 @@ func _live_combatants_stable() -> Array[Combatant]:
 	return actors
 
 
-func _brush_activator_id(actor: Combatant) -> int:
+func _brush_activator_id(actor: Node3D) -> int:
+	if actor is CS16Hostage:
+		return int(actor.get_meta("entity_index", -1))
 	var base := entity_world.entity_count() + 1
 	if actor == player:
 		return base
+	if _bot_brush_activator_ids.has(actor.get_instance_id()):
+		return int(_bot_brush_activator_ids[actor.get_instance_id()])
+	if actor is PlayerController and is_instance_valid(remote_roster):
+		var actor_id: String = remote_roster.id_for_actor(actor)
+		if _remote_brush_activator_ids.has(actor_id):
+			return int(_remote_brush_activator_ids[actor_id])
 	var bots := _all_bots()
 	bots.sort_custom(func(left: TargetActor, right: TargetActor) -> bool:
 		return left.name.naturalnocasecmp_to(right.name) < 0
@@ -979,6 +1604,13 @@ func _hostage_navigation_point(
 	from_position: Vector3,
 	target_position: Vector3,
 ) -> Vector3:
+	var path: PackedVector3Array = _hostage_paths.get(hostage_id, PackedVector3Array())
+	var path_index := int(_hostage_path_indices.get(hostage_id, 0))
+	# Consume a reached entrance before considering a refresh. Re-querying from
+	# inside an off-mesh link can project back to its entrance, making the pawn
+	# oscillate forever when the crossing takes longer than the refresh interval.
+	while path_index < path.size() - 1 and from_position.distance_to(path[path_index]) <= 0.24:
+		path_index += 1
 	var should_repath := (
 		not _hostage_paths.has(hostage_id)
 		or hostage_state.tick % 25 == 0
@@ -987,7 +1619,7 @@ func _hostage_navigation_point(
 			and (_hostage_path_targets[hostage_id] as Vector3).distance_to(target_position)
 				> 0.50
 		)
-	)
+	) and not _hostage_traversing_link(path, path_index, from_position)
 	if should_repath and is_instance_valid(imported_map):
 		var map_rid := imported_map.navigation_region.get_navigation_map()
 		var route := NavigationServer3D.map_get_path(
@@ -999,11 +1631,8 @@ func _hostage_navigation_point(
 		_hostage_paths[hostage_id] = route
 		_hostage_path_indices[hostage_id] = 0
 		_hostage_path_targets[hostage_id] = target_position
-	var path: PackedVector3Array = _hostage_paths.get(
-		hostage_id,
-		PackedVector3Array(),
-	)
-	var path_index := int(_hostage_path_indices.get(hostage_id, 0))
+		path = route
+		path_index = 0
 	while (
 		path_index < path.size() - 1
 		and from_position.distance_to(path[path_index]) <= 0.24
@@ -1011,6 +1640,25 @@ func _hostage_navigation_point(
 		path_index += 1
 	_hostage_path_indices[hostage_id] = path_index
 	return path[path_index] if path_index < path.size() else target_position
+
+
+func _hostage_traversing_link(path: PackedVector3Array, path_index: int, from_position: Vector3) -> bool:
+	if not is_instance_valid(imported_map) or path_index <= 0 or path_index >= path.size():
+		return false
+	if from_position.distance_to(path[path_index]) <= 0.24:
+		return false
+	for link: NavigationLink3D in imported_map.navigation_links:
+		if not link.enabled:
+			continue
+		var start := link.get_global_start_position()
+		var end := link.get_global_end_position()
+		if (path[path_index - 1].distance_to(start) < 0.001
+			and path[path_index].distance_to(end) < 0.001):
+			return true
+		if (link.bidirectional and path[path_index - 1].distance_to(end) < 0.001
+			and path[path_index].distance_to(start) < 0.001):
+			return true
+	return false
 
 
 func _check_hostage_rescue(hostage_id: String) -> void:
@@ -1362,19 +2010,38 @@ func _process(delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if _network_menu_join_pending and Time.get_ticks_msec() >= _network_menu_deadline_ms:
+		_network_menu_join_pending = false
+		var session := get_node("/root/NetworkSession")
+		session.disconnect_session()
+		session._set_status("HOST WORLD TIMED OUT")
+	if _network_client_mode:
+		# Local presentation sounds still need expiry; do not run gameplay ticks.
+		if is_instance_valid(audio_router):
+			audio_router.advance_ticks(1)
+			var listener := get_viewport().get_camera_3d()
+			if is_instance_valid(listener):
+				audio_playback.set_listener_origin_hu(AudioRouterScript.meters_to_hu(listener.global_position))
+		if is_instance_valid(network_client_view):
+			network_client_view.tick_input(delta)
+		return
+	_refresh_visible_scoreboard(delta)
 	_drop_hostages_to_floor()
 	if is_instance_valid(audio_router):
 		audio_router.advance_ticks(1)
-		if is_instance_valid(player):
+		# Positional gain must follow the view, including deployment, scripted
+		# cameras and spectating, rather than the inactive/dead player's body.
+		var listener_camera := get_viewport().get_camera_3d()
+		if is_instance_valid(listener_camera):
 			audio_playback.set_listener_origin_hu(
-				AudioRouterScript.meters_to_hu(player.camera.global_position)
+				AudioRouterScript.meters_to_hu(listener_camera.global_position)
 			)
 	if (
 		match_started
 		and not get_tree().paused
 		and is_instance_valid(round_state)
 	):
-		_process_player_world_use()
+		var world_use_selections := _process_player_world_use()
 		_queue_brush_touches()
 		_process_breakable_touches()
 		if entity_world != null:
@@ -1390,22 +2057,28 @@ func _physics_process(delta: float) -> void:
 		_sync_dropped_c4_position()
 		_process_weapon_pickups()
 		var round_events: Array[Dictionary] = round_state.advance_tick(
-			_round_tick_command()
+			_round_tick_command(world_use_selections)
 		)
 		_consume_round_events(round_events)
+		_advance_objective_audio()
 		_consumed_round_events = round_state.trace.size()
 		_sync_round_public_state()
 		_update_round_hud()
 		_update_tactical_hud()
-	var network := get_node("/root/NetworkSession")
+	_publish_network_world(delta)
 	if not match_started or not is_instance_valid(player):
 		return
-	var command := player.last_command
+	_submit_network_input(player.last_command)
+
+
+func _submit_network_input(command: Dictionary) -> void:
+	var network := get_node("/root/NetworkSession")
 	var movement: Vector2 = command.get("movement", Vector2.ZERO)
+	var input_angles := player.input_view_angles()
 	network.submit_local_input({
 		"movement": movement,
-		"yaw": player.rotation.y,
-		"pitch": player.camera.rotation.x,
+		"yaw": input_angles.x,
+		"pitch": input_angles.y,
 		"buttons": (
 			(1 if command.get("fire", false) else 0)
 			| (2 if command.get("jump", false) else 0)
@@ -1415,19 +2088,157 @@ func _physics_process(delta: float) -> void:
 			| (32 if command.get("walk", false) else 0)
 		),
 	})
-	network.tick_snapshot(delta, {
-		"tick": Engine.get_physics_frames(),
-		"position": player.global_position,
-		"velocity": player.velocity,
-		"health": player.health,
-		"phase": phase,
-		"round_time": seconds_left,
-	})
+
+
+func _network_actor_state(actor: Combatant) -> Dictionary:
+	var actor_id := _round_id_for_actor(actor)
+	var row: Dictionary = round_state.players.get(actor_id, {})
+	var human := actor as PlayerController
+	var bot := actor as TargetActor
+	var weapon: String = human.active_weapon if human != null else bot.active_weapon_name
+	var skin: String = (selected_player_skin if human == player else str(human.get_meta("cs16_player_skin", "terror"))) if human != null else bot.player_skin
+	return {"id": actor_id, "kind": "human" if human != null else "bot", "name": actor.display_name,
+		"team": actor.team, "position": actor.global_position, "velocity": actor.velocity,
+		"angles": human.input_view_angles() if human != null else Vector2(
+			wrapf(actor.rotation.y, -PI, PI), bot.spectator_view_pitch),
+		"alive": actor.alive and actor.team != "UNASSIGNED", "visible": actor.visible and actor.team != "UNASSIGNED",
+		"health": actor.health, "armor": actor.armor, "helmet": actor.has_helmet,
+		"weapon": weapon, "clip": human.clip if human != null else bot.weapon_clip,
+		"reserve": human.reserve if human != null else bot.weapon_reserve,
+		"reloading": human.reloading if human != null else bot.weapon_reloading, "skin": skin,
+		"life": human.spawn_serial if human != null else round_state.round_number,
+		"crouched": not human._standing if human != null else bot.is_crouching(),
+		"kills": int(row.get("kills", 0)), "deaths": int(row.get("deaths", 0)), "money": int(row.get("money", 800)),
+		"class_id": int(human.get_meta("cs16_class_id", 0)) if human != null else 0}
+
+
+func publish_combat_presentation(actor: Combatant, kind: String, data: Dictionary) -> void:
+	var network := get_node("/root/NetworkSession")
+	if not network.is_host or not network.is_online() or not is_instance_valid(actor):
+		return
+	var actor_id := _round_id_for_actor(actor)
+	if actor_id.is_empty():
+		return
+	var life: int = actor.spawn_serial if actor is PlayerController else round_state.round_number
+	network.send_combat_event(actor_id, life, kind, data)
+
+
+func _publish_network_impact(kind: String, data: Dictionary) -> void:
+	var network := get_node("/root/NetworkSession")
+	if network.is_host and is_instance_valid(round_state):
+		network.send_combat_event("", round_state.round_number, kind, data)
+
+
+func _publish_network_audio(event: Dictionary) -> void:
+	var network := get_node("/root/NetworkSession")
+	if not network.is_host or not network.is_online() or event.event_name == "weapon.mode_switch":
+		return
+	# Replicate actual catalog/sample choices, never pick a fresh random variant.
+	if not AudioRouterScript.AudioCatalog.EVENT_SAMPLES.has(event.event_name):
+		return
+	for actor: Combatant in _human_players_stable() + _all_bots():
+		if actor.audio_entity_id() == int(event.entity_id):
+			publish_combat_presentation(actor, "audio", {"name": event.event_name, "sample": event.sample,
+				"channel": event.channel, "volume": event.volume, "attenuation": event.attenuation,
+				"pitch": event.pitch, "origin": Vector3(event.origin[0], event.origin[1], event.origin[2]) / AudioRouterScript.HU_PER_METER})
+			return
+	var source := -1
+	if int(event.entity_id) == 0 and (str(event.event_name).begins_with("c4.") or str(event.event_name).begins_with("radio.bomb_") or str(event.event_name).begins_with("round.") or str(event.event_name) == "weapon.drop"):
+		source = 0
+	else:
+		for grenade: Node in get_tree().get_nodes_in_group("live_grenades"):
+			if grenade._audio_entity_id() == int(event.entity_id):
+				source = int(grenade.get_meta("network_item_id", 0))
+				break
+	if source >= 0:
+		_publish_network_impact("world_audio", {"source": source, "name": event.event_name, "sample": event.sample,
+			"channel": event.channel, "volume": event.volume, "attenuation": event.attenuation, "pitch": event.pitch,
+			"origin": Vector3(event.origin[0], event.origin[1], event.origin[2]) / AudioRouterScript.HU_PER_METER})
+
+
+func _network_owner_feedback(human: PlayerController) -> Dictionary:
+	var feedback := get_node("/root/NetworkSession").WorldState.empty_feedback() as Dictionary
+	feedback.bomb_state = str(round_state.bomb_state)
+	feedback.result = _network_objective_result
+	var actor_id := _round_id_for_actor(human)
+	var action: Dictionary = round_state.action_progress()
+	if human.alive and not action.is_empty() and str(action.actor) == actor_id:
+		feedback.action = str(action.action)
+		feedback.total = float(action.duration_ticks) / 100.0
+		feedback.remaining = maxf(0.0, float(action.duration_ticks - action.elapsed_ticks) / 100.0)
+	if human.alive:
+		feedback.flash_total = human.flash_blind_total_seconds
+		feedback.flash_remaining = clampf(float(human.flash_blind_until_frame - Engine.get_physics_frames()) / Engine.physics_ticks_per_second, 0.0, feedback.flash_total)
+		feedback.can_plant = round_state.bomb_owner == actor_id and not _bomb_region_at(human.global_position, _human_hull_size(human)).is_empty()
+	return feedback
+
+
+func _publish_network_world(delta: float) -> void:
+	var network := get_node("/root/NetworkSession")
+	if not network.is_host or not is_instance_valid(remote_roster) or remote_roster.size() == 0 or not network.world_snapshot_due(delta):
+		return
+	var actors: Array[Dictionary] = []
+	for human: PlayerController in _human_players_stable():
+		actors.append(_network_actor_state(human))
+	for bot: TargetActor in _all_bots():
+		actors.append(_network_actor_state(bot))
+	var state := {"tick": Engine.get_physics_frames(), "map": map_name, "started": match_started, "concluded": _match_concluded,
+		"round": {"number": round_number, "phase": phase, "seconds": seconds_left, "t_score": terrorist_score, "ct_score": ct_score},
+		"actors": actors, "owner_id": "", "input_ack": 0, "items": _network_world_items(),
+		"broken_brushes": breakable_runtime.broken_model_indices() if breakable_runtime != null else [],
+		"sprays": sprays.records.duplicate(true)}
+	for actor_id: String in remote_roster.actor_ids():
+		var human: PlayerController = remote_roster.actor_for_id(actor_id)
+		state.owner_id = actor_id
+		state.input_ack = int(human.combat_controller._last_sequence)
+		state.inventory = network.WorldState.inventory_for(human)
+		state.motion = network.WorldState.motion_for(human)
+		state.feedback = _network_owner_feedback(human)
+		state.can_buy = bool(_human_buy_eligibility(human).allowed)
+		network.send_world_snapshot(human.combat_controller._peer_id, state)
+
+
+func _network_item_state(item: Node3D, kind: String, weapon: String) -> Dictionary:
+	if not item.has_meta("network_item_id"):
+		item.set_meta("network_item_id", _next_network_item_id)
+		_next_network_item_id += 1
+	var total := float(round_state.config.c4_ticks) / 100.0 if kind == "planted_c4" else 0.0
+	var remaining := clampf(float(round_state.bomb_deadline_tick - round_state.tick) / 100.0, 0.0, total) if kind == "planted_c4" else 0.0
+	if kind == "smoke":
+		total = float(item._cleanup_tick - item._detonated_tick) / 100.0
+		remaining = clampf(float(item._cleanup_tick - item._simulation_tick) / 100.0, 0.0, total)
+	return {"id": int(item.get_meta("network_item_id")), "kind": kind, "weapon": weapon,
+		"position": item.global_position, "rotation": item.global_basis.get_rotation_quaternion().normalized(),
+		"total": total, "remaining": remaining}
+
+
+func _network_world_items() -> Array[Dictionary]:
+	var items: Array[Dictionary] = []
+	for grenade: Node3D in get_tree().get_nodes_in_group("live_grenades"):
+		if grenade.is_queued_for_deletion():
+			continue
+		if not grenade._exploded:
+			items.append(_network_item_state(grenade, "grenade", grenade.grenade_kind))
+		elif grenade.grenade_kind == "smokegrenade":
+			items.append(_network_item_state(grenade, "smoke", grenade.grenade_kind))
+	for item: CS16DroppedWeapon in dropped_weapons:
+		if is_instance_valid(item) and not item.is_queued_for_deletion() and item.visible:
+			items.append(_network_item_state(item, "gun", item.weapon_name))
+	if is_instance_valid(dropped_c4) and not dropped_c4.is_queued_for_deletion() and dropped_c4.visible:
+		items.append(_network_item_state(dropped_c4, "dropped_c4", "c4"))
+	if is_instance_valid(bomb) and not bomb.is_queued_for_deletion() and bomb.visible:
+		items.append(_network_item_state(bomb, "planted_c4", "c4"))
+	return items
 
 
 func _update_tactical_hud() -> void:
 	if not is_instance_valid(hud) or not is_instance_valid(player):
 		return
+	var observer: Combatant = player
+	if is_instance_valid(spectator_camera) and spectator_camera.is_first_person() \
+			and is_instance_valid(spectator_camera.target):
+		observer = spectator_camera.target
+	hud.update_defuse_kit(player.team, player.alive, bool(player.equipment.get("defuser", false)))
 	# CS 1.6 shows the cart glyph while the player stands in their team's buy
 	# zone and buying is still possible; nothing drove it before.
 	hud.set_buy_zone(
@@ -1436,8 +2247,13 @@ func _update_tactical_hud() -> void:
 		and bool(_buy_eligibility().allowed)
 	)
 	var contacts: Array[Dictionary] = []
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if human != observer and human.team == player.team and human.team in ["T", "CT"]:
+				contacts.append({"id": actor_id, "position": human.global_position, "alive": human.alive})
 	for bot: TargetActor in _all_bots():
-		if bot.team != player.team:
+		if bot == observer or bot.team != player.team:
 			continue
 		contacts.append({
 			"id": bot.name,
@@ -1450,13 +2266,9 @@ func _update_tactical_hud() -> void:
 		func(left: Dictionary, right: Dictionary) -> bool:
 			return str(left.id) < str(right.id)
 	)
-	if bomb_planted:
-		contacts.append({
-			"id": "bomb",
-			"kind": "bomb",
-			"position": bomb_position,
-			"alive": true,
-		})
+	if is_instance_valid(round_state):
+		contacts.append_array(CS16RadarDisplay.bomb_contact(
+			observer.team, observer.alive, round_state.bomb_state, round_state.bomb_position))
 	if scenario == ScenarioRulesScript.SCENARIO_HOSTAGE:
 		for hostage_id_variant in hostage_actors:
 			var hostage_actor: Node3D = hostage_actors[hostage_id_variant]
@@ -1482,8 +2294,8 @@ func _update_tactical_hud() -> void:
 				"rescued": bool(state.get("rescued", false)),
 			})
 	hud.update_tactical_display(
-		player.global_position,
-		player.global_rotation.y,
+		observer.global_position,
+		observer.global_rotation.y,
 		contacts,
 		hostage_snapshot,
 	)
@@ -1523,6 +2335,41 @@ func _emit_world_audio(
 		AudioRouterScript.meters_to_hu(origin_meters),
 		overrides,
 	)
+
+
+func _schedule_c4_arm_audio(actor_id: String) -> void:
+	_objective_audio_schedule.clear()
+	for offset: int in AudioCatalogScript.C4_ARM_AUDIO_STAGES:
+		_objective_audio_schedule.append({
+			"actor_id": actor_id,
+			"due_tick": int(round_state.tick) + offset,
+		})
+
+
+func _cancel_c4_arm_audio(actor_id: String) -> void:
+	var retained: Array[Dictionary] = []
+	for cue: Dictionary in _objective_audio_schedule:
+		if str(cue.actor_id) != actor_id:
+			retained.append(cue)
+	_objective_audio_schedule = retained
+
+
+func _advance_objective_audio() -> void:
+	if _objective_audio_schedule.is_empty():
+		return
+	var retained: Array[Dictionary] = []
+	for cue: Dictionary in _objective_audio_schedule:
+		if int(cue.due_tick) > int(round_state.tick):
+			retained.append(cue)
+			continue
+		var actor := _actor_for_round_id(str(cue.actor_id))
+		if is_instance_valid(actor) and actor.alive:
+			_emit_world_audio(
+				"c4.click",
+				AudioRouterScript.CHAN_WEAPON,
+				actor.global_position,
+			)
+	_objective_audio_schedule = retained
 
 
 func _consume_brush_runtime_events(events: Array[Dictionary]) -> void:
@@ -1760,7 +2607,7 @@ func _handle_radio_key(keycode: Key) -> bool:
 	if not match_started or not is_instance_valid(player) or not player.alive:
 		return false
 	if _radio_menu_key == 0:
-		if not RADIO_MENUS.has(keycode) or get_tree().paused:
+		if not RADIO_MENUS.has(keycode) or _pause_menu_open():
 			return false
 		_radio_menu_key = keycode
 		player.radio_menu_open = true
@@ -1797,37 +2644,109 @@ func _close_radio_menu() -> void:
 func _send_radio_message(item: Dictionary) -> void:
 	# Radio traffic plays flat and full-volume for the whole team, like the
 	# GoldSrc radio channel — never positional.
+	var sample_id := str(item.wav)
+	var network := get_node("/root/NetworkSession")
+	if _network_client_mode:
+		if network.request_radio(sample_id) == 0:
+			hud.show_banner("RADIO UNAVAILABLE", Color("#ffca66"), 1.5)
+		return
+	if network.is_host and network.is_online():
+		_broadcast_radio_message(player, sample_id, 1)
+		return
+	_play_radio_message(sample_id, player.display_name, str(item.text))
+
+
+func _play_radio_message(sample_id: String, sender_name: String, message_text: String) -> void:
+	if not AudioCatalogScript.RADIO_MESSAGES.has(sample_id) \
+			or message_text != str(AudioCatalogScript.RADIO_MESSAGES[sample_id]):
+		return
 	if not is_instance_valid(_radio_voice):
 		_radio_voice = AudioStreamPlayer.new()
 		_radio_voice.name = "RadioVoice"
 		add_child(_radio_voice)
 	var stream := load(
-		"res://assets/sounds/classic/radio/%s.wav" % str(item.wav)
+		"res://assets/sounds/classic/radio/%s.wav" % sample_id
 	) as AudioStream
 	if stream != null:
 		_radio_voice.stream = stream
 		_radio_voice.play()
-	hud.show_radio_line("Player (RADIO): %s" % str(item.text))
+	hud.show_radio_line("%s (RADIO): %s" % [sender_name, message_text])
+
+
+func _broadcast_radio_message(speaker: PlayerController, sample_id: String, sender_peer_id: int) -> void:
+	if not is_instance_valid(speaker) or not AudioCatalogScript.RADIO_MESSAGES.has(sample_id):
+		return
+	var message_text := str(AudioCatalogScript.RADIO_MESSAGES[sample_id])
+	var recipients := _chat_recipient_peers(sender_peer_id, speaker.team, true)
+	if recipients.has(1):
+		_play_radio_message(sample_id, speaker.display_name, message_text)
+	var remote_recipients: Array[int] = []
+	for peer_id: int in recipients:
+		if peer_id > 1:
+			remote_recipients.append(peer_id)
+	if remote_recipients.is_empty():
+		return
+	get_node("/root/NetworkSession").send_combat_event_to_peers(
+		_round_id_for_actor(speaker),
+		speaker.spawn_serial,
+		"radio",
+		{"sample": sample_id, "sender_name": speaker.display_name,
+			"team": speaker.team, "text": message_text},
+		remote_recipients,
+	)
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _network_client_mode:
+		if is_instance_valid(network_client_view):
+			network_client_view.handle_input(event)
+		return
 	if not event is InputEventKey:
 		return
 	var key_event := event as InputEventKey
 	if key_event.keycode == KEY_TAB:
+		if key_event.pressed and not key_event.echo:
+			_update_scoreboard()
 		hud.set_scoreboard_held(key_event.pressed)
 		get_viewport().set_input_as_handled()
 		return
 	if (
 		key_event.pressed
 		and not key_event.echo
+		and key_event.keycode in [KEY_Y, KEY_U]
+		and match_started
+		and not _pause_menu_open()
+		and hud.current_input_contract().state in ["none", "scoreboard"]
+	):
+		_close_radio_menu()
+		hud.set_scoreboard_held(false)
+		hud.open_chat(key_event.keycode == KEY_U)
+		get_viewport().set_input_as_handled()
+		return
+	if (
+		key_event.pressed
+		and not key_event.echo
 		and _match_concluded
+		and not _pause_menu_open()
 		and key_event.keycode in [KEY_ENTER, KEY_KP_ENTER]
 	):
 		_restart_match()
 		get_viewport().set_input_as_handled()
 		return
 	if key_event.pressed and not key_event.echo and _handle_radio_key(key_event.keycode):
+		get_viewport().set_input_as_handled()
+		return
+	if key_event.pressed and not key_event.echo and key_event.keycode == KEY_M and match_started and not _pause_menu_open():
+		_close_radio_menu()
+		hud.set_buy_menu_visible(false)
+		hud.set_deploy_visible(true)
+		if bool(round_state.players.player.choosing_appearance):
+			hud.show_class_menu(2 if player.team == "CT" else 1)
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		get_viewport().set_input_as_handled()
+		return
+	if key_event.pressed and not key_event.echo and key_event.keycode in [KEY_ESCAPE, KEY_0] and match_started and hud.current_input_contract().state == "team":
+		_close_deploy_menu()
 		get_viewport().set_input_as_handled()
 		return
 	if (
@@ -1840,7 +2759,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if key_event.pressed and not key_event.echo and key_event.keycode == KEY_ESCAPE:
 		if not match_started:
 			return
-		_set_paused(not get_tree().paused)
+		_set_paused(not _pause_menu_open())
+	elif _pause_menu_open():
+		return
+	elif key_event.pressed and not key_event.echo and key_event.keycode == KEY_T:
+		if not _spray_for_human(player):
+			hud.show_banner("SPRAY: MOVE CLOSE TO A FLAT SURFACE • 10s COOLDOWN", Color("#ffca66"), 1.5)
+		get_viewport().set_input_as_handled()
 	elif (
 		key_event.pressed
 		and not key_event.echo
@@ -1896,6 +2821,9 @@ func _buy(item: String, _price: int, label: String) -> void:
 
 
 func _on_buy_item_requested(item_id: String) -> void:
+	if _network_client_mode:
+		network_client_view.buy_item(item_id)
+		return
 	var result := _purchase_and_grant(item_id)
 	if not bool(result.allowed):
 		_show_buy_rejection(str(result.reason))
@@ -1904,91 +2832,129 @@ func _on_buy_item_requested(item_id: String) -> void:
 
 
 func _purchase_and_grant(item_id: String) -> Dictionary:
+	var result := _purchase_for_human(player, item_id)
+	if bool(result.allowed):
+		money = int(result.balance)
+		hud.update_health(player.health, player.armor, player.has_helmet)
+		hud.update_ammo(player.clip, player.reserve, player.reloading)
+		hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
+		hud.update_buy_account(money, _buy_menu_context())
+		hud.update_defuse_kit(player.team, player.alive, bool(player.equipment.get("defuser", false)))
+		hud.complete_buy_purchase()
+	return result
+
+
+func _purchase_for_human(human: PlayerController, item_id: String) -> Dictionary:
+	if _network_client_mode or not match_started or _match_concluded or not human.alive:
+		return {"allowed": false, "reason": "action_unavailable"}
+	var actor_id := _round_id_for_actor(human)
 	var requested_item := item_id.to_lower().strip_edges()
 	var source_item := str(BUY_ITEM_ALIASES.get(requested_item, requested_item))
 	if not BUY_GRANTS.has(source_item):
 		return {"allowed": false, "reason": "item_unavailable"}
-	var grant_id := _resolve_buy_grant(str(BUY_GRANTS[source_item]))
+	var grant_id := _resolve_buy_grant(str(BUY_GRANTS[source_item]), human)
 	if grant_id.is_empty():
 		return {"allowed": false, "reason": "item_unavailable"}
 	var price := _resolve_buy_price(source_item, grant_id)
 	if price < 0:
 		return {"allowed": false, "reason": "item_unavailable"}
 	var inside_zone := _is_in_team_buy_zone(
-		player.global_position,
-		player.team,
-		_player_hull_size(),
+		human.global_position,
+		human.team,
+		_human_hull_size(human),
 	)
 	var map_has_zones := not buy_regions.is_empty()
 	var eligibility: Dictionary = round_state.can_buy(
-		"player",
+		actor_id,
 		inside_zone,
 		map_has_zones,
 	)
 	if not bool(eligibility.allowed):
 		return eligibility
-	if not _team_may_buy(source_item):
+	if not _team_may_buy(source_item, human):
 		return {"allowed": false, "reason": "wrong_team"}
-	if int(round_state.players.player.money) < price:
+	if int(round_state.players[actor_id].money) < price:
 		return {"allowed": false, "reason": "insufficient_funds"}
 
 	# The inventory mutation deliberately precedes the authoritative debit.
 	# Player.grant_item owns slot replacement, grenade carry limits, equipment
 	# flags, and ammo caps. An unavailable or already-full grant never charges.
-	var inventory_before := _player_inventory_snapshot()
-	if not player.grant_item(grant_id):
+	human._store_active_ammunition()
+	var inventory_before := _player_inventory_snapshot(human)
+	if not human.grant_item(grant_id):
 		return {"allowed": false, "reason": "item_unavailable"}
-	if _player_inventory_snapshot() == inventory_before:
+	if _player_inventory_snapshot(human) == inventory_before:
 		return {"allowed": false, "reason": "already_owned_or_full"}
 	var result: Dictionary = round_state.purchase_item(
-		"player",
+		actor_id,
 		source_item,
 		price,
 		inside_zone,
 		map_has_zones,
 	)
 	if not bool(result.allowed):
-		_restore_player_inventory(inventory_before)
+		_restore_player_inventory(inventory_before, human)
 		return result
 
-	money = int(result.balance)
 	if source_item == "defuser":
-		round_state.set_defuser("player", true)
-	if (
-		WeaponRegistryScript.WEAPONS.has(grant_id)
-		and not player.owns_weapon(player.active_weapon)
-	):
-		# Buying a replacement for the weapon in hand must never leave the
-		# controller pointing at the removed slot entry.
-		player.switch_weapon(grant_id)
-	if player.ammunition.has(player.active_weapon):
-		player.clip = int(player.ammunition[player.active_weapon].clip)
-		player.reserve = int(player.ammunition[player.active_weapon].reserve)
-	hud.update_health(player.health, player.armor)
-	hud.update_ammo(player.clip, player.reserve, player.reloading)
-	hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
+		round_state.set_defuser(actor_id, true)
+	if _should_equip_purchase(human, grant_id):
+		human.switch_weapon(grant_id)
+	if human.ammunition.has(human.active_weapon):
+		human.clip = int(human.ammunition[human.active_weapon].clip)
+		human.reserve = int(human.ammunition[human.active_weapon].reserve)
+	# CS 1.6 BuyGunAmmo emits items/9mmclip1.wav from the buyer's weapon after
+	# the ammo grant succeeds. The actor-owned event also follows the existing
+	# host-to-client audio path, so clients never predict or double-play it.
+	if grant_id.begins_with("ammo_"):
+		human._emit_audio("buy.ammo", AudioRouterScript.CHAN_ITEM)
+	elif grant_id in ["kevlar", "helmet", "assaultsuit"]:
+		# Both original armor item classes use items/ammopickup2.wav on CHAN_ITEM.
+		# Emit only after the authoritative grant and debit have succeeded, so
+		# rejected/full purchases and client retries cannot produce false cues.
+		human._emit_audio("buy.armor", AudioRouterScript.CHAN_ITEM)
+	elif grant_id == "defuser":
+		human._emit_audio("buy.defuser", AudioRouterScript.CHAN_ITEM)
+	elif grant_id == "nvgs":
+		human._emit_audio("buy.nvgs", AudioRouterScript.CHAN_ITEM)
+	elif WeaponRegistryScript.WEAPONS.has(grant_id):
+		human._emit_audio("weapon.acquire", AudioRouterScript.CHAN_ITEM)
 	return {
 		"allowed": true,
 		"reason": "ok",
-		"balance": money,
+		"balance": int(result.balance),
 		"item": source_item,
 		"grant": grant_id,
 		"price": price,
 	}
 
 
-func _resolve_buy_grant(grant_id: String) -> String:
+func _should_equip_purchase(human: PlayerController, weapon: String) -> bool:
+	if not WeaponRegistryScript.WEAPONS.has(weapon):
+		return false # Ammo and equipment never change the held weapon.
+	var slot := int(WeaponRegistryScript.WEAPONS[weapon].slot)
+	if slot not in [1, 2]:
+		return false
+	if not human.owns_weapon(human.active_weapon):
+		return true # The new firearm replaced the gun in hand.
+	var held_slot := int(WeaponRegistryScript.WEAPONS[human.active_weapon].slot)
+	return held_slot not in [1, 2] or slot < held_slot
+
+
+func _resolve_buy_grant(grant_id: String, human: PlayerController = null) -> String:
 	if grant_id == "primary_ammo":
-		return _owned_slot_ammo_grant(1)
+		return _owned_slot_ammo_grant(1, human)
 	if grant_id == "secondary_ammo":
-		return _owned_slot_ammo_grant(2)
+		return _owned_slot_ammo_grant(2, human)
 	return grant_id
 
 
-func _owned_slot_ammo_grant(slot: int) -> String:
-	for weapon_name: String in player.owned_weapons:
+func _owned_slot_ammo_grant(slot: int, human: PlayerController = null) -> String:
+	if human == null:
+		human = player
+	for weapon_name: String in human.owned_weapons:
 		if (
-			bool(player.owned_weapons[weapon_name])
+			bool(human.owned_weapons[weapon_name])
 			and PlayerController.WEAPONS.has(weapon_name)
 			and int(PlayerController.WEAPONS[weapon_name].slot) == slot
 		):
@@ -2004,12 +2970,14 @@ func _resolve_buy_price(source_item: String, grant_id: String) -> int:
 	return int(BUY_PRICES.get(source_item, -1))
 
 
-func _team_may_buy(source_item: String) -> bool:
+func _team_may_buy(source_item: String, human: PlayerController = null) -> bool:
+	if human == null:
+		human = player
 	if source_item in ["primary_ammo", "secondary_ammo"] or source_item.begins_with("ammo_"):
 		return true
 	var team_id := (
 		RoundStateScript.TEAM_CT
-		if player.team == Combatant.TEAM_COUNTER_TERRORIST
+		if human.team == Combatant.TEAM_COUNTER_TERRORIST
 		else RoundStateScript.TEAM_T
 	)
 	if source_item in RoundStateScript.T_ONLY_ITEMS:
@@ -2023,28 +2991,34 @@ func _team_may_buy(source_item: String) -> bool:
 	return false
 
 
-func _player_inventory_snapshot() -> Dictionary:
+func _player_inventory_snapshot(human: PlayerController = null) -> Dictionary:
+	if human == null:
+		human = player
 	return {
-		"owned_weapons": player.owned_weapons.duplicate(true),
-		"ammunition": player.ammunition.duplicate(true),
-		"equipment": player.equipment.duplicate(true),
-		"armor": player.armor,
-		"has_helmet": player.has_helmet,
-		"active_weapon": player.active_weapon,
-		"clip": player.clip,
-		"reserve": player.reserve,
+		"owned_weapons": human.owned_weapons.duplicate(true),
+		"ammunition": human.ammunition.duplicate(true),
+		"equipment": human.equipment.duplicate(true),
+		"weapon_modes": human.weapon_modes.duplicate(true),
+		"armor": human.armor,
+		"has_helmet": human.has_helmet,
+		"active_weapon": human.active_weapon,
+		"clip": human.clip,
+		"reserve": human.reserve,
 	}
 
 
-func _restore_player_inventory(snapshot: Dictionary) -> void:
-	player.owned_weapons = snapshot.owned_weapons.duplicate(true)
-	player.ammunition = snapshot.ammunition.duplicate(true)
-	player.equipment = snapshot.equipment.duplicate(true)
-	player.armor = int(snapshot.armor)
-	player.has_helmet = bool(snapshot.has_helmet)
-	player.active_weapon = str(snapshot.active_weapon)
-	player.clip = int(snapshot.clip)
-	player.reserve = int(snapshot.reserve)
+func _restore_player_inventory(snapshot: Dictionary, human: PlayerController = null) -> void:
+	if human == null:
+		human = player
+	human.owned_weapons = snapshot.owned_weapons.duplicate(true)
+	human.ammunition = snapshot.ammunition.duplicate(true)
+	human.equipment = snapshot.equipment.duplicate(true)
+	human.weapon_modes = snapshot.weapon_modes.duplicate(true)
+	human.armor = int(snapshot.armor)
+	human.has_helmet = bool(snapshot.has_helmet)
+	human.active_weapon = str(snapshot.active_weapon)
+	human.clip = int(snapshot.clip)
+	human.reserve = int(snapshot.reserve)
 
 
 func _buy_menu_context() -> Dictionary:
@@ -2069,12 +3043,18 @@ func _show_buy_rejection(reason: String) -> void:
 
 
 func _buy_eligibility() -> Dictionary:
+	return _human_buy_eligibility(player)
+
+
+func _human_buy_eligibility(human: PlayerController) -> Dictionary:
+	if _network_client_mode or not match_started or _match_concluded or not human.alive:
+		return {"allowed": false, "reason": "action_unavailable"}
 	return round_state.can_buy(
-		"player",
+		_round_id_for_actor(human),
 		_is_in_team_buy_zone(
-			player.global_position,
-			player.team,
-			_player_hull_size(),
+			human.global_position,
+			human.team,
+			_human_hull_size(human),
 		),
 		not buy_regions.is_empty(),
 	)
@@ -2119,12 +3099,16 @@ func _is_in_team_buy_zone(
 
 
 func _player_hull_size() -> Vector3:
+	return _human_hull_size(player)
+
+
+func _human_hull_size(human: PlayerController) -> Vector3:
 	if (
-		is_instance_valid(player)
-		and is_instance_valid(player.collider)
-		and player.collider.shape is BoxShape3D
+		is_instance_valid(human)
+		and is_instance_valid(human.collider)
+		and human.collider.shape is BoxShape3D
 	):
-		return (player.collider.shape as BoxShape3D).size
+		return (human.collider.shape as BoxShape3D).size
 	return Vector3(
 		PlayerController.HULL_WIDTH,
 		PlayerController.STAND_HEIGHT,
@@ -2367,10 +3351,26 @@ func _make_box(
 	return body
 
 
+func _spray_for_human(human: PlayerController) -> bool:
+	if _network_client_mode or not match_started or _match_concluded or not is_instance_valid(human):
+		return false
+	if not sprays.try_place(human, Time.get_ticks_msec()):
+		return false
+	_emit_world_audio("player.spray", 0, sprays.records.back().position)
+	return true
+
+
+func _apply_player_name() -> void:
+	if is_instance_valid(player) and player.display_name != get_node("/root/GameSettings").player_name:
+		player.display_name = get_node("/root/GameSettings").player_name
+		if is_instance_valid(hud) and not _network_client_mode:
+			_update_scoreboard()
+
+
 func _spawn_player() -> void:
 	player = PlayerScript.new()
 	player.name = "Player"
-	player.configure_identity(Combatant.TEAM_TERRORIST, "Player")
+	player.configure_identity(Combatant.TEAM_TERRORIST, get_node("/root/GameSettings").player_name)
 	player.position = player_spawn
 	add_child(player)
 	if using_imported_map and not target_spawns.is_empty():
@@ -2445,7 +3445,7 @@ func _build_round_state() -> void:
 	})
 	round_state.register_player(
 		"player",
-		Combatant.TEAM_TERRORIST,
+		player.team,
 		RoundStateScript.START_MONEY,
 		false,
 	)
@@ -2453,6 +3453,13 @@ func _build_round_state() -> void:
 		round_state.register_player(bot.name, bot.team)
 	for bot in targets:
 		round_state.register_player(bot.name, bot.team)
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			round_state.register_player(actor_id, human.team)
+			if human.has_meta("network_spawn_slot") and int(human.get_meta("cs16_class_id", 0)) == 0:
+				round_state.players[actor_id].choosing_appearance = true
+				round_state.players[actor_id].alive = false
 	bomb_knowledge = BombKnowledgeScript.new()
 	_refresh_bomb_knowledge_roster()
 
@@ -2463,14 +3470,13 @@ func _refresh_bomb_knowledge_roster() -> void:
 	bomb_knowledge.register_actor("player", _knowledge_team(player.team))
 	for bot in _all_bots():
 		bomb_knowledge.register_actor(bot.name, _knowledge_team(bot.team))
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			bomb_knowledge.register_actor(actor_id, _knowledge_team(remote_roster.actor_for_id(actor_id).team))
 
 
 func _knowledge_team(team: String) -> String:
-	return (
-		BombKnowledgeScript.TEAM_CT
-		if team == Combatant.TEAM_COUNTER_TERRORIST
-		else BombKnowledgeScript.TEAM_T
-	)
+	return team
 
 
 func _build_bomb_sites() -> void:
@@ -2515,11 +3521,25 @@ func _build_hud() -> void:
 	hud = HUDScript.new()
 	hud.name = "HUD"
 	add_child(hud)
-	hud.deploy_requested.connect(start_match)
+	hud.deploy_requested.connect(_on_deploy_requested)
+	hud.paused_input_received.connect(_unhandled_input)
+	hud.deploy_cancel_requested.connect(_on_deploy_cancel_requested)
+	hud.input_contract_changed.connect(func(state: String, _keyboard: bool, mouse_visible: bool) -> void:
+		if player.combat_controller is HumanCombatController:
+			player.combat_controller.set_menu_input_blocked(state == "chat" or mouse_visible or _pause_menu_open())
+		if state in ["buy_category", "buy_item"]:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		elif state == "none" and match_started and player.alive and not _pause_menu_open() and not get_tree().paused:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	)
 	hud.resume_requested.connect(func() -> void: _set_paused(false))
+	hud.quit_requested.connect(_on_quit_requested)
+	hud.disconnect_requested.connect(_on_disconnect_requested)
+	hud.network_connection_requested.connect(_on_network_connection_requested)
 	hud.buy_item_requested.connect(_on_buy_item_requested)
 	hud.team_selected.connect(_on_team_selected)
 	hud.class_selected.connect(_on_class_selected)
+	hud.chat_submitted.connect(_on_chat_submitted)
 	player.health_changed.connect(_on_player_health_changed)
 	player.ammo_changed.connect(_on_player_ammo_changed)
 	player.weapon_changed.connect(func(weapon_name: String, fire_mode: String) -> void:
@@ -2527,51 +3547,208 @@ func _build_hud() -> void:
 	)
 	player.hit_confirmed.connect(func(headshot: bool) -> void: hud.show_hitmarker(headshot))
 	player.flash_blinded.connect(func(seconds: float) -> void: hud.show_flash_blind(seconds))
-	player.died.connect(_on_player_died)
+	player.combatant_eliminated.connect(_on_human_eliminated)
 	player.weapon_drop_requested.connect(_on_player_weapon_drop)
-	hud.update_health(player.health, player.armor)
+	hud.update_health(player.health, player.armor, player.has_helmet)
 	hud.update_weapon(PlayerController.WEAPONS[player.active_weapon].name, PlayerController.WEAPONS[player.active_weapon].mode)
 	hud.update_ammo(player.clip, player.reserve, player.reloading)
 	_update_scoreboard()
 
 
 func _on_team_selected(team_id: int) -> void:
+	if _network_client_mode:
+		network_client_view.select_team(team_id)
+		return
+	if team_id not in [1, 2, 5, 6] or _match_concluded:
+		hud.reject_deploy_selection()
+		return
 	if team_id == 6:
-		player.configure_identity(Combatant.TEAM_UNASSIGNED, "Player")
-		if round_state.players.has("player"):
-			var spectator_state: Dictionary = round_state.players.player
-			spectator_state.team = Combatant.TEAM_UNASSIGNED
-			round_state.players.player = spectator_state
+		if not round_state.can_enter_observer("player"):
+			hud.reject_deploy_selection()
+			hud.show_banner("CANNOT SPECTATE WHILE ALIVE", Color("#ffca66"), 2.0)
+			return
+		if match_started and phase == RoundStateScript.PHASE_FREEZE and player.alive:
+			# Use the existing death/drop path; no opponent receives kill credit.
+			player.receive_damage(100000.0, player.global_position)
+		round_state.enter_observer("player", player.global_position)
+		player.configure_identity(Combatant.TEAM_UNASSIGNED, player.display_name)
+		_consume_new_round_trace()
+		_sync_round_public_state()
+		bomb_knowledge.register_actor("player", Combatant.TEAM_UNASSIGNED)
+		_enter_observer_view()
+		_update_scoreboard()
+		if not match_started and not _match_concluded:
+			start_match()
 		return
 	if team_id == 5:
-		# CS 1.6 auto-assign balances the teams; the 5v5 roster is symmetric
-		# around the player, so it reduces to a coin flip.
-		team_id = 1 + (randi() % 2)
+		var automatic: String = round_state.default_join_team(_team_spawn_capacities(), "T" if randi() % 2 == 0 else "CT")
+		if automatic.is_empty():
+			hud.reject_deploy_selection()
+			hud.show_banner("BOTH TEAMS ARE FULL", Color("#ffca66"), 2.0)
+			return
+		team_id = 1 if automatic == "T" else 2
 	var selected_team := (
 		Combatant.TEAM_COUNTER_TERRORIST
 		if team_id == 2
 		else Combatant.TEAM_TERRORIST
 	)
-	player.configure_identity(selected_team, "Player")
+	if match_started:
+		var result: Dictionary = round_state.select_player_team("player", selected_team, _team_spawn_capacities(), player.global_position)
+		if not result.accepted:
+			hud.reject_deploy_selection()
+			hud.show_banner(str(result.reason).replace("_", " ").to_upper(), Color("#ffca66"), 2.0)
+			return
+		if result.selection_death:
+			# Kernel death/drop is idempotent; actor death adds physical weapon
+			# drops and camera presentation without a second recorded death.
+			player.receive_damage(100000.0, player.global_position)
+		player.configure_identity(selected_team, player.display_name)
+		_consume_new_round_trace()
+		_sync_round_public_state()
+		_refresh_roster_spawns()
+		_refresh_bomb_knowledge_roster()
+		_enter_waiting_participant_view()
+		player.set_meta("cs16_team_id", team_id)
+		hud.accept_authoritative_deploy_selection(team_id, 0)
+		_update_scoreboard()
+		return
+	player.configure_identity(selected_team, player.display_name)
+	_end_death_spectate()
+	player.visible = true
+	player.collision_layer = _local_player_collision_layer()
 	_apply_spawn_side(selected_team)
 	_apply_bot_sides(selected_team)
 	if round_state.players.has("player"):
 		var state_player: Dictionary = round_state.players.player
 		state_player.team = selected_team
+		state_player.alive = true
 		round_state.players.player = state_player
 	player.reset_player(player_spawn, false)
 	player.controls_enabled = false
 	selected_player_skin = _class_skin(selected_team, selected_class_id)
 	player.set_meta("cs16_team_id", 2 if selected_team == Combatant.TEAM_COUNTER_TERRORIST else 1)
 	player.set_meta("cs16_player_skin", selected_player_skin)
+	hud.accept_authoritative_deploy_selection(team_id, 0)
 	_update_scoreboard()
 
 
+func _team_spawn_capacities() -> Dictionary:
+	if _local_player_collision_layer() == (2 | 4):
+		return {"T": mini(5, terrorist_team_spawns.size()), "CT": mini(5, counter_terrorist_team_spawns.size())}
+	return {"T": terrorist_team_spawns.size(), "CT": counter_terrorist_team_spawns.size()}
+
+
+func _refresh_roster_spawns() -> void:
+	# Remote admissions inherit the replaced bot's reserved map slot. Do not
+	# shift living bots onto each other when the new human finishes appearance.
+	var indices := {"T": 0, "CT": 0}
+	var reserved := {"T": {}, "CT": {}}
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if human.team in ["T", "CT"] and human.has_meta("network_spawn_slot"):
+				reserved[human.team][int(human.get_meta("network_spawn_slot"))] = true
+	if player.team in ["T", "CT"]:
+		var local_spawns: Array = counter_terrorist_team_spawns if player.team == "CT" else terrorist_team_spawns
+		while reserved[player.team].has(indices[player.team]):
+			indices[player.team] += 1
+		player_spawn = local_spawns[indices[player.team]]
+		indices[player.team] += 1
+	allied_spawns.clear()
+	target_spawns.clear()
+	for bot in _all_bots():
+		var spawns: Array = counter_terrorist_team_spawns if bot.team == "CT" else terrorist_team_spawns
+		while reserved[bot.team].has(indices[bot.team]):
+			indices[bot.team] += 1
+		var index: int = indices[bot.team]
+		assert(index < spawns.size(), "Accepted roster exceeds map spawn capacity")
+		if allied_bots.has(bot):
+			allied_spawns.append(spawns[index])
+		else:
+			target_spawns.append(spawns[index])
+		indices[bot.team] += 1
+
+
+func _enter_waiting_participant_view() -> void:
+	_end_trigger_camera()
+	player.alive = false
+	player.controls_enabled = false
+	player.look_enabled = false
+	player.velocity = Vector3.ZERO
+	player.last_command = {}
+	player.collision_layer = 0
+	player.visible = false
+	spectator_camera.stop()
+	spectator_camera.schedule(0.0)
+
+
+func _on_deploy_cancel_requested() -> void:
+	if _network_client_mode:
+		_set_paused(true)
+		return
+	if match_started:
+		_close_deploy_menu()
+	else:
+		_set_paused(true)
+
+
+func _close_deploy_menu() -> void:
+	hud.set_deploy_visible(false)
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _on_deploy_requested() -> void:
+	if _network_client_mode:
+		return
+	if _match_concluded:
+		return
+	if match_started:
+		_close_deploy_menu()
+		return
+	start_match()
+
+
+func _enter_observer_view() -> void:
+	# Spectator is an unoccupied combat slot, not a living invisible player.
+	# Initial menu selection does not synthesize a combat death.
+	_end_trigger_camera()
+	_close_radio_menu()
+	_set_nightvision(false)
+	hud.clear_combat_feedback()
+	player.alive = false
+	player.controls_enabled = false
+	player.look_enabled = false
+	player.velocity = Vector3.ZERO
+	player.last_command = {}
+	player.collision_layer = 0
+	player.visible = false
+	player.set_meta("cs16_team_id", 0)
+	player.set_objective_movement_locked(false)
+	spectator_camera.stop()
+	spectator_camera.schedule(0.0)
+
+
 func _on_class_selected(class_id: int) -> void:
+	if _network_client_mode:
+		network_client_view.select_class(class_id)
+		return
+	if class_id not in [1, 2, 3, 4] or player.team not in ["T", "CT"]:
+		return
 	selected_class_id = clampi(class_id, 1, 4)
 	selected_player_skin = _class_skin(player.team, selected_class_id)
 	player.set_meta("cs16_class_id", selected_class_id)
 	player.set_meta("cs16_player_skin", selected_player_skin)
+	if match_started:
+		if round_state.finish_player_appearance("player"):
+			_end_death_spectate()
+			player.visible = true
+			player.collision_layer = _local_player_collision_layer()
+			player.reset_player(player_spawn, false)
+			player.look_enabled = true
+			player.controls_enabled = phase in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB]
+			player.camera.make_current()
+		_sync_round_public_state()
+		_update_scoreboard()
 
 
 func _class_skin(team: String, class_id: int) -> String:
@@ -2625,24 +3802,30 @@ func _apply_bot_sides(player_team: String) -> void:
 
 
 func _apply_halftime_side_switch() -> void:
+	hud.reset_money_presentation()
 	# CS16RoundState has already swapped its own roster; mirror the new sides onto
 	# the live actors, spawn assignments and skins before the next round starts.
-	if player.team == Combatant.TEAM_UNASSIGNED:
-		return
-	var switched_team := (
-		Combatant.TEAM_TERRORIST
-		if player.team == Combatant.TEAM_COUNTER_TERRORIST
-		else Combatant.TEAM_COUNTER_TERRORIST
-	)
+	_round_loadout_reset_pending = true
+	var switched_team := str(round_state.players.player.team)
 	player.configure_identity(switched_team, player.display_name)
-	_apply_spawn_side(switched_team)
-	_apply_bot_sides(switched_team)
+	for bot in _all_bots():
+		_set_bot_team(bot, str(round_state.players[bot.name].team))
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if human.has_meta("network_spawn_slot"):
+				human.configure_identity(str(round_state.players[actor_id].team), human.display_name)
+				human.set_meta("cs16_player_skin", _class_skin(human.team, int(human.get_meta("cs16_class_id", 1))))
+	_refresh_roster_spawns()
+	_refresh_bomb_knowledge_roster()
 	selected_player_skin = _class_skin(switched_team, selected_class_id)
 	player.set_meta(
 		"cs16_team_id",
-		2 if switched_team == Combatant.TEAM_COUNTER_TERRORIST else 1,
+		(2 if switched_team == Combatant.TEAM_COUNTER_TERRORIST else 1) if switched_team in ["T", "CT"] else 0,
 	)
 	player.set_meta("cs16_player_skin", selected_player_skin)
+	if bool(round_state.players.player.choosing_appearance):
+		hud.accept_authoritative_deploy_selection(2 if switched_team == "CT" else 1, 0)
 	_update_scoreboard()
 
 
@@ -2657,20 +3840,104 @@ func _set_bot_team(bot: TargetActor, team: String) -> void:
 		bot.character_model.load_character(bot.player_skin, "ak47")
 
 
+func _on_quit_requested() -> void:
+	# Menu signals still run while the world is paused. Close the transport
+	# explicitly so connected peers are released before the scene shuts down.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	get_node("/root/NetworkSession").disconnect_session()
+	get_tree().quit()
+
+
+func _on_network_connection_requested(action: String, address: String, port_text: String) -> void:
+	var network := get_node("/root/NetworkSession")
+	if _returning_offline or action not in ["host", "join"]:
+		return
+	var reason := ""
+	if map_name != "de_dust2":
+		reason = "Multiplayer currently supports Dust2 only."
+	elif network.is_online() or network.is_connecting():
+		reason = "Already online. Return Offline before changing sessions."
+	elif action == "host" and _network_client_mode:
+		reason = "Return Offline before hosting."
+	var endpoint: Dictionary = network.connection_endpoint("127.0.0.1" if action == "host" else address, port_text)
+	if reason.is_empty() and not endpoint.valid:
+		reason = endpoint.reason
+	if not reason.is_empty():
+		hud.update_network_status(reason, network.is_online() or network.is_connecting(), _network_client_mode)
+		return
+	if action == "host":
+		network.host_game(int(endpoint.port))
+	else:
+		_network_menu_join_pending = true
+		_network_menu_deadline_ms = Time.get_ticks_msec() + 15000
+		hud.set_deploy_visible(true)
+		hud.show_network_menu("join")
+		if network.join_game(str(endpoint.address), int(endpoint.port)) != OK:
+			_network_menu_join_pending = false
+
+
+func _on_client_world_ready(map: String) -> void:
+	if not _network_menu_join_pending:
+		return
+	_network_menu_join_pending = false
+	if map != map_name:
+		var network := get_node("/root/NetworkSession")
+		network.disconnect_session()
+		network._set_status("HOST MAP DOES NOT MATCH DUST2")
+		return
+	if hud.network_menu.is_visible_in_tree():
+		_set_paused(false)
+		hud.set_deploy_visible(true)
+
+
+func _on_disconnect_requested() -> void:
+	if _returning_offline:
+		return
+	_returning_offline = true
+	_network_menu_join_pending = false
+	get_node("/root/NetworkSession").disconnect_session()
+	get_tree().paused = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# A fresh scene restores offline AI, collision and ownership together;
+	# never partially turn a read-only client pawn back into an authority.
+	_return_to_offline.call_deferred()
+
+
+func _return_to_offline() -> void:
+	var error := get_tree().change_scene_to_file("res://scenes/main.tscn")
+	if error != OK:
+		_returning_offline = false
+		_set_paused(true)
+		hud.update_network_status("Could not return offline: " + error_string(error), false, _network_client_mode)
+		hud.show_network_menu("join")
+
+
+func _pause_menu_open() -> bool:
+	return is_instance_valid(hud) and is_instance_valid(hud.pause_overlay) and hud.pause_overlay.visible
+
+
 func _set_paused(paused: bool) -> void:
-	get_tree().paused = paused
+	# Online menus are local input overlays, not authority to stop the server
+	# or client presentation. Offline games retain their normal full pause.
+	get_tree().paused = paused and not get_node("/root/NetworkSession").is_online()
+	if paused:
+		_close_radio_menu()
 	hud.set_paused_visible(paused)
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if paused or hud.current_input_contract().mouse_visible else Input.MOUSE_MODE_CAPTURED
 
 
 var _match_concluded := false
 
 
 func _restart_match() -> void:
+	if _network_client_mode:
+		return
 	## A concluded MR15 match restarts with fresh scores and accounts, but the
 	## roster keeps its current sides (halftime may have swapped them).
 	_match_concluded = false
+	match_started = false
 	round_ending = false
+	_round_loadout_reset_pending = true
 	_build_round_state()
 	if is_instance_valid(player) and round_state.players.has("player"):
 		var player_row: Dictionary = round_state.players.player
@@ -2678,12 +3945,20 @@ func _restart_match() -> void:
 		round_state.players.player = player_row
 	_consume_new_round_trace()
 	_sync_round_public_state()
-	hud.update_objective("")
+	hud.reset_match_presentation()
+	if is_instance_valid(_radio_voice):
+		_radio_voice.stop()
 	start_match()
 
 
 func start_match() -> void:
-	if round_ending:
+	if _network_client_mode:
+		return
+	if match_started or round_ending or _match_concluded:
+		return
+	if is_instance_valid(combat_effects) and not combat_effects.presentation_is_ready:
+		if not combat_effects.presentation_ready.is_connected(start_match):
+			combat_effects.presentation_ready.connect(start_match, CONNECT_ONE_SHOT)
 		return
 	match_started = true
 	if is_instance_valid(deploy_camera):
@@ -2764,7 +4039,7 @@ func _on_target_died(target: TargetActor, headshot: bool) -> void:
 func _on_player_health_changed(health: int, armor: int) -> void:
 	if is_instance_valid(hud):
 		var took_damage := health < int(hud.health_label.text) if hud.health_label.text.is_valid_int() else false
-		hud.update_health(health, armor)
+		hud.update_health(health, armor, player.has_helmet)
 		if took_damage:
 			hud.show_damage()
 
@@ -2775,8 +4050,6 @@ func _on_player_ammo_changed(clip: int, reserve: int, reloading: bool) -> void:
 
 
 func _combatant_display_name(actor: Combatant) -> String:
-	if actor == player:
-		return "Player"
 	var display: Variant = actor.get("display_name")
 	if display is String and not str(display).is_empty():
 		return str(display)
@@ -2784,8 +4057,8 @@ func _combatant_display_name(actor: Combatant) -> String:
 
 
 func _combatant_weapon_label(actor: Combatant) -> String:
-	if actor == player:
-		return str(player.active_weapon)
+	if actor is PlayerController:
+		return str(actor.active_weapon)
 	var weapon: Variant = actor.get("active_weapon_name")
 	return str(weapon) if weapon is String else ""
 
@@ -2793,50 +4066,82 @@ func _combatant_weapon_label(actor: Combatant) -> String:
 func _emit_kill_notice(attacker: Combatant, victim: Combatant, headshot: bool) -> void:
 	if not is_instance_valid(hud) or not is_instance_valid(victim):
 		return
+	var has_killer := is_instance_valid(attacker) and attacker != victim
+	# Grenades can kill after their owner has already switched back to a gun.
+	var lethal_weapon := victim.last_damage_weapon
+	if lethal_weapon.is_empty() and has_killer:
+		lethal_weapon = _combatant_weapon_label(attacker)
+	get_node("/root/NetworkSession").send_combat_event("", round_state.round_number, "kill", {
+		"killer": _combatant_display_name(attacker) if has_killer else "",
+		"killer_team": str(attacker.team) if has_killer else "",
+		"weapon": lethal_weapon,
+		"victim": _combatant_display_name(victim), "victim_team": str(victim.team), "headshot": headshot if has_killer else false})
 	if is_instance_valid(attacker) and attacker != victim:
 		hud.add_kill_notice(
 			_combatant_display_name(attacker),
 			str(attacker.team),
-			_combatant_weapon_label(attacker),
+			lethal_weapon,
 			_combatant_display_name(victim),
 			str(victim.team),
 			headshot,
 		)
 	else:
 		hud.add_kill_notice(
-			"", "", "", _combatant_display_name(victim), str(victim.team), false,
+			"", "", lethal_weapon, _combatant_display_name(victim), str(victim.team), false,
 		)
 
 
 func _on_player_died() -> void:
-	_set_nightvision(false)
-	_emit_kill_notice(player.last_damage_attacker, player, false)
-	var drop_weapon := player.death_drop_weapon()
+	_on_human_died(player)
+
+
+func _on_human_eliminated(actor: Combatant, _attacker: Combatant, headshot: bool) -> void:
+	if actor is PlayerController:
+		_on_human_died(actor as PlayerController, headshot)
+
+
+func _on_human_died(human: PlayerController, headshot := false) -> void:
+	var actor_id := _round_id_for_actor(human)
+	if human.alive or not is_instance_valid(round_state) or not round_state.players.has(actor_id):
+		return
+	if int(_human_death_serials.get(actor_id, -1)) == human.spawn_serial:
+		return
+	_human_death_serials[actor_id] = human.spawn_serial
+	if human == player:
+		_set_nightvision(false)
+	else:
+		human.collision_layer = 0
+		_human_use_was_down.erase(actor_id)
+		_end_remote_trigger_camera(actor_id, false)
+	_emit_kill_notice(human.last_damage_attacker, human, headshot)
+	var drop_weapon := human.death_drop_weapon()
 	if not drop_weapon.is_empty():
-		var drop_ammo: Dictionary = player.ammunition.get(drop_weapon, {})
-		player.owned_weapons.erase(drop_weapon)
-		player.ammunition.erase(drop_weapon)
+		var drop_ammo: Dictionary = human.ammunition.get(drop_weapon, {})
+		human.owned_weapons.erase(drop_weapon)
+		human.ammunition.erase(drop_weapon)
 		_spawn_weapon_drop(
 			drop_weapon,
 			int(drop_ammo.get("clip", 0)),
 			int(drop_ammo.get("reserve", 0)),
-			player.global_position,
+			human.global_position,
 			Vector3.ZERO,
+			true,
+			actor_id,
 		)
 	if is_instance_valid(round_state):
 		round_state.set_player_alive(
-			"player",
+			actor_id,
 			false,
-			player.global_position,
-			_round_id_for_actor(player.last_damage_attacker)
-			if is_instance_valid(player.last_damage_attacker)
+			human.global_position,
+			_round_id_for_actor(human.last_damage_attacker)
+			if is_instance_valid(human.last_damage_attacker)
 			else "",
 		)
 		_consume_new_round_trace()
 		_sync_round_public_state()
 		_update_round_hud(true)
 		_update_scoreboard()
-	if is_instance_valid(spectator_camera):
+	if human == player and is_instance_valid(spectator_camera):
 		spectator_camera.schedule()
 
 
@@ -2882,7 +4187,7 @@ func _reset_round() -> void:
 	_update_round_hud(true)
 
 
-func _round_tick_command() -> Dictionary:
+func _round_tick_command(world_use_selections: Dictionary = {}) -> Dictionary:
 	var command := {}
 	if phase == RoundStateScript.PHASE_LIVE:
 		var carrier := _actor_for_round_id(str(round_state.bomb_owner))
@@ -2890,14 +4195,15 @@ func _round_tick_command() -> Dictionary:
 			return command
 		var site := _bomb_region_at(
 			carrier.global_position,
-			_player_hull_size()
-			if carrier == player
+			_human_hull_size(carrier as PlayerController)
+			if carrier is PlayerController
 			else TargetActor.STANDING_HULL_SIZE,
 		)
-		var is_human_carrier := carrier == player
+		var is_human_carrier := carrier is PlayerController
+		var human_carrier := carrier as PlayerController
 		var bot_command: Dictionary = carrier.last_command
 		var c4_is_equipped := (
-			player.active_weapon == "c4"
+			human_carrier.active_weapon == "c4"
 			if is_human_carrier
 			else bool((carrier as TargetActor).c4_equipped)
 		)
@@ -2905,8 +4211,8 @@ func _round_tick_command() -> Dictionary:
 			"player_id": _round_id_for_actor(carrier),
 			"attack": (
 				(
-					Input.is_action_pressed("fire")
-					and player.weapon_clock.can_primary_attack()
+					_human_objective_pressed(human_carrier, "fire")
+					and human_carrier.weapon_clock.can_primary_attack()
 				)
 				if is_human_carrier
 				else (
@@ -2917,7 +4223,7 @@ func _round_tick_command() -> Dictionary:
 			),
 			"equipped_c4": c4_is_equipped,
 			"grounded": (
-				_player_objective_grounded()
+				_human_objective_grounded(human_carrier)
 				if is_human_carrier
 				else carrier.is_on_floor()
 			),
@@ -2930,20 +4236,21 @@ func _round_tick_command() -> Dictionary:
 		var active_defuser := _active_round_defuser()
 		if is_instance_valid(active_defuser):
 			var use_pressed := (
-				Input.is_action_pressed("use")
-				if active_defuser == player
+				_human_objective_pressed(active_defuser as PlayerController, "use")
+				if active_defuser is PlayerController
 				else true
 			)
-			command.defuse = _defuse_request(active_defuser, use_pressed)
-		elif (
-			player.team == Combatant.TEAM_COUNTER_TERRORIST
-			and Input.is_action_pressed("use")
-		):
-			command.defuse = _defuse_request(
-				player,
-				true,
-			)
+			command.defuse = _defuse_request(active_defuser, use_pressed, world_use_selections.get(_round_id_for_actor(active_defuser)))
 		else:
+			# The active defuser retains the use-refresh grace period. Without
+			# one, an invalid human request must not starve another human/bot.
+			for human: PlayerController in _human_players_stable():
+				if human.team != Combatant.TEAM_COUNTER_TERRORIST or not _human_objective_pressed(human, "use"):
+					continue
+				var request := _defuse_request(human, true, world_use_selections.get(_round_id_for_actor(human)))
+				if request.use and request.grounded and request.in_range and request.facing:
+					command.defuse = request
+					return command
 			var bot_defuser := _active_bot_defuser()
 			if is_instance_valid(bot_defuser):
 				command.defuse = _defuse_request(bot_defuser, true)
@@ -2951,28 +4258,50 @@ func _round_tick_command() -> Dictionary:
 
 
 func _player_objective_grounded() -> bool:
-	if player._movement_grounded:
+	return _human_objective_grounded(player)
+
+
+func _human_players_stable() -> Array[PlayerController]:
+	var humans: Array[PlayerController] = [player]
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			humans.append(remote_roster.actor_for_id(actor_id))
+	return humans
+
+
+func _human_objective_pressed(human: PlayerController, action: String) -> bool:
+	if not human.alive or not human.controls_enabled:
+		return false
+	if human.is_local_human():
+		if human.combat_controller is HumanCombatController and human.combat_controller.menu_input_blocked:
+			return false
+		return Input.is_action_pressed(action)
+	return bool(human.last_command.get(action, false))
+
+
+func _human_objective_grounded(human: PlayerController) -> bool:
+	if human._movement_grounded:
 		return true
-	player._movement_grounded = player.movement_kernel.categorize_ground(
-		player.velocity,
+	human._movement_grounded = human.movement_kernel.categorize_ground(
+		human.velocity,
 	)
-	if not player._movement_grounded:
+	if not human._movement_grounded:
 		# Objective eligibility uses the same 2-HU downward floor contract even
 		# on the exact coplanar frame where Godot's simulated box sweep returns
 		# no new collision.
 		var query := PhysicsRayQueryParameters3D.create(
-			player.global_position + Vector3.UP * GOLDSRC_UNIT,
-			player.global_position - Vector3.UP * 3.0 * GOLDSRC_UNIT,
+			human.global_position + Vector3.UP * GOLDSRC_UNIT,
+			human.global_position - Vector3.UP * 3.0 * GOLDSRC_UNIT,
 			1,
-			[player.get_rid()],
+			[human.get_rid()],
 		)
 		query.collide_with_areas = false
-		var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
-		player._movement_grounded = (
+		var hit := human.get_world_3d().direct_space_state.intersect_ray(query)
+		human._movement_grounded = (
 			not hit.is_empty()
 			and Vector3(hit.get("normal", Vector3.ZERO)).dot(Vector3.UP) >= 0.7
 		)
-	return player._movement_grounded
+	return human._movement_grounded
 
 
 func _bomb_region_at(
@@ -3074,52 +4403,19 @@ func _reset_bot_defuser_assignment() -> void:
 func _active_round_defuser() -> Combatant:
 	if not is_instance_valid(round_state) or str(round_state.defuse_actor).is_empty():
 		return null
-	var actor_id := str(round_state.defuse_actor)
-	if actor_id == "player":
-		return player
-	for bot in _all_bots():
-		if bot.name == actor_id:
-			return bot
-	return null
+	return _actor_for_round_id(str(round_state.defuse_actor))
 
 
-func _defuse_request(actor: Combatant, use_pressed: bool) -> Dictionary:
+func _defuse_request(actor: Combatant, use_pressed: bool, selected_use: Variant = null) -> Dictionary:
 	var eye_position := actor.global_position + Vector3.UP * Combatant.STANDING_VIEW_HEIGHT
 	var view_forward := -actor.global_transform.basis.z
-	if actor == player and is_instance_valid(player.camera):
-		eye_position = player.camera.global_position
-		view_forward = -player.camera.global_transform.basis.z
-	var candidates: Array = [{
-		"id": "c4",
-		"origin": bomb_position,
-		"usable": bomb_planted,
-	}]
-	for candidate_node in get_tree().get_nodes_in_group("source_use_targets"):
-		var candidate_origin: Variant = (
-			candidate_node.call("source_use_origin")
-			if candidate_node.has_method("source_use_origin")
-			else (
-				(candidate_node as Node3D).global_position
-				if candidate_node is Node3D
-				else Vector3.INF
-			)
-		)
-		if candidate_origin is Vector3 and candidate_origin != Vector3.INF:
-			candidates.append({
-				"id": str(candidate_node.name),
-				"origin": candidate_origin,
-				"usable": (
-					bool(candidate_node.call("source_use_usable", actor))
-					if candidate_node.has_method("source_use_usable")
-					else true
-				),
-				"node": candidate_node,
-			})
-	var selected := PlayerUseResolverScript.select_candidate(
-		actor.global_position,
-		eye_position,
-		view_forward,
-		candidates,
+	if actor is PlayerController and is_instance_valid(actor.camera):
+		eye_position = actor.camera.global_position
+		view_forward = -actor.camera.global_transform.basis.z
+	# Share the frame's PlayerUse selection with world interaction. A button
+	# handler/moving brush must not turn one press into a second C4 activation.
+	var selected: Dictionary = selected_use if selected_use is Dictionary else PlayerUseResolverScript.select_candidate(
+		actor.global_position, eye_position, view_forward, _world_use_candidates(actor, true),
 	)
 	var c4_selected := str(selected.get("id", "")) == "c4"
 	var geometry := _c4_use_geometry(
@@ -3131,7 +4427,7 @@ func _defuse_request(actor: Combatant, use_pressed: bool) -> Dictionary:
 	return {
 		"player_id": _round_id_for_actor(actor),
 		"use": use_pressed and c4_selected,
-		"grounded": actor.is_on_floor(),
+		"grounded": _human_objective_grounded(actor as PlayerController) if actor is PlayerController else actor.is_on_floor(),
 		"in_range": bool(geometry.in_range),
 		"facing": bool(geometry.facing),
 	}
@@ -3157,12 +4453,22 @@ func _c4_use_geometry(
 
 
 func _round_id_for_actor(actor: Combatant) -> String:
+	if not is_instance_valid(actor):
+		return ""
+	if is_instance_valid(remote_roster):
+		var remote_id: String = remote_roster.id_for_actor(actor)
+		if not remote_id.is_empty():
+			return remote_id
 	return "player" if actor == player else actor.name
 
 
 func _actor_for_round_id(actor_id: String) -> Combatant:
 	if actor_id == "player":
 		return player
+	if is_instance_valid(remote_roster):
+		var human: PlayerController = remote_roster.actor_for_id(actor_id)
+		if is_instance_valid(human):
+			return human
 	for bot in _all_bots():
 		if bot.name == actor_id:
 			return bot
@@ -3531,7 +4837,13 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 			"phase":
 				_apply_round_phase(str(event.phase))
 			"round_start":
-				var carried_bot_loadouts := _capture_bot_loadouts()
+				_objective_audio_schedule.clear()
+				_network_objective_result = ""
+				_human_use_was_down.clear()
+				_remote_trigger_cameras.clear()
+				# Ordinary rounds retain survivors' equipment; a halftime or new
+				# match is a fresh pistol round, even for actors still alive.
+				var carried_bot_loadouts := {} if _round_loadout_reset_pending else _capture_bot_loadouts()
 				_end_trigger_camera()
 				_end_death_spectate()
 				if entity_world != null:
@@ -3551,8 +4863,9 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 					_hostage_path_indices.clear()
 					_hostage_path_targets.clear()
 					_sync_hostage_actors()
-				if int(event.round) > 1:
-					_reset_combatants_for_round()
+				if int(event.round) > 1 or _round_loadout_reset_pending:
+					_reset_combatants_for_round(not _round_loadout_reset_pending)
+				_round_loadout_reset_pending = false
 				_apply_bot_round_buy(
 					carried_bot_loadouts,
 					int(event.round),
@@ -3566,8 +4879,19 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				if is_instance_valid(bomb_knowledge):
 					bomb_knowledge.reset_round()
 					bomb_knowledge.on_bomb_carried()
+				# RoundState emits freeze before round_start. Respawn restores
+				# actor defaults (including active=true), so enforce the event's
+				# freeze controls after reset/buy, before any actor physics runs.
+				# Do not read round_state.phase here: a batched event stream may
+				# already have advanced beyond this round_start to a later phase.
+				_apply_round_phase(RoundStateScript.PHASE_FREEZE)
+				if player.team == Combatant.TEAM_UNASSIGNED:
+					_enter_observer_view()
+				elif bool(round_state.players.player.choosing_appearance):
+					_enter_waiting_participant_view()
 				_update_scoreboard()
 			"bomb_dropped":
+				_objective_audio_schedule.clear()
 				_c4_equipped = false
 				if is_instance_valid(bomb_knowledge):
 					bomb_knowledge.on_bomb_dropped(event.position)
@@ -3582,19 +4906,24 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				_clear_dropped_c4()
 			"plant_start":
 				_c4_drop_animation_played = false
+				_schedule_c4_arm_audio(str(event.player_id))
 				_set_objective_actor_frozen(str(event.player_id), true, "plant")
 				if str(event.player_id) == "player":
 					player.viewmodel._start_animation("pressbutton", false)
 			"plant_abort":
+				_cancel_c4_arm_audio(str(event.player_id))
 				_set_objective_actor_frozen(str(event.player_id), false, "plant")
 				_c4_drop_animation_played = false
 				if str(event.player_id) == "player" and player.active_weapon == "c4":
 					player.viewmodel._start_animation("idle1", true)
 			"defuse_start":
 				_set_objective_actor_frozen(str(event.player_id), true, "defuse")
+				_emit_world_audio("c4.disarm", AudioRouterScript.CHAN_ITEM, bomb_position)
 			"defuse_abort":
 				_set_objective_actor_frozen(str(event.player_id), false, "defuse")
 			"bomb_planted":
+				_objective_audio_schedule.clear()
+				_network_objective_result = "bomb_planted"
 				_c4_equipped = false
 				_reset_bot_defuser_assignment()
 				_clear_dropped_c4()
@@ -3645,15 +4974,22 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 					{"attenuation": [1.5, 1.0, 0.8, 0.5, 0.2][wave - 1]},
 				)
 			"bomb_defused":
+				_network_objective_result = "bomb_defused"
 				_bot_defuser_id = ""
 				_set_objective_actor_frozen(str(event.player_id), false, "defuse")
+				var defuser := _actor_for_round_id(str(event.player_id))
+				_emit_world_audio("c4.disarmed", AudioRouterScript.CHAN_WEAPON,
+					defuser.global_position if is_instance_valid(defuser) else bomb_position)
 				hud.show_banner("THE BOMB HAS BEEN DEFUSED", Color("#77d9ff"), 2.0)
 			"bomb_exploded":
+				_objective_audio_schedule.clear()
+				_network_objective_result = "bomb_exploded"
 				_apply_c4_explosion(event)
 			"money", "purchase":
 				if str(event.player_id) == "player":
 					money = int(event.balance)
 			"round_end":
+				_objective_audio_schedule.clear()
 				player.set_objective_movement_locked(false)
 				round_ending = true
 				_emit_round_result(event)
@@ -3662,6 +4998,8 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 				_apply_halftime_side_switch()
 				hud.show_banner("HALFTIME  •  SWITCHING SIDES", Color("#ffca66"), 2.5)
 			"match_end":
+				_objective_audio_schedule.clear()
+				_close_radio_menu()
 				match_started = false
 				_match_concluded = true
 				player.controls_enabled = false
@@ -3679,6 +5017,9 @@ func _round_actor_positions() -> Dictionary:
 	var result := {"player": player.global_position}
 	for bot in _all_bots():
 		result[bot.name] = bot.global_position
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			result[actor_id] = remote_roster.actor_for_id(actor_id).global_position
 	return result
 
 
@@ -3687,10 +5028,12 @@ func _set_objective_actor_frozen(
 	frozen: bool,
 	action := "",
 ) -> void:
-	if actor_id == "player":
-		player.set_objective_movement_locked(frozen, frozen)
-		player.controls_enabled = (
-			player.alive
+	var human := _actor_for_round_id(actor_id) as PlayerController
+	if is_instance_valid(human):
+		human.set_objective_movement_locked(frozen, frozen)
+		human.controls_enabled = (
+			human.alive
+			and not _remote_trigger_cameras.has(actor_id)
 			and phase in [
 				RoundStateScript.PHASE_LIVE,
 				RoundStateScript.PHASE_BOMB,
@@ -3715,6 +5058,28 @@ func _set_objective_actor_frozen(
 
 
 func _apply_round_phase(next_phase: String) -> void:
+	player.post_round_movement_enabled = (next_phase == RoundStateScript.PHASE_POST and player.alive
+		and player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST])
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			var row: Dictionary = round_state.players.get(actor_id, {})
+			var participating := (
+				human.alive and bool(row.get("alive", false))
+				and human.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]
+				and not bool(row.get("choosing_appearance", true))
+			)
+			human.controls_enabled = participating and next_phase in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB]
+			human.post_round_movement_enabled = participating and next_phase == RoundStateScript.PHASE_POST
+			if _remote_trigger_cameras.has(actor_id):
+				if next_phase in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB] and participating:
+					human.controls_enabled = false
+				else:
+					_end_remote_trigger_camera(actor_id, false)
+			human.look_enabled = participating
+			if next_phase not in [RoundStateScript.PHASE_LIVE, RoundStateScript.PHASE_BOMB] or (
+					str(round_state.plant_actor) != actor_id and str(round_state.defuse_actor) != actor_id):
+				human.set_objective_movement_locked(false)
 	match next_phase:
 		RoundStateScript.PHASE_FREEZE:
 			player.controls_enabled = false
@@ -3761,8 +5126,9 @@ func _update_round_hud(force := false) -> void:
 	if not is_instance_valid(hud):
 		return
 	var displayed_second := int(ceil(seconds_left))
-	if force or displayed_second != _last_hud_second:
+	if force or displayed_second != _last_hud_second or money != _last_hud_money:
 		_last_hud_second = displayed_second
+		_last_hud_money = money
 		hud.update_match(
 			round_number,
 			phase,
@@ -3772,6 +5138,18 @@ func _update_round_hud(force := false) -> void:
 			money,
 		)
 	var action: Dictionary = round_state.action_progress()
+	var local_defuse := (
+		not action.is_empty()
+		and str(action.action) == "defuse"
+		and str(action.actor) == "player"
+		and player.team == "CT"
+		and player.alive
+	)
+	hud.update_defuse_progress(
+		local_defuse,
+		float(action.get("elapsed_ticks", 0)),
+		float(action.get("duration_ticks", 0)),
+	)
 	if not action.is_empty():
 		if (
 			str(action.action) == "plant"
@@ -3814,24 +5192,29 @@ func _update_round_hud(force := false) -> void:
 func _sync_player_c4_ownership() -> void:
 	if not is_instance_valid(player) or not is_instance_valid(round_state):
 		return
+	for human: PlayerController in _human_players_stable():
+		_sync_human_c4_ownership(human)
+	_c4_equipped = player.active_weapon == "c4"
+
+
+func _sync_human_c4_ownership(human: PlayerController) -> void:
+	var actor_id := _round_id_for_actor(human)
 	var should_own := (
-		str(round_state.bomb_owner) == "player"
+		str(round_state.bomb_owner) == actor_id
 		and str(round_state.bomb_state) in [
 			RoundStateScript.BOMB_CARRIED,
 			RoundStateScript.BOMB_PLANTING,
 		]
-		and bool(round_state.players.get("player", {}).get("has_c4", false))
+		and bool(round_state.players.get(actor_id, {}).get("has_c4", false))
 	)
 	if should_own:
-		if not player.owns_weapon("c4"):
-			player.grant_item("c4")
-		_c4_equipped = player.active_weapon == "c4"
+		if not human.owns_weapon("c4"):
+			human.grant_item("c4")
 		return
-	if player.active_weapon == "c4":
-		player.switch_weapon(player._best_owned_weapon())
-	player.owned_weapons.erase("c4")
-	player.ammunition.erase("c4")
-	_c4_equipped = false
+	if human.active_weapon == "c4":
+		human.switch_weapon(human._best_owned_weapon())
+	human.owned_weapons.erase("c4")
+	human.ammunition.erase("c4")
 
 
 func _equip_player_c4() -> bool:
@@ -3899,7 +5282,8 @@ func _apply_bot_round_buy(
 						if bot.team == Combatant.TEAM_COUNTER_TERRORIST
 						else "glock18",
 					)
-				)
+				),
+				false,
 			)
 			bot.armor = int(carried.get("armor", 0))
 			bot.has_helmet = bool(carried.get("helmet", false))
@@ -3907,7 +5291,8 @@ func _apply_bot_round_buy(
 			bot.configure_weapon(
 				"usp"
 				if bot.team == Combatant.TEAM_COUNTER_TERRORIST
-				else "glock18"
+				else "glock18",
+				false,
 			)
 			bot.armor = 0
 			bot.has_helmet = false
@@ -3945,7 +5330,7 @@ func _apply_bot_round_buy(
 			if not bool(result.get("allowed", false)):
 				continue
 			if WeaponRegistryScript.WEAPONS.has(item_id):
-				bot.configure_weapon(item_id)
+				bot.configure_weapon(item_id, false)
 			elif item_id == "kevlar":
 				bot.armor = 100
 			elif item_id == "assaultsuit":
@@ -3953,9 +5338,17 @@ func _apply_bot_round_buy(
 				bot.has_helmet = true
 			elif item_id == "defuser":
 				round_state.set_defuser(bot.name, true)
+		bot.refresh_weapon_presentation()
 
 
-func _reset_combatants_for_round() -> void:
+func _reset_combatants_for_round(keep_surviving_loadouts := true) -> void:
+	sprays.clear()
+	for grenade: Node in get_tree().get_nodes_in_group("live_grenades"):
+		grenade.queue_free()
+	if is_instance_valid(combat_effects):
+		combat_effects.clear_smoke_clouds()
+	_close_radio_menu()
+	hud.clear_combat_feedback()
 	bomb_planted = false
 	_next_c4_beep_tick = -1
 	_c4_beep_index = 0
@@ -3965,15 +5358,32 @@ func _reset_combatants_for_round() -> void:
 	_clear_dropped_c4()
 	_clear_dropped_weapons()
 	_reset_bot_defuser_assignment()
-	var keep_loadout := not player.is_dead()
+	var keep_loadout := keep_surviving_loadouts and not player.is_dead()
 	player.reset_player(player_spawn, keep_loadout)
+	player.alive = player.team in ["T", "CT"] and not bool(round_state.players.player.choosing_appearance)
+	player.visible = player.alive
+	player.collision_layer = _local_player_collision_layer() if player.alive else 0
 	if using_imported_map and not target_spawns.is_empty():
 		player.face_toward(target_spawns[0])
 	for target_index in range(targets.size()):
 		targets[target_index].reset_target(target_spawns[target_index])
 	for ally_index in range(allied_bots.size()):
 		allied_bots[ally_index].reset_target(allied_spawns[ally_index])
-	hud.update_health(player.health, player.armor)
+	if is_instance_valid(remote_roster):
+		for actor_id: String in remote_roster.actor_ids():
+			var human: PlayerController = remote_roster.actor_for_id(actor_id)
+			if not human.has_meta("network_spawn_slot"):
+				continue
+			if bool(round_state.players.get(actor_id, {}).get("alive", false)):
+				_spawn_remote_human(human, keep_surviving_loadouts and human.alive)
+			else:
+				human.alive = false
+				human.visible = false
+				human.collision_layer = 0
+				human.controls_enabled = false
+				human.look_enabled = false
+				human.set_physics_process(false)
+	hud.update_health(player.health, player.armor, player.has_helmet)
 	hud.update_ammo(player.clip, player.reserve, player.reloading)
 	_update_scoreboard()
 
@@ -4000,23 +5410,28 @@ func _spawn_dropped_c4(
 
 
 func _request_drop_active_weapon() -> bool:
-	if not is_instance_valid(round_state) or not is_instance_valid(player):
+	return _request_human_c4_drop(player)
+
+
+func _request_human_c4_drop(human: PlayerController) -> bool:
+	if not is_instance_valid(round_state) or not is_instance_valid(human):
 		return false
+	var actor_id := _round_id_for_actor(human)
 	var request := C4DropContractScript.resolve_manual_drop(
-		player.active_weapon,
-		player.alive,
-		str(round_state.bomb_owner) == "player",
+		human.active_weapon,
+		human.alive,
+		str(round_state.bomb_owner) == actor_id,
 		str(round_state.bomb_state),
-		player.global_position,
-		-player.global_transform.basis.z,
+		human.global_position,
+		-human.global_transform.basis.z,
 	)
 	if not bool(request.allowed):
 		return false
-	if not round_state.drop_bomb("player", player.global_position):
+	if not round_state.drop_bomb(actor_id, human.global_position):
 		return false
 	_consume_new_round_trace()
 	_sync_round_public_state()
-	player.switch_weapon(player._best_owned_weapon())
+	human.switch_weapon(human._best_owned_weapon())
 	return true
 
 
@@ -4031,15 +5446,30 @@ func _on_player_weapon_drop(
 	dropped_clip: int,
 	dropped_reserve: int,
 ) -> void:
-	var forward := -player.global_transform.basis.z
+	_on_human_weapon_drop(weapon_name, dropped_clip, dropped_reserve, player)
+
+
+func _on_human_weapon_drop(
+	weapon_name: String,
+	dropped_clip: int,
+	dropped_reserve: int,
+	human: PlayerController,
+) -> void:
+	if not is_instance_valid(human) or not human.alive:
+		return
+	var actor_id := _round_id_for_actor(human)
+	if not round_state.players.has(actor_id):
+		return
+	var forward := -human.global_transform.basis.z
 	forward.y = 0.0
 	_spawn_weapon_drop(
 		weapon_name,
 		dropped_clip,
 		dropped_reserve,
-		player.global_position,
+		human.global_position,
 		forward,
 		false,
+		actor_id,
 	)
 
 
@@ -4050,53 +5480,73 @@ func _spawn_weapon_drop(
 	origin: Vector3,
 	forward: Vector3,
 	armed := true,
+	dropper_id := "",
 ) -> void:
 	if not DroppedWeaponScript.is_droppable(weapon_name):
 		return
 	var item := DroppedWeaponScript.new()
 	item.setup(weapon_name, dropped_clip, dropped_reserve)
 	item.pickup_armed = armed
+	item.dropper_id = dropper_id
 	var toss := Vector3(forward.x, 0.0, forward.z)
 	if not toss.is_zero_approx():
 		toss = toss.normalized() * WEAPON_DROP_TOSS_DISTANCE
-	item.position = origin + toss
+	item.position = origin + toss + Vector3.UP * 0.45
+	var start := origin + Vector3.UP * 0.45
+	var obstruction := get_world_3d().direct_space_state.intersect_ray(
+		PhysicsRayQueryParameters3D.create(start, item.position, 1)) if not toss.is_zero_approx() else {}
+	if not obstruction.is_empty():
+		item.position = (obstruction.position as Vector3).move_toward(start, 0.02)
+	# Start above the floor and travel over time; the old floor snap made G
+	# look like the weapon vanished and teleported onto the ground.
+	item.start_toss(forward)
+	item.landed.connect(_on_dropped_weapon_landed)
 	add_child(item)
 	dropped_weapons.append(item)
+
+
+func _on_dropped_weapon_landed(drop_position: Vector3) -> void:
+	_emit_world_audio(
+		"weapon.drop",
+		AudioRouterScript.CHAN_VOICE,
+		drop_position,
+		{"pitch_min": 95, "pitch_max": 124},
+	)
 
 
 func _process_weapon_pickups() -> void:
 	if dropped_weapons.is_empty():
 		return
+	var humans := _human_players_stable()
 	for index in range(dropped_weapons.size() - 1, -1, -1):
 		var item := dropped_weapons[index]
 		if not is_instance_valid(item):
 			dropped_weapons.remove_at(index)
 			continue
-		if not is_instance_valid(player) or not player.alive:
-			continue
-		var touching := (
-			player.global_position.distance_to(item.global_position)
-			<= WEAPON_PICKUP_RADIUS
-		)
 		if not item.pickup_armed:
-			# A G-dropped gun re-arms only after its dropper leaves the touch
-			# radius once; otherwise the drop would bounce straight back.
-			item.pickup_armed = not touching
-			continue
-		if not touching:
-			continue
-		# Touch pickup only fills an empty slot; swapping a held gun
-		# requires a manual G drop first.
-		if not str(player.best_owned_weapon_in_slot(item.slot)).is_empty():
-			continue
-		if player.grant_item(item.weapon_name):
-			player.ammunition[item.weapon_name] = {
-				"clip": item.clip_ammo,
-				"reserve": item.reserve_ammo,
-			}
-			player.switch_weapon(item.weapon_name)
-			dropped_weapons.remove_at(index)
-			item.queue_free()
+			var dropper := _actor_for_round_id(item.dropper_id)
+			item.pickup_armed = not is_instance_valid(dropper) or not dropper.alive or dropper.global_position.distance_to(item.global_position) > WEAPON_PICKUP_RADIUS
+		for human: PlayerController in humans:
+			if not human.alive or human.team not in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+				continue
+			if not item.pickup_armed and _round_id_for_actor(human) == item.dropper_id:
+				continue
+			if human.global_position.distance_to(item.global_position) > WEAPON_PICKUP_RADIUS:
+				continue
+			# Deterministic local/creation order resolves simultaneous touches.
+			# Occupied slots are never replaced by an automatic pickup.
+			if not str(human.best_owned_weapon_in_slot(item.slot)).is_empty():
+				continue
+			if human.grant_item(item.weapon_name):
+				human.ammunition[item.weapon_name] = {
+					"clip": item.clip_ammo,
+					"reserve": item.reserve_ammo,
+				}
+				human.switch_weapon(item.weapon_name)
+				human._emit_audio("weapon.acquire", AudioRouterScript.CHAN_ITEM)
+				dropped_weapons.remove_at(index)
+				item.queue_free()
+				break
 
 
 func _clear_dropped_weapons() -> void:
@@ -4117,17 +5567,39 @@ func _on_dropped_c4_pickup(actor: Combatant) -> void:
 		_round_id_for_actor(actor),
 		actor.global_position,
 	):
+		if actor is PlayerController:
+			(actor as PlayerController)._emit_audio("weapon.acquire", AudioRouterScript.CHAN_ITEM)
+		elif actor is TargetActor:
+			(actor as TargetActor)._emit_audio("weapon.acquire", AudioRouterScript.CHAN_ITEM)
 		_consume_new_round_trace()
 		_sync_round_public_state()
 
 
+func _refresh_visible_scoreboard(delta: float) -> void:
+	if not is_instance_valid(hud) or not hud.scoreboard_overlay.visible:
+		_scoreboard_refresh_seconds = 0.0
+		return
+	_scoreboard_refresh_seconds += delta
+	if _scoreboard_refresh_seconds >= 0.2:
+		_scoreboard_refresh_seconds = 0.0
+		_update_scoreboard()
+
+
 func _update_scoreboard() -> void:
+	if is_instance_valid(network_client_view):
+		network_client_view.update_scoreboard()
+		return
 	if not is_instance_valid(hud) or not is_instance_valid(round_state):
 		return
 	var rows: Array = []
 	for raw_row: Dictionary in round_state.scoreboard_snapshot():
 		var row := raw_row.duplicate()
-		row.team = 2 if str(raw_row.team) == Combatant.TEAM_COUNTER_TERRORIST else 1
+		row.team = {"T": 1, "CT": 2}.get(str(raw_row.team), 0)
+		row.is_local = str(raw_row.id) == "player"
+		var actor := _actor_for_round_id(str(raw_row.id))
+		row.name = _combatant_display_name(actor) if is_instance_valid(actor) else raw_row.name
+		row.health = actor.health if is_instance_valid(actor) else 0
+		row.show_private_stats = player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST] and str(raw_row.team) == player.team
 		row.latency = 0
 		rows.append(row)
 	hud.update_scoreboard(
@@ -4182,6 +5654,7 @@ func _apply_c4_explosion(event: Dictionary) -> void:
 				(child as CollisionObject3D).collision_mask = 0
 	var effects := CombatEffectsScript.for_scene(self)
 	var blast_underwater := _source_point_in_water(origin)
+	_publish_network_impact("explosion", {"weapon": "c4", "position": origin, "normal": Vector3.UP, "underwater": blast_underwater})
 	if is_instance_valid(effects):
 		effects.spawn_c4_explosion(origin, Vector3.UP, blast_underwater)
 	_emit_world_audio(
@@ -4209,6 +5682,7 @@ func _apply_c4_explosion(event: Dictionary) -> void:
 		bomb.queue_free()
 		bomb = null
 	bomb_planted = false
+	_objective_audio_schedule.clear()
 
 
 func _source_point_in_water(point: Vector3) -> bool:
@@ -4246,6 +5720,8 @@ func _sync_dropped_c4_position() -> void:
 
 func _emit_round_result(event: Dictionary) -> void:
 	var winner := str(event.winner)
+	if _network_objective_result not in ["bomb_defused", "bomb_exploded"]:
+		_network_objective_result = "t_win" if winner == "T" else ("ct_win" if winner == "CT" else "draw")
 	var terrorists_won := winner == RoundStateScript.TEAM_T
 	var drawn := winner.is_empty()
 	var result_sound := "round.t_win" if terrorists_won else "round.ct_win"

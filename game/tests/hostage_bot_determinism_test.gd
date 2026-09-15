@@ -8,6 +8,7 @@ const TELEPORT_TO_RESCUE_TICK := 150
 var failures: Array[String] = []
 var canonical_chain := "protocol47-hostage-bot-v1"
 var canonical_checkpoints: Array[Dictionary] = []
+var logical_trace: Array[Dictionary] = []
 
 
 func _initialize() -> void:
@@ -25,6 +26,11 @@ func _always_blind(_actor: Combatant, _tick: int) -> bool:
 
 
 func _run() -> void:
+	_check(
+		_sorted_text_keys({&"CT_Bot_04": true, &"CT_Bot_02": true, &"CT_Bot_01": true, &"CT_Bot_03": true})
+		== ["CT_Bot_01", "CT_Bot_02", "CT_Bot_03", "CT_Bot_04"],
+		"canonical actor order sorts name text rather than interned StringName identities",
+	)
 	var game := GameScript.new()
 	game.map_name = "cs_assault"
 	root.add_child(game)
@@ -81,8 +87,7 @@ func _run() -> void:
 	# Put each selected CT inside the exact 64 HU Source use sphere and orient
 	# its view cone toward the hostage. The production bot command must carry
 	# the use request; the test never calls the hostage use handler directly.
-	var sorted_ct_names: Array = initial_assignments.keys()
-	sorted_ct_names.sort()
+	var sorted_ct_names := _sorted_text_keys(initial_assignments)
 	for assignment_index in sorted_ct_names.size():
 		var bot_name := str(sorted_ct_names[assignment_index])
 		var bot := game._actor_for_round_id(bot_name) as TargetActor
@@ -166,6 +171,8 @@ func _run() -> void:
 			)
 
 		var logical := _logical_snapshot(game, tick_number)
+		if OS.get_cmdline_user_args().has("--logical-trace"):
+			logical_trace.append(logical)
 		canonical_chain = (
 			canonical_chain
 			+ "|"
@@ -205,8 +212,7 @@ func _advance_canonical_hostage_tick(game: Node) -> void:
 			bot.face_aim_target(look_target)
 	game._process_hostage_bot_use_commands()
 	if game.hostage_state.tick % 10 == 0:
-		var hostage_ids: Array = game.hostage_state.hostages.keys()
-		hostage_ids.sort()
+		var hostage_ids := _sorted_text_keys(game.hostage_state.hostages)
 		for hostage_id: String in hostage_ids:
 			game._check_hostage_rescue(hostage_id)
 	game._sync_hostage_actors()
@@ -214,8 +220,7 @@ func _advance_canonical_hostage_tick(game: Node) -> void:
 
 func _stage_followers_inside_rescue_zones(game: Node) -> void:
 	var follower_index := 0
-	var hostage_ids: Array = game.hostage_state.hostages.keys()
-	hostage_ids.sort()
+	var hostage_ids := _sorted_text_keys(game.hostage_state.hostages)
 	for hostage_id: String in hostage_ids:
 		var contract: Dictionary = game.hostage_state.hostages[hostage_id]
 		if not bool(contract.following):
@@ -248,16 +253,14 @@ func _is_ct_rescue_spawn(game: Node, candidate: Vector3) -> bool:
 
 func _logical_snapshot(game: Node, tick_number: int) -> Dictionary:
 	var assignments: Array[Dictionary] = []
-	var bot_names: Array = game._hostage_bot_assignments.keys()
-	bot_names.sort()
+	var bot_names := _sorted_text_keys(game._hostage_bot_assignments)
 	for bot_name: String in bot_names:
 		assignments.append({
 			"bot": bot_name,
 			"hostage": str(game._hostage_bot_assignments[bot_name]),
 		})
 	var hostages: Array[Dictionary] = []
-	var hostage_ids: Array = game.hostage_state.hostages.keys()
-	hostage_ids.sort()
+	var hostage_ids := _sorted_text_keys(game.hostage_state.hostages)
 	for hostage_id: String in hostage_ids:
 		var contract: Dictionary = game.hostage_state.hostages[hostage_id]
 		hostages.append({
@@ -290,6 +293,17 @@ func _logical_snapshot(game: Node, tick_number: int) -> Dictionary:
 		"hostages": hostages,
 		"bots": bots,
 	}
+
+
+func _sorted_text_keys(source: Dictionary) -> Array[String]:
+	# Node.name keys may be StringName rather than String. Sorting the untyped
+	# keys allowed script-load-dependent intern order to change fixture staging
+	# angles and the first logical checkpoint despite identical assignments.
+	var keys: Array[String] = []
+	for key: Variant in source:
+		keys.append(str(key))
+	keys.sort()
+	return keys
 
 
 func _physical_snapshot(game: Node) -> Array[Dictionary]:
@@ -334,12 +348,15 @@ func _write_signature() -> void:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	_check(file != null, "signature output opens")
 	if file != null:
-		file.store_string(JSON.stringify({
+		var report := {
 			"quantum_hu": 1.0 / 64.0,
 			"ticks": TICK_COUNT,
 			"sha256": canonical_chain,
 			"checkpoints": canonical_checkpoints,
-		}, "\t"))
+		}
+		if not logical_trace.is_empty():
+			report.logical_trace = logical_trace
+		file.store_string(JSON.stringify(report, "\t"))
 
 
 func _finish(game: Node) -> void:

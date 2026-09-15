@@ -3,6 +3,7 @@ extends SceneTree
 const AudioCatalog := preload("res://scripts/cs16_audio_catalog.gd")
 const AudioRouter := preload("res://scripts/cs16_audio_event_router.gd")
 const GrenadeScript := preload("res://scripts/grenade.gd")
+const Ballistics := preload("res://scripts/cs16_ballistics.gd")
 
 var _failures: Array[String] = []
 
@@ -58,6 +59,127 @@ func _check_catalog_files() -> void:
 			)
 
 
+func _check_all_reload_audio(router: CS16AudioEventRouter, player: PlayerController, bot: TargetActor) -> void:
+	for weapon: String in AudioCatalog.RELOAD_AUDIO_STAGES:
+		router.reset(0xC516)
+		player.active_weapon = weapon
+		player.alive = true
+		player.clip = 1
+		player.reserve = 200
+		player.reloading = false
+		player.weapon_clock.reset(weapon)
+		player._start_reload()
+		var stages: Array = AudioCatalog.RELOAD_AUDIO_STAGES[weapon]
+		var duration := maxi(int(stages[-1].offset), player.weapon_clock.reload_complete_tick) + 1
+		_advance_player(router, player, duration)
+		var starts := _starts(router)
+		_check(starts.size() == stages.size(), weapon + " emits exactly its authored reload stages")
+		for index in range(mini(starts.size(), stages.size())):
+			_check(starts[index].event_name == stages[index].event and starts[index].tick == stages[index].offset
+				and starts[index].channel == AudioRouter.CHAN_WEAPON,
+				weapon + " reload event order / tick / channel " + str(index))
+		_check(not player.reloading and player.clip > 1, weapon + " reload still transfers ammo")
+		# Nearby bots use the same catalog, driven by their existing weapon clock.
+		router.reset(0xC516)
+		bot.configure_weapon(weapon, false)
+		bot.consume_combat_weapon_command({"reload": true, "fire": false, "enemy": null,
+			"weapon_tick": 0, "weapon_reloading": true})
+		for tick in range(1, duration + 1):
+			router.advance_ticks(1)
+			bot.consume_combat_weapon_command({"reload": false, "fire": false, "enemy": null,
+				"weapon_tick": tick, "weapon_reloading": true})
+		_check(_starts(router).size() == stages.size(), weapon + " bot reload stages reach router")
+	for weapon: String in ["m3", "xm1014"]:
+		router.reset(0xC516)
+		player.active_weapon = weapon
+		player.clip = int(player.WEAPONS[weapon].magazine) - 2
+		player.reserve = 2
+		player.reloading = false
+		player.weapon_clock.reset(weapon)
+		player._start_reload()
+		_advance_player(router, player, 300)
+		var cue := "m3.insert" if weapon == "m3" else "shotgun.insert"
+		var inserts := _starts(router).filter(func(e: Dictionary) -> bool: return e.event_name == cue)
+		_check(inserts.size() == 2 and not player.reloading and player.reserve == 0,
+			weapon + " plays one insertion per shell and stops when full")
+		if weapon == "m3":
+			_check(not _event(router, "m3.pump").is_empty(), "M3 finishes with pump cue")
+	# A canceled reload must not leak its later sounds into the next weapon.
+	player.active_weapon = "glock18"
+	player.clip = 1
+	player.reserve = 20
+	player.reloading = false
+	player.weapon_clock.reset("glock18")
+	player._start_reload()
+	player.switch_weapon("knife")
+	router.reset(0xC516)
+	_advance_player(router, player, 300)
+	_check(_starts(router).is_empty(), "weapon switch cancels pending reload sounds")
+	player.active_weapon = "g3sg1"
+	player.clip = 1
+	player.reserve = 20
+	player.reloading = false
+	player.weapon_clock.reset("g3sg1")
+	player._start_reload()
+	_advance_player(router, player, 350)
+	player._try_fire()
+	router.reset(0xC516)
+	_advance_player(router, player, 100)
+	_check(_event(router, "g3sg1.reload_3").is_empty(), "firing cancels a late reload-animation sound")
+	# Shotgun interruption clears its loop without affecting seated ammunition.
+	player.active_weapon = "m3"
+	player.clip = 1
+	player.reserve = 4
+	player.weapon_clock.reset("m3")
+	player._start_reload()
+	_advance_player(router, player, 100)
+	_check(player._interrupt_shell_reload(), "shotgun can interrupt after one seated shell")
+	router.reset(0xC516)
+	_advance_player(router, player, 300)
+	_check(_starts(router).is_empty(), "interrupted shotgun emits no later reload sounds")
+
+
+func _check_all_deploy_audio(router: CS16AudioEventRouter, player: PlayerController) -> void:
+	for weapon: String in AudioCatalog.DEPLOY_AUDIO_STAGES:
+		var fallback := "knife" if weapon != "knife" else "glock18"
+		player.owned_weapons[weapon] = true
+		player.owned_weapons[fallback] = true
+		player.active_weapon = fallback
+		player.weapon_clock.reset(fallback)
+		router.reset(0xC516)
+		player.switch_weapon(weapon)
+		var stages: Array = AudioCatalog.DEPLOY_AUDIO_STAGES[weapon]
+		_advance_player(router, player, int(stages[-1].offset) + 1)
+		var starts := _starts(router)
+		_check(starts.size() == stages.size(), weapon + " emits exactly its authored draw stages")
+		for index in range(mini(starts.size(), stages.size())):
+			_check(starts[index].event_name == stages[index].event
+				and starts[index].tick == stages[index].offset,
+				weapon + " deploy event order / tick " + str(index))
+
+
+func _check_bullet_hit_audio(
+	router: CS16AudioEventRouter,
+	player: PlayerController,
+	attacker: Combatant,
+) -> void:
+	player.team = Combatant.TEAM_TERRORIST
+	attacker.team = Combatant.TEAM_COUNTER_TERRORIST
+	for spec: Array in [
+		[100, true, Ballistics.HitGroup.HEAD, "player.hit_helmet"],
+		[100, false, Ballistics.HitGroup.CHEST, "player.hit_kevlar"],
+		[100, true, Ballistics.HitGroup.RIGHT_LEG, "player.hit_flesh"],
+	]:
+		player.health = 100
+		player.alive = true
+		player.armor = int(spec[0])
+		player.has_helmet = bool(spec[1])
+		router.reset(0xC516)
+		player.receive_bullet_damage(1, int(spec[2]), "ak47", player.global_position, attacker)
+		_check(not _event(router, str(spec[3])).is_empty(),
+			"bullet hit routes its " + str(spec[3]).trim_prefix("player.hit_") + " cue")
+
+
 func _run() -> void:
 	_check_catalog_files()
 	var packed := load("res://scenes/main.tscn") as PackedScene
@@ -86,7 +208,7 @@ func _run() -> void:
 	)
 	_check(
 		game.audio_playback.listener_origin_hu.is_equal_approx(
-			AudioRouter.meters_to_hu(game.player.camera.global_position)
+			AudioRouter.meters_to_hu(game.get_viewport().get_camera_3d().global_position)
 		),
 		"listener follows the live camera in HU each authoritative tick",
 	)
@@ -98,6 +220,8 @@ func _run() -> void:
 
 	var player: PlayerController = game.player
 	player.audio_router = router
+	_check_all_deploy_audio(router, player)
+	_check_bullet_hit_audio(router, player, game._all_bots()[0])
 	player.global_position = Vector3(10.0, 0.0, 0.0)
 	player.active_weapon = "ak47"
 	player.clip = 30
@@ -233,6 +357,20 @@ func _run() -> void:
 	_check(int(explosion.get("channel", -1)) == AudioRouter.CHAN_WEAPON, "HE explosion channel")
 	_check(str(explosion.get("sample", "")) == "weapons/explode3.wav", "HE source explosion path")
 	_check(int(debris.get("channel", -1)) == AudioRouter.CHAN_VOICE, "HE debris channel")
+	for kind: String in ["flashbang", "smokegrenade"]:
+		router.reset(0xC516)
+		var other: HEGrenade = GrenadeScript.new()
+		game.add_child(other)
+		other.launch(Vector3(50, 10, 50), Vector3.ZERO, player, kind)
+		other.explode()
+		var cue := _event(router, "flash.explode" if kind == "flashbang" else "smoke.explode")
+		_check(not cue.is_empty() and _event(router, "he.explode").is_empty() and _event(router, "he.debris").is_empty(),
+			"grenade kind uses its own sound without HE explosion/debris: " + kind)
+		if kind == "flashbang":
+			_check(cue.sample in ["weapons/flashbang-1.wav", "weapons/flashbang-2.wav"] and cue.channel == AudioRouter.CHAN_VOICE
+				and is_equal_approx(cue.volume, 0.55), "flash uses source sample, channel and volume")
+		else:
+			_check(cue.sample == "weapons/sg_explode.wav" and cue.channel == AudioRouter.CHAN_WEAPON, "smoke uses source detonation sample/channel")
 
 	router.reset(0xC516)
 	game.bomb_planted = false
@@ -250,6 +388,7 @@ func _run() -> void:
 	_check(str(_event(router, "c4.explode").get("sample", "")) == "weapons/c4_explode1.wav", "C4 explosion path")
 	_check(int(_event(router, "round.t_win").get("channel", -1)) == AudioRouter.CHAN_STREAM, "round announcer channel")
 
+	_check_all_reload_audio(router, player, game._all_bots()[0])
 	var passed := _failures.is_empty()
 	game.process_mode = Node.PROCESS_MODE_DISABLED
 	game.audio_router.stop_all("test_teardown")

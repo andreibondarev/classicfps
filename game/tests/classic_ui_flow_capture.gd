@@ -24,8 +24,6 @@ const CAPTURE_STATES := [
 	"buy_t_smg",
 	"buy_t_rifles",
 	"buy_t_machineguns",
-	"buy_t_primary_ammo",
-	"buy_t_secondary_ammo",
 	"buy_t_equipment",
 	"buy_t_pistols_unaffordable",
 	"buy_ct_pistols",
@@ -33,8 +31,6 @@ const CAPTURE_STATES := [
 	"buy_ct_smg",
 	"buy_ct_rifles",
 	"buy_ct_machineguns",
-	"buy_ct_primary_ammo",
-	"buy_ct_secondary_ammo",
 	"buy_ct_equipment",
 	"scoreboard",
 	"scoreboard_1",
@@ -150,6 +146,10 @@ func _configure_state(state: String) -> void:
 				5,
 				4,
 			)
+		"scoreboard_reference":
+			var players := _scoreboard_fixture(16)
+			players.append({"id": "observer", "name": "Observer", "team": 0, "score": 0, "deaths": 0, "latency": 12})
+			hud.show_scoreboard(players, "Protocol 47 | Dust2", "de_dust2", 2, 5)
 		"scoreboard_1":
 			hud.show_scoreboard(_scoreboard_fixture(1), "Counter-Strike 1.6", "de_dust2", 1, 0)
 		"scoreboard_10":
@@ -221,6 +221,10 @@ func _scoreboard_fixture(count: int, voice_states := false) -> Array:
 			"voice_muted": voice_states and index % 3 == 1,
 			"vip": team_id == 2 and index == 2,
 			"bomb": team_id == 1 and index == 3,
+			"health": 100 - index * 2,
+			"money": 16000 - index * 200,
+			"show_private_stats": team_id == 1,
+			"is_local": index == 1,
 		})
 	return players
 
@@ -232,6 +236,7 @@ func _capture(state: String, resolution: Vector2i) -> bool:
 	_configure_state(state)
 	for frame in range(4):
 		await process_frame
+	RenderingServer.force_draw()
 	var image := root.get_viewport().get_texture().get_image()
 	if image.get_size() != resolution:
 		push_error(
@@ -276,12 +281,17 @@ func _run() -> void:
 	]
 	hud.update_tactical_display(Vector3.ZERO, 0.0, radar_contacts, [])
 	output_root = ProjectSettings.globalize_path("res://artifacts")
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--output="):
+			output_root = argument.trim_prefix("--output=")
 	DirAccess.make_dir_recursive_absolute(output_root)
 	var passed := true
 	var capture_resolutions := RESOLUTIONS
 	var capture_states := CAPTURE_STATES
 	if "--residual" in OS.get_cmdline_user_args():
 		capture_states = RESIDUAL_CAPTURE_STATES
+	if "--scoreboard-only" in OS.get_cmdline_user_args():
+		capture_states = ["scoreboard_reference", "scoreboard_32"]
 	for resolution in capture_resolutions:
 		for state in capture_states:
 			passed = await _capture(state, resolution) and passed

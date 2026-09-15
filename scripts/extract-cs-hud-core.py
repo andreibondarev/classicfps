@@ -31,6 +31,7 @@ CORE_NAMES = (
     "smallc4",
     "smallvip",
     "buyzone",
+    "defuser",
     "rescue",
     "escape",
     "vipsafety",
@@ -106,6 +107,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path, help="Validated cstrike/sprites directory")
     parser.add_argument("output", type=Path, help="Godot-ready output directory")
+    parser.add_argument("--death-notices", action="store_true", help="Extract the original d_* kill-feed sprites instead of HUD counters")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -120,7 +122,8 @@ def main() -> int:
         "sprites": {},
     }
 
-    for name in CORE_NAMES:
+    names = sorted(name for name in atlas_definitions if name.startswith("d_")) if args.death_notices else CORE_NAMES
+    for name in names:
         if name not in atlas_definitions:
             raise ValueError(f"Missing 640px HUD definition: {name}")
         sheet, x, y, width, height = atlas_definitions[name]
@@ -155,7 +158,7 @@ def main() -> int:
     (args.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
-    print(f"Extracted {len(CORE_NAMES)} official HUD sprites to {args.output}")
+    print(f"Extracted {len(names)} official HUD sprites to {args.output}")
     return 0
 
 

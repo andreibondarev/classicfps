@@ -74,6 +74,15 @@ func _run() -> void:
 	_make_static("CornerZ", Vector3(0.0, 1.0, 6.0), Vector3(3.0, 2.0, 0.10))
 	_make_static("Step18", Vector3(5.70, 0.09, 0.0), Vector3(0.50, 0.18, 2.0))
 	_make_static("Step19", Vector3(7.70, 0.095, 0.0), Vector3(0.50, 0.19, 2.0))
+	# Dust2's ordinary stair brushes rise 16 HU per 32-HU tread. Exercise a
+	# consecutive flight, since a single isolated step misses seam regressions.
+	for stair_index in range(4):
+		var top := float(stair_index + 1) * 0.16
+		_make_static(
+			"Dust2Step%02d" % (stair_index + 1),
+			Vector3(-10.3 + float(stair_index) * 0.4, top * 0.5, 10.0),
+			Vector3(0.4, top, 2.0),
+		)
 	_make_static(
 		"Slope",
 		Vector3(10.9, 0.12, 0.0),
@@ -88,6 +97,7 @@ func _run() -> void:
 	var corner_actor := _make_actor("CornerActor", Vector3(0.0, 0.0, 5.0))
 	var stair_actor := _make_actor("StairActor", Vector3(5.0, 0.0, 0.0))
 	var tall_stair_actor := _make_actor("TallStairActor", Vector3(7.0, 0.0, 0.0))
+	var dust2_stair_actor := _make_actor("Dust2StairActor", Vector3(-11.0, 0.0, 10.0))
 	var slope_actor := _make_actor("SlopeActor", Vector3(9.8, 0.0, 0.0))
 	var ceiling_actor := _make_actor("CeilingActor", Vector3(15.0, 0.0, 0.0))
 	var duck_actor := _make_actor("DuckActor", Vector3(18.0, 0.0, 0.0), Vector3(0.32, 0.50, 0.32))
@@ -151,6 +161,17 @@ func _run() -> void:
 		"direct collision wins when the raised path is blocked",
 	)
 
+	var dust2_stair_kernel = KernelScript.new(dust2_stair_actor)
+	_check(dust2_stair_kernel.categorize_ground(Vector3.ZERO), "Dust2 stair-flight actor starts grounded")
+	var dust2_step_count := 0
+	for _tick in range(130):
+		var dust2_result: Dictionary = dust2_stair_kernel.move(Vector3(2.0, 0.0, 0.0), 0.01, true)
+		if bool(dust2_result.used_step):
+			dust2_step_count += 1
+	_check(dust2_step_count >= 4, "consecutive 16-HU Dust2 treads all select the step path")
+	_near(dust2_stair_actor.position.y, 0.64, "actor reaches the top of a four-tread Dust2 stair flight", 0.012)
+	_check(dust2_stair_actor.position.x > -8.7, "stair flight preserves forward progress without snagging")
+
 	var slope_kernel = KernelScript.new(slope_actor)
 	_check(slope_kernel.categorize_ground(Vector3.ZERO), "slope fixture actor starts grounded")
 	var slope_result: Dictionary = slope_kernel.move(Vector3(2.0, 0.0, 0.0), 0.5, true)
@@ -163,7 +184,19 @@ func _run() -> void:
 	var ceiling_kernel = KernelScript.new(ceiling_actor)
 	ceiling_kernel.categorize_ground(Vector3.ZERO)
 	var ceiling_result: Dictionary = ceiling_kernel.move(Vector3(0.0, 3.0, 0.0), 0.2, false)
-	_check(ceiling_actor.position.y <= 0.079, "upward sweep stops at the ceiling")
+	print("COLLISION_CEILING_PROFILE ", JSON.stringify({
+		"backend": world.get_world_3d().direct_space_state.get_class(),
+		"feet_y": ceiling_actor.position.y,
+		"source_endpoint_y": 0.85 - 0.10 * 0.5 - HULL_SIZE.y - 0.03125 * 0.01,
+		"velocity_y": (ceiling_result.velocity as Vector3).y}))
+	# Analytic axis-aligned clip hull: ceiling bottom minus the standing hull
+	# height, backed off by ReHLDS PM_RecursiveHullCheck's 0.03125 HU epsilon.
+	# A one-sided arbitrary maximum accepted stopping far short of the source
+	# endpoint. Check both sides within the canonical 1/64 HU position quantum.
+	# https://github.com/rehlds/ReHLDS/blob/0124d56c3d888d922eb045775f71c6682ad1226f/rehlds/engine/pmovetst.cpp#L625
+	var source_ceiling_endpoint := 0.85 - 0.10 * 0.5 - HULL_SIZE.y - 0.03125 * 0.01
+	_near(ceiling_actor.position.y, source_ceiling_endpoint,
+		"ceiling sweep endpoint matches the source clip-hull plane", 0.01 / 64.0)
 	_check((ceiling_result.velocity as Vector3).y <= 0.001, "ceiling plane clips upward velocity")
 
 	var duck_kernel = KernelScript.new(duck_actor)

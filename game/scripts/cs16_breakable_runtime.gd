@@ -190,6 +190,23 @@ func breakable_count() -> int:
 	return _breakables.size()
 
 
+func model_indices() -> Array[int]:
+	var models: Array[int] = []
+	for record: Dictionary in _breakables.values():
+		models.append(int(record.model_index))
+	models.sort()
+	return models
+
+
+func broken_model_indices() -> Array[int]:
+	var models: Array[int] = []
+	for record: Dictionary in _breakables.values():
+		if not record.alive:
+			models.append(int(record.model_index))
+	models.sort()
+	return models
+
+
 func has_entity(entity_id: int) -> bool:
 	return _breakables.has(entity_id)
 

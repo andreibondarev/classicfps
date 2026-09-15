@@ -146,6 +146,8 @@ func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(output_root)
 	var menu_ok := _capture(output_root.path_join("protocol47-deploy.png"))
 
+	if not game.combat_effects.presentation_is_ready:
+		await game.combat_effects.presentation_ready
 	game.start_match()
 	for frame in range(8):
 		await process_frame

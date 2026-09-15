@@ -199,7 +199,7 @@ func _scan(observer_origin: Vector3, observer_forward: Vector3) -> void:
 					tracked,
 					observer_origin,
 					observer_forward,
-					false,
+					true,
 				)
 			)
 			if tracked_visible:

@@ -27,7 +27,7 @@ var _router: CS16AudioEventRouter
 var _active: Dictionary = {}
 var _free_2d: Array[AudioStreamPlayer] = []
 var _free_3d: Array[AudioStreamPlayer3D] = []
-var _trace: Array[Dictionary] = []
+var _trace := preload("res://scripts/bounded_event_log.gd").new()
 var _next_pool_slot := 1
 
 
@@ -158,11 +158,11 @@ func pool_counts() -> Dictionary:
 
 
 func trace() -> Array[Dictionary]:
-	return _trace.duplicate(true)
+	return _trace.snapshot()
 
 
 func trace_json() -> String:
-	return JSON.stringify(_trace)
+	return JSON.stringify(trace())
 
 
 func _on_event_started(event: Dictionary) -> void:

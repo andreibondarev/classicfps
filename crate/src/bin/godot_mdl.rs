@@ -25,6 +25,8 @@ struct ModelExport<'a> {
     version: u32,
     groups: Vec<ExportGroup>,
     positions: &'a [f32],
+    #[serde(skip_serializing_if = "<[u8]>::is_empty")]
+    lower_body_mask: &'a [u8],
     uvs: &'a [f32],
     sequences: &'a [String],
     animations: Vec<AnimationExport>,
@@ -224,6 +226,7 @@ fn export_model(
         version: if animations.is_empty() { 1 } else { 3 },
         groups,
         positions: &parsed.positions,
+        lower_body_mask: &parsed.lower_body_mask,
         uvs: &parsed.uvs,
         sequences: &parsed.seq_labels,
         animations,

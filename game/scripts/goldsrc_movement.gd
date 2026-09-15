@@ -16,6 +16,9 @@ const EDGE_DOWN_DISTANCE := 34.0 * WORLD_SCALE
 const EDGE_FRICTION := 2.0
 const UPWARD_UNGROUND_SPEED := 180.0 * WORLD_SCALE
 const SWEEP_MARGIN := 0.01 * WORLD_SCALE
+# ReHLDS PM_RecursiveHullCheck keeps endpoints 1/32 HU off contact planes.
+# Keep this separate from the engine's supporting-floor recovery margin.
+const CONTACT_SEPARATION := 0.03125 * WORLD_SCALE
 const MOTION_MARGIN := 0.0
 const FRACTION_EPSILON := 0.000001
 
@@ -201,7 +204,7 @@ func _fly_move(source_velocity: Vector3, delta: float) -> Dictionary:
 		# re-reports this plane at fraction 0 on all later parallel sweeps,
 		# draining every bump until velocity is zeroed — the player sticks to
 		# the wall. Restore the epsilon of separation along the contact normal.
-		body.global_position += normal * SWEEP_MARGIN
+		body.global_position += normal * CONTACT_SEPARATION
 		if normal.y > FLOOR_NORMAL_MINIMUM:
 			blocked |= BLOCKED_FLOOR
 			ground_normal = normal

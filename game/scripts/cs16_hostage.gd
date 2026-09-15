@@ -13,6 +13,7 @@ signal damage_requested(
 
 const HostageModelScript := preload("res://scripts/mdl_hostage_model.gd")
 const HostageStateScript := preload("res://scripts/cs16_hostage_state.gd")
+const BrushContactsScript := preload("res://scripts/cs16_brush_contacts.gd")
 const GOLDSRC_UNIT := 0.01
 const HULL_SIZE := Vector3(20.0, 62.0, 20.0) * GOLDSRC_UNIT
 const HULL_CENTER := Vector3(0.0, 31.0, 0.0) * GOLDSRC_UNIT
@@ -43,6 +44,7 @@ var leader_id := ""
 var motion_velocity_hu := Vector3.ZERO
 var auto_advance_animation := true
 var _blocked_source_ticks := 0
+var _brush_contacts := PackedInt32Array()
 
 var hostage_model: MdlHostageModel
 var collision_shape: CollisionShape3D
@@ -58,6 +60,7 @@ func _ready() -> void:
 	collision_mask = 1
 	floor_snap_length = SOURCE_STEP_HU * GOLDSRC_UNIT
 	floor_max_angle = deg_to_rad(48.0)
+	wall_min_slide_angle = 0.0
 	add_to_group("source_use_targets")
 	_build_collision()
 	hostage_model = HostageModelScript.new()
@@ -102,7 +105,10 @@ func apply_contract_state(state: Dictionary) -> void:
 		"position_hu",
 		global_position / GOLDSRC_UNIT,
 	)
-	global_position = position_hu * GOLDSRC_UNIT
+	var next_position := position_hu * GOLDSRC_UNIT
+	if not alive or rescued or not global_position.is_equal_approx(next_position):
+		_brush_contacts.clear()
+	global_position = next_position
 	rotation.y = deg_to_rad(float(state.get("yaw_degrees", rad_to_deg(rotation.y))))
 	if is_instance_valid(hostage_model):
 		hostage_model.idle_phase_unit = _idle_phase_unit()
@@ -117,6 +123,7 @@ func set_motion_velocity_hu(requested_velocity_hu: Vector3) -> void:
 
 
 func move_source_tick(requested_velocity_hu: Vector3) -> void:
+	_brush_contacts.clear()
 	var start_position := global_position
 	var was_grounded := is_on_floor()
 	motion_velocity_hu = requested_velocity_hu
@@ -131,6 +138,7 @@ func move_source_tick(requested_velocity_hu: Vector3) -> void:
 			* SOURCE_TICK_SECONDS
 		)
 	move_and_slide()
+	BrushContactsScript.append_motion_contacts(self, _brush_contacts)
 	var horizontal_travel := Vector2(
 		global_position.x - start_position.x,
 		global_position.z - start_position.z,
@@ -158,6 +166,7 @@ func move_source_tick(requested_velocity_hu: Vector3) -> void:
 				requested_velocity_hu.z * GOLDSRC_UNIT,
 			)
 			move_and_slide()
+			BrushContactsScript.append_motion_contacts(self, _brush_contacts)
 			var stepped_travel := Vector2(
 				global_position.x - start_position.x,
 				global_position.z - start_position.z,
@@ -174,10 +183,17 @@ func move_source_tick(requested_velocity_hu: Vector3) -> void:
 						requested_velocity_hu.z * GOLDSRC_UNIT,
 					)
 					move_and_slide()
+					BrushContactsScript.append_motion_contacts(self, _brush_contacts)
 			else:
 				_blocked_source_ticks = 0
 	if is_on_floor() and velocity.y < 0.0:
 		velocity.y = 0.0
+
+
+func take_brush_contacts() -> PackedInt32Array:
+	var contacts := _brush_contacts
+	_brush_contacts = PackedInt32Array()
+	return contacts
 
 
 func advance_hostage_tick() -> void:

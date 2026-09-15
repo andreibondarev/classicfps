@@ -12,6 +12,7 @@ func _init() -> void:
 	_assert_helmet_and_utility()
 	_assert_rich_bots_stop_hoarding()
 	_assert_determinism()
+	_assert_presentation_candidates()
 	if failures.is_empty():
 		print("GAME_BOT_BUY_PLAN_TEST_PASS")
 		quit(0)
@@ -24,6 +25,23 @@ func _check(condition: bool, message: String) -> void:
 		return
 	failures.append(message)
 	push_error("BOT BUY PLAN TEST: " + message)
+
+
+func _assert_presentation_candidates() -> void:
+	for team: String in ["T", "CT"]:
+		for index in range(10):
+			var prepared := BuyPlan.presentation_weapons(team, index)
+			_check(prepared.has("glock18" if team == "T" else "usp"), "preparation covers starting pistol")
+			_check(prepared.has("awp") == (index % 5 == 0), "preparation uses the actual sniper role")
+			for money in [0, 1500, 2150, 2250, 2500, 2900, 3100, 4000, 4750, 5600, 6000, 16000]:
+				for armor in [0, 100]:
+					for has_primary: bool in [false, true]:
+						for purchase: Dictionary in BuyPlan.build(team, money, index, has_primary, armor, false):
+							var definition := CS16WeaponRegistry.definition(str(purchase.id))
+							if not definition.is_empty() and int(definition.slot) in [1, 2]:
+								_check(prepared.has(str(purchase.id)), "preparation covers every possible primary purchase")
+			prepared.clear()
+			_check(not BuyPlan.presentation_weapons(team, index).is_empty(), "preparation candidates are caller-owned")
 
 
 func _ids(plan: Array[Dictionary]) -> Array[String]:

@@ -33,6 +33,10 @@ func register_actor(actor_id: String, team: String) -> void:
 	}
 
 
+func unregister_actor(actor_id: String) -> bool:
+	return _actors.erase(actor_id)
+
+
 func reset_round() -> void:
 	bomb_state = STATE_UNKNOWN
 	bomb_position = Vector3.ZERO

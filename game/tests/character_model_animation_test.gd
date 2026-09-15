@@ -54,11 +54,18 @@ func _run() -> void:
 		if not model.model_loaded:
 			continue
 		_check(
-			model.scale.is_equal_approx(Vector3.ONE),
-			"%s preserves authoritative 0.01 GoldSrc source scale" % skin,
+			model.scale.is_equal_approx(CharacterModelScript.PRESENTATION_SCALE),
+			"%s applies only the restrained horizontal silhouette correction" % skin,
+		)
+		_check(
+			is_equal_approx(model.scale.y, CharacterModelScript.MODEL_SCALE)
+				and model.scale.x > model.scale.y
+				and is_equal_approx(model.scale.x, model.scale.z),
+			"%s preserves source height and yaw-independent horizontal proportions" % skin,
 		)
 		_assert_metadata(model, skin)
 		_assert_grounded_source_poses(model, skin)
+		_assert_gait_motion(model, skin)
 		model.queue_free()
 
 	var model: MdlCharacterModel = CharacterModelScript.new()
@@ -70,6 +77,7 @@ func _run() -> void:
 		_assert_state_selection(model)
 		_assert_100hz_transition_tape(model)
 		_assert_death_freeze(model)
+		_assert_offscreen_animation_clock(model, stage)
 	_assert_target_facing(stage)
 
 	if not _failures.is_empty():
@@ -132,7 +140,12 @@ func _assert_grounded_source_poses(model: MdlCharacterModel, skin: String) -> vo
 			model.reset_animation()
 			model.set_locomotion(false, state.begins_with("crouch"), true)
 			model.force_pose(state, fraction, 0.0)
-			var bounds := model.body_instance.mesh.get_aabb()
+			# ArrayMesh.get_aabb() retains its original allocation bounds after
+			# vertex-region updates. Read back the actual positions independently
+			# and also verify the custom culling bounds supplied by the animator.
+			var bounds := _vertex_bounds(model.body_instance.mesh)
+			var culling_bounds: AABB = model.body_instance.mesh.custom_aabb
+			_check(culling_bounds.encloses(bounds), "animated culling bounds contain every uploaded vertex")
 			var feet_above_hull_floor := model.position.y + bounds.position.y * model.scale.y
 			_check(
 				absf(feet_above_hull_floor) <= FOOT_TOLERANCE,
@@ -146,6 +159,51 @@ func _assert_grounded_source_poses(model: MdlCharacterModel, skin: String) -> vo
 				"%s %s %.2f rendered bounds equal baked source bounds"
 				% [skin, state, fraction],
 			)
+
+
+func _assert_gait_motion(model: MdlCharacterModel, skin: String) -> void:
+	var reference: PackedFloat32Array = model._body_template.positions
+	var mask: PackedByteArray = model._body_template.lower_mask
+	var floor_y := INF
+	for index in range(1, reference.size(), 3):
+		floor_y = minf(floor_y, reference[index])
+	var whole_thigh := false
+	for vertex in mask.size():
+		if mask[vertex] != 0 and reference[vertex * 3 + 1] > floor_y + 0.34:
+			whole_thigh = true
+	_check(whole_thigh, "%s gait mask includes the whole thigh, not a height cutoff" % skin)
+	for state: String in ["run", "crouchrun"]:
+		model.reset_animation()
+		model.set_locomotion(true, state == "crouchrun", true)
+		model.force_pose(state, 0.25)
+		var first := _all_vertices(model.body_instance.mesh)
+		model.force_pose(state, 0.75)
+		var second := _all_vertices(model.body_instance.mesh)
+		var foot_travel := 0.0
+		for vertex in mask.size():
+			if mask[vertex] == 0 or reference[vertex * 3 + 1] > floor_y + 0.20:
+				continue
+			var delta := second[vertex] - first[vertex]
+			foot_travel = maxf(foot_travel, Vector2(delta.x, delta.z).length())
+		_check(foot_travel > 0.08, "%s %s rendered feet take a stride (%.3f m)" % [skin, state, foot_travel])
+
+
+func _all_vertices(mesh: ArrayMesh) -> PackedVector3Array:
+	var result := PackedVector3Array()
+	for surface in mesh.get_surface_count():
+		result.append_array(mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX])
+	return result
+
+
+func _vertex_bounds(mesh: ArrayMesh) -> AABB:
+	var minimum := Vector3.INF
+	var maximum := -Vector3.INF
+	for surface in range(mesh.get_surface_count()):
+		var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
+		for vertex in vertices:
+			minimum = minimum.min(vertex)
+			maximum = maximum.max(vertex)
+	return AABB(minimum, maximum - minimum)
 
 
 func _source_pose_bounds(
@@ -490,8 +548,8 @@ func _assert_100hz_transition_tape(model: MdlCharacterModel) -> void:
 	)
 	_check(
 		not model.weapon_instance.visible
-		and is_instance_valid(model.dropped_weapon_instance),
-		"death detaches the p_ model and spawns the dropped ground weapon",
+		and not is_instance_valid(model.dropped_weapon_instance),
+		"gameplay death hides the held gun without duplicating the Game-owned pickup",
 	)
 	for tick in range(15, 150):
 		model.advance_animation(0.01)
@@ -568,6 +626,91 @@ func _assert_death_freeze(model: MdlCharacterModel) -> void:
 	)
 	model.reset_animation()
 	_check(model.animation_state == "idle", "round reset releases frozen death pose")
+
+
+func _assert_offscreen_animation_clock(model: MdlCharacterModel, stage: Node3D) -> void:
+	var camera := Camera3D.new()
+	stage.add_child(camera)
+	camera.make_current()
+	var original_position := model.position
+	model.position = Vector3(0, 0, -5)
+	_check(model._pose_may_be_visible(), "in-frustum actor receives mesh updates")
+	model.position = Vector3(0, 0, 10)
+	_check(not model._pose_may_be_visible(), "actor behind camera skips mesh deformation")
+	model.reset_animation()
+	model.play_action("reload")
+	var frame_key := model._body_frame_key
+	model._process(0.25)
+	_check(model._body_frame_key == frame_key, "offscreen mesh is not rebuilt")
+	_check(is_equal_approx(model._action_time, 0.25), "offscreen action clock still advances")
+	model.position = Vector3(0, 0, -5)
+	model._process(0.0)
+	_check(model._body_frame_key != frame_key and model.animation_state == "reload", "visible actor catches up to the current action frame")
+	model.position = Vector3(0, 0, 10)
+	var sun := DirectionalLight3D.new()
+	sun.shadow_enabled = true
+	stage.add_child(sun)
+	_check(model._pose_may_be_visible(), "new light projecting an offscreen actor's shadow into view keeps its pose live")
+	frame_key = model._body_frame_key
+	model._process(0.25)
+	_check(model._body_frame_key != frame_key, "offscreen shadow caster actually updates its animated mesh")
+	_check(is_equal_approx(model._action_time, 0.5), "shadow-aware animation does not advance the action clock twice")
+	sun.rotation.y = PI
+	_check(not model._pose_may_be_visible(), "shadow projected away from the camera can skip deformation")
+	sun.rotation.y = 0.0
+	sun.shadow_enabled = false
+	_check(not model._pose_may_be_visible(), "disabled shadows do not require offscreen deformation")
+	sun.shadow_enabled = true
+	sun.hide()
+	_check(not model._pose_may_be_visible(), "hidden light does not require offscreen deformation")
+	sun.show()
+	sun.shadow_caster_mask = 2
+	_check(not model._pose_may_be_visible(), "shadow caster mask excludes the actor's layer")
+	sun.shadow_caster_mask = 1
+	sun.light_cull_mask = 0
+	_check(model._pose_may_be_visible(), "lighting cull mask must not be mistaken for shadow caster mask")
+	model.body_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	model.weapon_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_check(not model._pose_may_be_visible(), "non-casting meshes need no shadow updates")
+	model.weapon_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	_check(model._pose_may_be_visible(), "attached shadow-only weapon keeps its pose live")
+	model.body_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	model.weapon_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	sun.free()
+	_check(not model._pose_may_be_visible(), "removed lights leave the registry immediately")
+	var viewport := SubViewport.new()
+	viewport.own_world_3d = true
+	stage.add_child(viewport)
+	sun = DirectionalLight3D.new()
+	sun.shadow_enabled = true
+	viewport.add_child(sun)
+	_check(not model._pose_may_be_visible(), "a warmup viewport's light cannot affect the gameplay world")
+	viewport.free()
+	for light: Light3D in [OmniLight3D.new(), SpotLight3D.new()]:
+		light.shadow_enabled = true
+		light.set_param(Light3D.PARAM_RANGE, 20.0)
+		stage.add_child(light)
+		_check(model._pose_may_be_visible(), "positional light touching actor and view conservatively updates shadows")
+		light.position = Vector3(100, 0, 0)
+		_check(not model._pose_may_be_visible(), "out-of-range positional light can skip deformation")
+		light.free()
+	# Independent geometric cases: behind, beside, above, and beyond far plane.
+	var frustum := camera.get_frustum()
+	for origin: Vector3 in [Vector3(0, 0, 10), Vector3(100, 0, -5), Vector3(0, 100, -5), Vector3(0, 0, -camera.far - 10)]:
+		var direction := (Vector3(0, 0, -5) - origin).normalized()
+		_check(CharacterModelScript._shadow_ray_intersects_frustum(origin, 2.0, direction, frustum), "ray from outside frustum toward visible receiver must remain animated")
+		_check(not CharacterModelScript._shadow_ray_intersects_frustum(origin, 2.0, -direction, frustum), "ray leaving frustum can skip deformation")
+	# Cache release/rebuild must reconnect once and rediscover existing lights.
+	sun = DirectionalLight3D.new()
+	sun.shadow_enabled = true
+	stage.add_child(sun)
+	CharacterModelScript._release_shadow_light_registry()
+	_check(model._pose_may_be_visible(), "registry rebuild rediscovers existing shadow lights")
+	sun.free()
+	CharacterModelScript._release_shadow_light_registry()
+	model.position = original_position
+	camera.free()
+	model.reset_animation()
 
 
 func _assert_target_facing(stage: Node3D) -> void:

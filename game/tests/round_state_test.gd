@@ -30,6 +30,7 @@ func _run() -> void:
 	_assert_simultaneous_wipe()
 	_assert_bomb_planted_accounting()
 	_assert_render_rate_independence()
+	_assert_observer_transition()
 	_write_trace_artifact()
 	if failures.is_empty():
 		print("GAME_ROUND_STATE_TEST_PASS")
@@ -37,6 +38,50 @@ func _run() -> void:
 	else:
 		print("GAME_ROUND_STATE_TEST_FAIL (%d)" % failures.size())
 		quit(1)
+
+
+func _assert_observer_transition() -> void:
+	for planting in [false, true]:
+		var state := _fixture({"freeze_ticks": 1})
+		state.advance_tick()
+		var owner: String = state.bomb_owner
+		if planting:
+			state.advance_tick({"plant": {"player_id": owner, "attack": true,
+				"equipped_c4": true, "grounded": true, "in_bomb_site": true,
+				"site_id": "A", "position": Vector3.ONE}})
+			_check(state.plant_actor == owner, "observer test starts a real plant")
+		_check(not state.enter_observer(owner, Vector3.ONE) and state.players[owner].alive
+			and state.bomb_owner == owner, "alive live players cannot escape into spectator mode")
+		state.set_player_alive(owner, false, Vector3.ONE)
+		_check(state.enter_observer(owner), "dead players may observe during live play")
+		_check(state.bomb_state == "dropped" and state.bomb_owner == "" and state.plant_actor == ""
+			and state.bomb_position == Vector3.ONE, "dead observer retains the real death's dropped C4")
+		_check(not state.players[owner].alive and not state.players[owner].has_c4
+			and state.players[owner].deaths == 1 and state.players[owner].money == 0,
+			"observing after death does not count another death and clears the account")
+		state.start_match()
+		_check(not state.players[owner].alive and state.bomb_owner != owner,
+			"match reset never revives or assigns C4 to observers")
+	var defusing := _planted_fixture(true)
+	defusing.advance_tick({"defuse": {"player_id": "ct1", "use": true,
+		"grounded": true, "in_range": true, "facing": true}})
+	_check(defusing.defuse_actor == "ct1", "observer test starts a real defuse")
+	_check(not defusing.enter_observer("ct1") and defusing.defuse_actor == "ct1",
+		"alive defuser cannot escape into observation")
+	defusing.set_player_alive("ct1", false)
+	_check(defusing.enter_observer("ct1"), "dead defuser may observe")
+	_check(defusing.defuse_actor == "" and defusing.bomb_state == "planted"
+		and not defusing.players.ct1.has_defuser, "observing cancels defuse without resolving the planted bomb")
+	var frozen := _fixture({"freeze_ticks": 1})
+	var owner: String = frozen.bomb_owner
+	_check(frozen.enter_observer(owner, Vector3.ONE), "alive participant may observe during freeze")
+	_check(frozen.players[owner].deaths == 1 and frozen.players[owner].kills == 0
+		and frozen.bomb_state == "dropped", "freeze observer suicide counts a death, drops C4, and does not change frags")
+	_check(frozen.enter_observer(owner) and frozen.players[owner].deaths == 1, "observer selection is idempotent")
+	var deploying := RoundStateScript.new()
+	deploying.register_player("player", "T")
+	_check(deploying.enter_observer("player") and deploying.players.player.deaths == 0,
+		"initial deployment observer does not create a death")
 
 
 func _fixture(overrides := {}) -> RefCounted:

@@ -5,6 +5,8 @@ var _look_delta := Vector2.ZERO
 var _fire_held := false
 var _fire_pressed := false
 var _secondary_pressed := false
+var _mac_mouse_mask := 0
+var _mac_control_left_down := false
 # Presses are latched from ingest_input (which sees every event) instead of
 # polled with is_action_just_pressed inside the 100 Hz physics tick: on frames
 # that run zero physics ticks (e.g. 120 Hz display vs 100 Hz physics) the
@@ -14,9 +16,27 @@ var _reload_pressed := false
 var _drop_pressed := false
 var _slot_request := 0
 var _last_weapon_request := false
+var menu_input_blocked := false
+
+
+func set_menu_input_blocked(blocked: bool) -> void:
+	menu_input_blocked = blocked
+	_look_delta = Vector2.ZERO
+	_fire_held = false
+	_fire_pressed = false
+	_secondary_pressed = false
+	_mac_mouse_mask = 0
+	_mac_control_left_down = false
+	_jump_pressed = false
+	_reload_pressed = false
+	_drop_pressed = false
+	_slot_request = 0
+	_last_weapon_request = false
 
 
 func ingest_input(event: InputEvent) -> void:
+	if menu_input_blocked:
+		return
 	if event.is_action_pressed("jump"):
 		_jump_pressed = true
 	elif event.is_action_pressed("reload"):
@@ -46,19 +66,39 @@ func ingest_input(event: InputEvent) -> void:
 		_look_delta += event.relative
 	elif event is InputEventMouseButton:
 		var mouse_event := event as InputEventMouseButton
-		# Mouse2 is always the weapon's secondary action, exactly as in CS 1.6.
-		# No ctrl+click fire alias: crouch is bound to Ctrl, so aliasing
-		# ctrl+RMB to fire made every crouched mode-switch discharge the gun.
-		if mouse_event.button_index == MOUSE_BUTTON_LEFT:
+		var button := _physical_mouse_button(mouse_event)
+		if button == MOUSE_BUTTON_LEFT:
 			_fire_held = mouse_event.pressed
 			if mouse_event.pressed:
 				_fire_pressed = true
-		elif mouse_event.button_index == MOUSE_BUTTON_RIGHT and mouse_event.pressed:
+		elif button == MOUSE_BUTTON_RIGHT and mouse_event.pressed:
 			_secondary_pressed = true
+
+
+func _physical_mouse_button(event: InputEventMouseButton, macos := OS.get_name() == "macOS") -> int:
+	var button := int(event.button_index)
+	if not macos:
+		return button
+	# Godot 4.7.1 macOS maps Control-left to RIGHT but keeps NSEvent's physical
+	# pressedMouseButtons in button_mask. Do not alias genuine Ctrl-right to fire.
+	# Track the press so releasing Ctrl before the mouse cannot leave fire held.
+	var mask := int(event.button_mask)
+	if button == MOUSE_BUTTON_RIGHT:
+		if event.pressed and event.ctrl_pressed and (mask & MOUSE_BUTTON_MASK_LEFT) != 0 \
+			and ((mask & MOUSE_BUTTON_MASK_RIGHT) == 0 or (_mac_mouse_mask & MOUSE_BUTTON_MASK_LEFT) == 0):
+			button = MOUSE_BUTTON_LEFT
+			_mac_control_left_down = true
+		elif not event.pressed and _mac_control_left_down and (mask & MOUSE_BUTTON_MASK_LEFT) == 0:
+			button = MOUSE_BUTTON_LEFT
+			_mac_control_left_down = false
+	_mac_mouse_mask = mask
+	return button
 
 
 func gather_command(delta: float) -> Dictionary:
 	var command := super.gather_command(delta)
+	if menu_input_blocked:
+		return command
 	command.movement = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	command.look_delta = _look_delta
 	_look_delta = Vector2.ZERO
@@ -69,7 +109,9 @@ func gather_command(delta: float) -> Dictionary:
 	_jump_pressed = false
 	command.crouch = Input.is_action_pressed("crouch")
 	command.walk = Input.is_action_pressed("walk")
-	command.fire = Input.is_action_pressed("fire") or _fire_held
+	# A press and release can both arrive between physics ticks. Carry that tap
+	# for one tick in held input too, otherwise the network packet loses it.
+	command.fire = Input.is_action_pressed("fire") or _fire_held or _fire_pressed
 	command.fire_pressed = Input.is_action_just_pressed("fire") or _fire_pressed
 	command.secondary_pressed = _secondary_pressed
 	_fire_pressed = false

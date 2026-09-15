@@ -132,8 +132,9 @@ func _test_horizontal_fov_and_tracking() -> void:
 		FORWARD,
 	)
 	_check(
-		outside_fov.target == tracked_token and bool(outside_fov.visible),
-		"acquired target remains tracked outside FOV while LOS-visible",
+		outside_fov.target == tracked_token and not bool(outside_fov.visible)
+		and outside_fov.state == "search",
+		"acquired target outside FOV becomes memory instead of a 360-degree lock",
 	)
 
 

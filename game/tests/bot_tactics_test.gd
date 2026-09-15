@@ -10,6 +10,7 @@ func _init() -> void:
 	_test_bursts_and_reload()
 	_test_determinism()
 	_test_continuous_aim()
+	_test_humanized_aim()
 	_test_render_schedule_equivalence()
 	_test_grenade_requests()
 	if failures.is_empty():
@@ -28,6 +29,8 @@ func _visible_observation(distance_hu := 900.0) -> Dictionary:
 		"enemy_position": Vector3(4.0, 0.53, -9.0),
 		"enemy_velocity": Vector3(0.8, 0.0, 0.0),
 		"distance_hu": distance_hu,
+		"observer_origin": Vector3.ZERO,
+		"observer_forward": Vector3(0.0, 0.0, -1.0),
 	}
 
 
@@ -115,6 +118,28 @@ func _test_continuous_aim() -> void:
 		not (moved.aim_target as Vector3).is_equal_approx(first.aim_target),
 		"bot aim follows a moving target instead of freezing at acquisition",
 	)
+
+
+func _test_humanized_aim() -> void:
+	var tactics := BotTactics.new()
+	tactics.reset(1234, 0.58)
+	var observation := _visible_observation(1000.0)
+	var angle := deg_to_rad(45.0)
+	observation.enemy_position = Vector3(sin(angle) * 10.0, 0.53, -cos(angle) * 10.0)
+	var first: Dictionary = tactics.advance_ticks(1, observation)
+	var first_direction := Vector3.ZERO.direction_to(first.aim_target)
+	_check(
+		rad_to_deg(Vector3.FORWARD.angle_to(first_direction)) <= 2.2,
+		"medium bot aim turns at a bounded rate instead of snapping 45 degrees",
+	)
+	var held_goal: Vector2 = first.aim_error_goal
+	for ignored in range(30):
+		tactics.advance_ticks(1, observation)
+	var settled: Dictionary = tactics.snapshot()
+	_check(settled.aim_error_goal == held_goal,
+		"aim error persists instead of rerolling every 10 ms")
+	_check(absf(float(settled.aim_error.x)) > 0.14 or absf(float(settled.aim_error.y)) > 0.14,
+		"medium bot carries meaningful human-sized aim error")
 
 
 func _render_trace(fps: int) -> Dictionary:

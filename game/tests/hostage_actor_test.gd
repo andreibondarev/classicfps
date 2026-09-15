@@ -111,7 +111,7 @@ func _assert_animation_tape(hostage: CS16Hostage) -> void:
 	var model := hostage.hostage_model
 	hostage.reset_actor(0)
 	hostage.set_motion_velocity_hu(Vector3.ZERO)
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(
 		model.animation_state == "idle"
 		# The idle loop starts at a per-hostage random phase (GoldSrc random
@@ -126,14 +126,14 @@ func _assert_animation_tape(hostage: CS16Hostage) -> void:
 		and model.current_frame_key == "acknowledge:0:1:0",
 		"acknowledgment starts on exact source frame zero",
 	)
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(
 		model.current_frame_key == "acknowledge:0:1:655",
 		"acknowledgment advances deterministically at 16 FPS on 100 Hz tick",
 	)
 
 	hostage.cower(true)
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(
 		model.animation_state == "cower"
 		and model.current_frame_key == "cower:0:1:737",
@@ -144,7 +144,7 @@ func _assert_animation_tape(hostage: CS16Hostage) -> void:
 	hostage.set_motion_velocity_hu(
 		Vector3(HostageModelScript.WALK_SOURCE_SPEED_HU, 0.0, 0.0)
 	)
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(
 		model.animation_state == "walk"
 		and is_equal_approx(model.playback_rate, 1.0)
@@ -154,7 +154,7 @@ func _assert_animation_tape(hostage: CS16Hostage) -> void:
 
 	var follow_speed_hu := 250.0
 	hostage.set_motion_velocity_hu(Vector3(follow_speed_hu, 0.0, 0.0))
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(model.animation_state == "run", "normal hostage follow speed selects run")
 	var cycle_seconds := 19.0 / 25.0 / model.playback_rate
 	var traveled_per_cycle := follow_speed_hu * cycle_seconds
@@ -167,13 +167,13 @@ func _assert_animation_tape(hostage: CS16Hostage) -> void:
 	hostage.reset_actor(0)
 	hostage.set_motion_velocity_hu(Vector3(follow_speed_hu, 0.0, 0.0))
 	for tick in 40:
-		hostage.advance_hostage_tick()
+		_advance_visual_tick(hostage)
 		tape_a.append(model.current_frame_key)
 	var tape_b: Array[String] = []
 	hostage.reset_actor(0)
 	hostage.set_motion_velocity_hu(Vector3(follow_speed_hu, 0.0, 0.0))
 	for tick in 40:
-		hostage.advance_hostage_tick()
+		_advance_visual_tick(hostage)
 		tape_b.append(model.current_frame_key)
 	_check(tape_a == tape_b, "100 Hz hostage animation tape is deterministic")
 
@@ -196,9 +196,9 @@ func _assert_presence_states(hostage: CS16Hostage) -> void:
 	)
 	hostage.die()
 	for tick in 200:
-		hostage.advance_hostage_tick()
+		_advance_visual_tick(hostage)
 	var death_key := hostage.hostage_model.current_frame_key
-	hostage.advance_hostage_tick()
+	_advance_visual_tick(hostage)
 	_check(
 		not hostage.alive
 		and hostage.hostage_model.visible
@@ -293,3 +293,9 @@ func _check(condition: bool, message: String) -> void:
 	if condition:
 		return
 	failures.append(message)
+
+
+func _advance_visual_tick(hostage: CS16Hostage) -> void:
+	# These source-frame assertions observe a render after each logical tick.
+	hostage.advance_hostage_tick()
+	hostage.hostage_model._process(0.0)

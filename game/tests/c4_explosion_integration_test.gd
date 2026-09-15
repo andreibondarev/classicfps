@@ -113,7 +113,7 @@ func _run() -> void:
 	var dry_target = game.targets[3]
 	dry_target.reset_target(origin + Vector3(1.2, 0.0, 0.0))
 	dry_target.set_meta("source_water_level", 0)
-	effects.event_log.clear()
+	effects.clear_event_log()
 	game._apply_c4_explosion({
 		"position": origin,
 		"damage": RoundStateScript.C4_DAMAGE,

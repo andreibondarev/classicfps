@@ -41,6 +41,15 @@ const CT_PRIMARIES := [
 const AWP := {"id": "awp", "price": 4750}
 
 
+static func presentation_weapons(team: String, bot_index: int) -> Array[String]:
+	# Loading uses the same candidate list as buying, including the assigned
+	# sniper role. This is not a purchase and must never change any accounts.
+	var result: Array[String] = ["glock18" if team == TEAM_T else "usp"]
+	for candidate: Dictionary in _primary_candidates(team, bot_index % 5 == 0):
+		result.append(str(candidate.id))
+	return result
+
+
 static func build(
 	team: String,
 	money: int,

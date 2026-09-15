@@ -2,6 +2,7 @@ class_name CS16Ballistics
 extends RefCounted
 
 const WeaponRegistry := preload("res://scripts/cs16_weapon_registry.gd")
+const AudioCatalog := preload("res://scripts/cs16_audio_catalog.gd")
 
 ## Counter-Strike 1.6 ballistics constants and deterministic pure helpers.
 ##
@@ -38,6 +39,117 @@ const SURFACE_VENT := "vent"
 const SURFACE_TILE := "tile"
 const SURFACE_COMPUTER := "computer"
 const SURFACE_WOOD := "wood"
+
+
+static func surface_for_hit(hit: Dictionary) -> String:
+	# Face indices belong to the collider's submodel, not necessarily world
+	# model zero. Moving brushes carry their own texture table on the body.
+	var node := hit.get("collider") as Node
+	var face := int(hit.get("face_index", -1))
+	var texture := ""
+	while is_instance_valid(node):
+		if node.has_meta("face_textures"):
+			var textures: Array = node.get_meta("face_textures")
+			if face >= 0 and face < textures.size():
+				texture = str(textures[face])
+			break
+		if node.has_method("texture_name_for_face"):
+			texture = str(node.call("texture_name_for_face", face))
+			break
+		node = node.get_parent()
+	match AudioCatalog.material_code(texture):
+		AudioCatalog.METAL: return SURFACE_METAL
+		AudioCatalog.GRATE: return SURFACE_GRATE
+		AudioCatalog.VENT: return SURFACE_VENT
+		AudioCatalog.TILE: return SURFACE_TILE
+		AudioCatalog.COMPUTER: return SURFACE_COMPUTER
+		AudioCatalog.WOOD: return SURFACE_WOOD
+		AudioCatalog.CONCRETE: return SURFACE_CONCRETE
+	return SURFACE_DEFAULT
+
+
+# ReGameDLL wpn_shared: deploy baseline, exponent, divisor, offset, cap.
+# Use floating-point divisors (REGAMEDLL_FIXES), as the existing AK model does.
+const AUTOMATIC_ACCURACY := {
+	"ak47": [0.2, 3, 200.0, 0.35, 1.25], "m4a1": [0.2, 3, 220.0, 0.3, 1.0],
+	"aug": [0.2, 3, 215.0, 0.3, 1.0], "sg552": [0.2, 3, 220.0, 0.3, 1.0],
+	"famas": [0.2, 3, 215.0, 0.3, 1.0], "galil": [0.2, 3, 200.0, 0.35, 1.25],
+	"m249": [0.2, 3, 175.0, 0.4, 0.9], "mp5": [0.0, 2, 220.1, 0.45, 0.75],
+	"mac10": [0.15, 3, 200.0, 0.6, 1.65], "ump45": [0.0, 2, 210.0, 0.5, 1.0],
+	"tmp": [0.2, 3, 200.0, 0.55, 1.4], "p90": [0.2, 2, 175.0, 0.45, 1.0],
+}
+# Deploy/max accuracy, minimum, recovery interval, recovery coefficient.
+const PISTOL_ACCURACY := {
+	"deagle": [0.9, 0.55, 0.4, 0.35], "glock18": [0.9, 0.6, 0.325, 0.275],
+	"usp": [0.92, 0.6, 0.3, 0.275], "p228": [0.9, 0.6, 0.325, 0.3],
+	"elite": [0.88, 0.55, 0.325, 0.275], "fiveseven": [0.92, 0.725, 0.275, 0.25],
+}
+
+
+static func base_accuracy(weapon: String) -> float:
+	if AUTOMATIC_ACCURACY.has(weapon): return float(AUTOMATIC_ACCURACY[weapon][0])
+	if PISTOL_ACCURACY.has(weapon): return float(PISTOL_ACCURACY[weapon][0])
+	return 0.9 if weapon == "sg550" else 0.2
+
+
+static func automatic_accuracy(weapon: String, shots: int) -> float:
+	var p: Array = AUTOMATIC_ACCURACY[weapon]
+	return minf(pow(float(shots), float(p[1])) / float(p[2]) + float(p[3]), float(p[4]))
+
+
+static func pistol_accuracy(weapon: String, previous: float, elapsed: float) -> float:
+	if not PISTOL_ACCURACY.has(weapon): return previous
+	var p: Array = PISTOL_ACCURACY[weapon]
+	return clampf(previous - (float(p[2]) - elapsed) * float(p[3]), float(p[1]), float(p[0]))
+
+
+static func sniper_accuracy(weapon: String, elapsed: float) -> float:
+	if elapsed < 0.0: return 0.98 if weapon == "g3sg1" else 0.9
+	return minf(0.98, elapsed * (0.3 if weapon == "g3sg1" else 0.35) + (0.55 if weapon == "g3sg1" else 0.65))
+
+
+static func weapon_spread(
+	weapon: String, grounded: bool, speed: float, crouched: bool,
+	zoomed: bool, rifle_accuracy: float, pistol_accuracy: float, alternate_mode := false,
+) -> float:
+	## Shared source-derived stance coefficients. Accuracy is sampled before
+	## each primary shot updates it; burst follow-ups are handled by the caller.
+	if weapon == "ak47":
+		if not grounded: return 0.04 + 0.4 * rifle_accuracy
+		if speed > 140.0 * METERS_PER_GOLDSRC_UNIT: return 0.04 + 0.07 * rifle_accuracy
+		return 0.0275 * rifle_accuracy
+	var item := WeaponRegistry.definition(weapon)
+	if int(item.get("pellets", 1)) > 1:
+		return float(item.cone)
+	match weapon:
+		"awp":
+			var base := 0.85 if not grounded else (0.25 if speed > 1.4 else (0.1 if speed > 0.1 else (0.0 if crouched else 0.001)))
+			return base + (0.0 if zoomed else 0.08)
+		"scout":
+			return (0.2 if not grounded else (0.075 if speed > 1.7 else (0.0 if crouched else 0.007))) + (0.0 if zoomed else 0.025)
+		"g3sg1":
+			return ((0.45 if not grounded else (0.15 if speed > 0.0 else (0.035 if crouched else 0.055))) + (0.0 if zoomed else 0.025)) * (1.0 - rifle_accuracy)
+		"sg550":
+			return (0.45 * (1.0 - rifle_accuracy) if not grounded else (0.15 if speed > 0.0 else (0.04 if crouched else 0.05) * (1.0 - rifle_accuracy))) + (0.0 if zoomed else 0.025)
+		"aug", "m4a1":
+			return 0.035 + 0.4 * rifle_accuracy if not grounded else (0.035 + 0.07 * rifle_accuracy if speed > 1.4 else (0.025 if weapon == "m4a1" and alternate_mode else 0.02) * rifle_accuracy)
+		"sg552": return 0.035 + 0.45 * rifle_accuracy if not grounded else (0.035 + 0.075 * rifle_accuracy if speed > 1.4 else 0.02 * rifle_accuracy)
+		"famas": return (0.03 + 0.3 * rifle_accuracy if not grounded else (0.03 + 0.07 * rifle_accuracy if speed > 1.4 else 0.02 * rifle_accuracy)) + (0.0 if alternate_mode else 0.01)
+		"galil": return 0.04 + 0.3 * rifle_accuracy if not grounded else (0.04 + 0.07 * rifle_accuracy if speed > 1.4 else 0.0375 * rifle_accuracy)
+		"m249": return 0.045 + 0.5 * rifle_accuracy if not grounded else (0.045 + 0.095 * rifle_accuracy if speed > 1.4 else 0.03 * rifle_accuracy)
+		"mp5": return (0.04 if grounded else 0.2) * rifle_accuracy
+		"mac10": return (0.03 if grounded else 0.375) * rifle_accuracy
+		"ump45": return (0.04 if grounded else 0.24) * rifle_accuracy
+		"tmp": return (0.03 if grounded else 0.25) * rifle_accuracy
+		"p90": return (0.3 if not grounded else (0.115 if speed > 1.7 else 0.045)) * rifle_accuracy
+	var coefficients: Array = [1.5, 0.25, 0.115, 0.13] # Deagle
+	match weapon:
+		"glock18": coefficients = [1.2, 0.185, 0.095, 0.3] if alternate_mode else [1.0, 0.165, 0.075, 0.1]
+		"usp": coefficients = [1.3, 0.25, 0.125, 0.15] if alternate_mode else [1.2, 0.225, 0.08, 0.1]
+		"p228", "fiveseven": coefficients = [1.5, 0.255, 0.075, 0.15]
+		"elite": coefficients = [1.3, 0.175, 0.08, 0.1]
+	var stance := 0 if not grounded else (1 if speed > 0.0 else (2 if crouched else 3))
+	return float(coefficients[stance]) * (1.0 - pistol_accuracy)
 
 ## weapons.h knife constants. CKnife::Stab multiplies its damage by
 ## KNIFE_BACKSTAB_MULTIPLIER when the 2D dot product of the attacker's forward
@@ -421,8 +533,15 @@ static func _surface_penetration_response(
 	}
 
 
-## Exact GoldSrc client/server shared random float, including float32 bit
-## seeding and uint32 overflow.
+## Exact GoldSrc client/server shared integer random, inclusive bounds.
+static func shared_random_long(seed: int, low: int, high: int) -> int:
+	var width := high - low + 1
+	if width <= 1: return low
+	var state := int(_SEED_TABLE[(seed + low + high) & 0xff])
+	return low + int(_u_random(state)[1]) % width
+
+
+## Float32 bit seeding, uint32 overflow and the source's truncated range.
 static func shared_random_float(seed: int, low: float, high: float) -> float:
 	var low_bits := PackedFloat32Array([low]).to_byte_array().decode_u32(0)
 	var high_bits := PackedFloat32Array([high]).to_byte_array().decode_u32(0)

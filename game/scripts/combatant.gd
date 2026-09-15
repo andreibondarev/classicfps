@@ -24,16 +24,25 @@ var health := 100
 var armor := 0
 var has_helmet := false
 var alive := true
+var network_read_only := false
+# Authoritative vertical view angle used by first-person spectators. Player
+# pawns update this from their camera, bots from their look target, and network
+# replicas from the pitch carried in each world snapshot.
+var spectator_view_pitch := 0.0
+var spectator_crouched := false
 # Flashbang blindness, expressed in physics frames so bots and the player
 # share one clock. -1 = not blinded.
 var flash_blind_until_frame := -1
+var flash_blind_total_seconds := 0.0
 
 
 func apply_flash_blind(duration_seconds: float) -> void:
 	var until := Engine.get_physics_frames() + int(
 		duration_seconds * Engine.physics_ticks_per_second
 	)
-	flash_blind_until_frame = maxi(flash_blind_until_frame, until)
+	if until > flash_blind_until_frame:
+		flash_blind_until_frame = until
+		flash_blind_total_seconds = duration_seconds
 
 
 func is_flash_blinded() -> bool:
@@ -41,11 +50,21 @@ func is_flash_blinded() -> bool:
 var combat_controller: CombatController
 var last_command: Dictionary = {}
 var last_damage_attacker: Combatant
+var last_damage_weapon := ""
+var last_damage_impact_audio := "player.pain"
 
 
 func _ready() -> void:
 	add_to_group("combatants")
 	add_to_group("damageable")
+
+
+func publish_combat_presentation(kind: String, data: Dictionary) -> void:
+	if network_read_only:
+		return
+	var scene := get_tree().current_scene
+	if is_instance_valid(scene) and scene.has_method("publish_combat_presentation"):
+		scene.publish_combat_presentation(self, kind, data)
 
 
 func configure_identity(new_team: String, new_display_name: String) -> void:
@@ -69,10 +88,11 @@ func receive_damage(
 	headshot := false,
 	attacker: Combatant = null,
 ) -> bool:
-	if not alive or amount <= 0.0:
+	if network_read_only or not alive or amount <= 0.0:
 		return false
 	if is_instance_valid(attacker) and not is_opponent(attacker):
 		return false
+	last_damage_impact_audio = "player.pain"
 
 	var remaining := int(round(amount))
 	if armor > 0:
@@ -89,7 +109,7 @@ func receive_bullet_damage(
 	hit_position := Vector3.ZERO,
 	attacker: Combatant = null,
 ) -> bool:
-	if not alive or damage_after_range <= 0:
+	if network_read_only or not alive or damage_after_range <= 0:
 		return false
 	if is_instance_valid(attacker) and not is_opponent(attacker):
 		return false
@@ -100,6 +120,12 @@ func receive_bullet_damage(
 		if armor > 0
 		else Ballistics.ArmorType.NONE
 	)
+	if hit_group == Ballistics.HitGroup.HEAD and armor_type == Ballistics.ArmorType.VEST_HELMET:
+		last_damage_impact_audio = "player.hit_helmet"
+	elif armor > 0 and hit_group not in [Ballistics.HitGroup.HEAD, Ballistics.HitGroup.LEFT_LEG, Ballistics.HitGroup.RIGHT_LEG]:
+		last_damage_impact_audio = "player.hit_kevlar"
+	else:
+		last_damage_impact_audio = "player.hit_flesh"
 	var result := Ballistics.resolve_bullet_damage(
 		damage_after_range,
 		hit_group,
@@ -113,6 +139,7 @@ func receive_bullet_damage(
 		hit_position,
 		hit_group == Ballistics.HitGroup.HEAD,
 		attacker,
+		weapon_name,
 	)
 
 
@@ -124,6 +151,25 @@ func facing_direction() -> Vector3:
 	if forward.length_squared() <= 0.0000001:
 		return Vector3.FORWARD
 	return forward.normalized()
+
+
+func spectator_view_transform() -> Transform3D:
+	# PlayerController owns a real eye camera, including crouch height and recoil;
+	# use it directly without coupling this base actor to the player script.
+	var eye_camera := get_node_or_null("PlayerCamera") as Camera3D
+	if is_instance_valid(eye_camera):
+		return eye_camera.global_transform
+	var eye_height := (
+		30.0 * GOLDSRC_UNIT
+		if is_crouching() or spectator_crouched
+		else STANDING_VIEW_HEIGHT
+	)
+	var view_basis := Basis.from_euler(Vector3(
+		clampf(spectator_view_pitch, deg_to_rad(-89.0), deg_to_rad(89.0)),
+		global_rotation.y,
+		0.0,
+	))
+	return Transform3D(view_basis, global_position + Vector3.UP * eye_height)
 
 
 ## Knife hits use TraceAttack with DMG_BULLET, so they share the bullet armor
@@ -155,10 +201,11 @@ func receive_explosion_damage(
 	hit_position := Vector3.ZERO,
 	attacker: Combatant = null,
 ) -> bool:
-	if not alive or raw_damage <= 0.0:
+	if network_read_only or not alive or raw_damage <= 0.0:
 		return false
 	if is_instance_valid(attacker) and not is_opponent(attacker):
 		return false
+	last_damage_impact_audio = "player.pain"
 	var result := Ballistics.apply_explosion_armor(raw_damage, float(armor))
 	armor = maxi(0, int(float(result.armor_remaining)))
 	return _commit_damage(
@@ -166,6 +213,7 @@ func receive_explosion_damage(
 		hit_position,
 		false,
 		attacker,
+		"hegrenade",
 	)
 
 
@@ -174,8 +222,9 @@ func receive_c4_explosion_damage(
 	hit_position := Vector3.ZERO,
 	attacker: Combatant = null,
 ) -> bool:
-	if not alive or raw_damage <= 0.0:
+	if network_read_only or not alive or raw_damage <= 0.0:
 		return false
+	last_damage_impact_audio = "player.pain"
 	# C4 RadiusDamage is objective world damage: unlike bullets and grenades it
 	# reaches the planter and teammates regardless of the normal ally filter.
 	var result := Ballistics.apply_explosion_armor(raw_damage, float(armor))
@@ -185,6 +234,7 @@ func receive_c4_explosion_damage(
 		hit_position,
 		false,
 		attacker,
+		"c4",
 	)
 
 
@@ -193,8 +243,10 @@ func _commit_damage(
 	hit_position: Vector3,
 	headshot: bool,
 	attacker: Combatant,
+	weapon_name := "",
 ) -> bool:
 	last_damage_attacker = attacker if is_instance_valid(attacker) else null
+	last_damage_weapon = weapon_name
 	health = maxi(0, health - maxi(health_damage, 0))
 	_on_combatant_damaged(attacker, hit_position, headshot)
 	combatant_damaged.emit(self, attacker, health, headshot)
@@ -207,6 +259,7 @@ func _commit_damage(
 
 
 func reset_combatant(spawn_position: Vector3, starting_armor := 0) -> void:
+	flash_blind_until_frame = -1
 	health = 100
 	armor = starting_armor
 	if starting_armor <= 0:
@@ -214,6 +267,8 @@ func reset_combatant(spawn_position: Vector3, starting_armor := 0) -> void:
 	alive = true
 	last_command = {}
 	last_damage_attacker = null
+	last_damage_weapon = ""
+	last_damage_impact_audio = "player.pain"
 	velocity = Vector3.ZERO
 	global_position = spawn_position
 	_drop_spawn_to_floor()
@@ -269,7 +324,28 @@ func aim_point() -> Vector3:
 
 
 func head_height() -> float:
-	return global_position.y + STANDING_HEAD_HEIGHT
+	return global_position.y + (34.0 * GOLDSRC_UNIT if is_crouching() else STANDING_HEAD_HEIGHT)
+
+
+func is_crouching() -> bool:
+	return false
+
+
+func hit_group_at(world_position: Vector3) -> int:
+	# A posture-aware approximation, not bone-attached MDL hitboxes. Side labels
+	# belong to the victim's body axes, never the world X axis.
+	var local := to_local(world_position) / GOLDSRC_UNIT
+	var head_hu := (head_height() - global_position.y) / GOLDSRC_UNIT
+	if local.y >= head_hu:
+		return Ballistics.HitGroup.HEAD
+	var posture_scale := head_hu / 57.0
+	if local.y < 30.0 * posture_scale:
+		return Ballistics.HitGroup.LEFT_LEG if local.x < 0.0 else Ballistics.HitGroup.RIGHT_LEG
+	if local.y < 42.0 * posture_scale:
+		return Ballistics.HitGroup.STOMACH
+	if absf(local.x) >= 11.0:
+		return Ballistics.HitGroup.LEFT_ARM if local.x < 0.0 else Ballistics.HitGroup.RIGHT_ARM
+	return Ballistics.HitGroup.CHEST
 
 
 func _on_combatant_damaged(

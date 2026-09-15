@@ -5,6 +5,12 @@ const Ballistics := preload("res://scripts/cs16_ballistics.gd")
 const WeaponClock := preload("res://scripts/cs16_weapon_clock.gd")
 const CombatEffectsScript := preload("res://scripts/cs16_combat_effects.gd")
 const AudioRouterScript := preload("res://scripts/cs16_audio_event_router.gd")
+const WorldModelScript := preload("res://scripts/cs16_c4_world.gd")
+const WORLD_MODELS := {
+	"hegrenade": "res://generated/world_weapons/hegrenade/model.json",
+	"flashbang": "res://generated/world_weapons/flashbang/model.json",
+	"smokegrenade": "res://generated/world_weapons/smokegrenade/model.json",
+}
 const FUSE_SECONDS := Ballistics.HE_FUSE_SECONDS
 # ShootTimed2's 1.5-second fuse at the authoritative 100 Hz clock.
 const FUSE_TICKS := 150
@@ -20,10 +26,13 @@ var _cleanup_tick := WeaponClock.NEVER
 var _last_surface_normal := Vector3.UP
 var audio_router: CS16AudioEventRouter
 var grenade_kind := "hegrenade"
+var _detonated_tick := 0
+var visual: Node3D
 
 
 func _ready() -> void:
 	name = "HEGrenade"
+	add_to_group("live_grenades")
 	collision_layer = 8
 	collision_mask = 1 | 2 | 4
 	continuous_cd = true
@@ -47,18 +56,17 @@ func _ready() -> void:
 	shape.radius = Ballistics.METERS_PER_GOLDSRC_UNIT
 	collider.shape = shape
 	add_child(collider)
-	var model := MeshInstance3D.new()
-	var mesh := SphereMesh.new()
-	mesh.radius = 0.085
-	mesh.height = 0.17
-	var material := StandardMaterial3D.new()
-	material.albedo_color = Color("#26352d")
-	material.metallic = 0.28
-	mesh.material = material
-	model.mesh = mesh
-	add_child(model)
 	audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
 	body_entered.connect(_on_body_entered)
+
+
+static func create_visual(kind := "hegrenade") -> Node3D:
+	if not WORLD_MODELS.has(kind):
+		push_error("Unknown grenade world model: %s" % kind)
+		return Node3D.new()
+	var model := WorldModelScript.create_source_model(WORLD_MODELS[kind], "GrenadeModel")
+	model.set_meta("source_model", WORLD_MODELS[kind])
+	return model
 
 
 func _physics_process(_delta: float) -> void:
@@ -95,6 +103,13 @@ func launch(
 ) -> void:
 	thrower = thrower_combatant
 	grenade_kind = kind
+	# launch supplies the kind after tree entry; do not build a default HE
+	# visual in _ready for flash/smoke throws. Physics remains on this body.
+	if is_instance_valid(visual):
+		remove_child(visual)
+		visual.queue_free()
+	visual = create_visual(kind)
+	add_child(visual)
 	name = "HEGrenade" if kind == "hegrenade" else kind
 	global_position = origin
 	linear_velocity = impulse
@@ -102,6 +117,9 @@ func launch(
 	_simulation_tick = 0
 	_cleanup_tick = WeaponClock.NEVER
 	_last_surface_normal = Vector3.UP
+	var scene := get_tree().current_scene
+	if scene.has_method("_network_item_state"):
+		scene._network_item_state(self, "grenade", grenade_kind)
 
 
 func _on_body_entered(_body: Node) -> void:
@@ -114,6 +132,8 @@ func _on_body_entered(_body: Node) -> void:
 
 
 func _audio_entity_id() -> int:
+	if has_meta("network_item_id"):
+		return 1000 + int(get_meta("network_item_id"))
 	if is_instance_valid(thrower) and thrower.has_method("audio_entity_id"):
 		return 1000 + int(thrower.call("audio_entity_id"))
 	return 1000 + get_instance_id() % 1000000
@@ -141,20 +161,24 @@ func explode() -> void:
 	if _exploded:
 		return
 	_exploded = true
+	_detonated_tick = _simulation_tick
 	_cleanup_tick = _simulation_tick + CLEANUP_TICKS
 	freeze = true
 	visible = false
-	_emit_audio(
-		"he.explode",
-		AudioRouterScript.CHAN_WEAPON,
-		{"variant_index": 0},
-	)
-	_emit_audio(
-		"he.debris",
-		AudioRouterScript.CHAN_VOICE,
-		{"volume": 0.55},
-	)
+	collision_layer = 0
+	collision_mask = 0
+	if grenade_kind == "flashbang":
+		_emit_audio("flash.explode", AudioRouterScript.CHAN_VOICE, {"volume": 0.55})
+	elif grenade_kind == "smokegrenade":
+		_emit_audio("smoke.explode", AudioRouterScript.CHAN_WEAPON)
+	else:
+		_emit_audio("he.explode", AudioRouterScript.CHAN_WEAPON, {"variant_index": 0})
+		_emit_audio("he.debris", AudioRouterScript.CHAN_VOICE, {"volume": 0.55})
 	var combat_effects := CombatEffectsScript.for_scene(get_tree().current_scene)
+	var scene := get_tree().current_scene
+	if is_instance_valid(scene) and scene.has_method("_publish_network_impact") and grenade_kind != "smokegrenade":
+		scene._publish_network_impact("explosion", {"weapon": grenade_kind, "position": global_position,
+			"normal": _last_surface_normal, "underwater": false})
 	if grenade_kind == "flashbang":
 		if is_instance_valid(combat_effects):
 			combat_effects._spawn_sprite(
@@ -168,8 +192,8 @@ func explode() -> void:
 		if is_instance_valid(combat_effects):
 			# CS 1.6 smoke: a massive, ground-hugging, vision-blocking gray-olive
 			# cloud that persists ~15 seconds, not a single small puff.
-			combat_effects.spawn_smoke_cloud(global_position)
-		queue_free()
+			combat_effects.spawn_smoke_cloud(global_position, int(get_meta("network_item_id", 0)), true)
+		_cleanup_tick = _simulation_tick + CombatEffectsScript.SMOKE_CLOUD_LIFETIME_TICKS + (CombatEffectsScript.SMOKE_CLOUD_PUFF_COUNT - 1) * 4
 		return
 	if is_instance_valid(combat_effects):
 		combat_effects.spawn_he_explosion(global_position, _last_surface_normal)

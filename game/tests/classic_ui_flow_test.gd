@@ -243,6 +243,12 @@ func _run() -> void:
 	var deagle := hud.buy_list_panel.get_node("BuyItem_deagle") as Button
 	var elites := hud.buy_list_panel.get_node("BuyItem_elites") as Button
 	var glock_accelerator := glock.get_node("AcceleratorText") as RichTextLabel
+	var glock_price := glock.get_node("PriceText") as Label
+	_check(glock_price.vertical_alignment == VERTICAL_ALIGNMENT_TOP
+		and glock_price.position.y == glock_accelerator.position.y
+		and glock_price.get_theme_font("font") == glock_accelerator.get_theme_font("normal_font")
+		and glock_price.get_meta("source_baseline") == glock_accelerator.get_meta("source_baseline"),
+		"buy name and price share vertical origin and font baseline")
 	_check(
 		glock.text == "1 9X19MM SIDEARM"
 		and not glock.text.contains("1 1")
@@ -308,17 +314,24 @@ func _run() -> void:
 	)
 
 	hud.show_buy_menu(1, 1000, {"primary_ammo_price": 80, "secondary_ammo_price": 40})
+	var ammo_requests: Array[String] = []
+	hud.buy_item_requested.connect(func(item: String) -> void: ammo_requests.append(item))
 	hud._show_buy_category("primary_ammo")
+	hud._show_buy_category("secondary_ammo")
 	_check(
-		int(hud._buy_items[0].price) == 80,
-		"typed buy context supplies authoritative caliber-dependent ammo price",
+		ammo_requests == ["primammo", "secammo"] and hud._menu_state == "buy_category"
+		and hud._buy_navigation_level == "category" and not hud.buy_item_panel.visible,
+		"ammo commands emit once without opening an empty detail page",
 	)
 
 	var players := [
-		{"name": "Alpha", "team": 2, "score": 8, "deaths": 3, "latency": 26, "alive": true},
-		{"name": "Bravo", "team": 1, "score": 5, "deaths": 4, "latency": 31, "alive": false},
+		{"name": "Alpha", "team": 2, "score": 8, "deaths": 3, "latency": 26, "alive": true, "is_local": true,
+			"show_private_stats": true, "health": 48, "money": 11260, "bomb": true},
+		{"name": "Bravo", "team": 1, "score": 5, "deaths": 4, "latency": 31, "alive": false,
+			"health": 81, "money": 16000, "bomb": true},
 		{"name": "HLTV", "team": 0, "score": 0, "deaths": 0, "latency": 12, "alive": true},
 	]
+	hud.set_buy_menu_visible(false)
 	hud.show_scoreboard(players, "Protocol 47 Test", "de_dust2", 4, 3)
 	_check(hud.scoreboard_overlay.visible, "TAB scoreboard API controls visibility")
 	_check(
@@ -334,15 +347,39 @@ func _run() -> void:
 		"scoreboard renders spectator rows",
 	)
 	var dead_row := hud.scoreboard_rows.get_node("Player_Bravo") as Control
-	# CS 1.6's scoreboard never draws per-row dead/VIP/bomb glyphs; dead
-	# players keep an unadorned row and the bomb carrier is never revealed.
+	var local_row := hud.scoreboard_rows.get_node("Player_Alpha") as Control
+	_check(local_row.get_node("Health").text == "48" and local_row.get_node("Money").text == "$11260"
+		and local_row.get_node("Status").text == "Bomb", "known teammate stats and carrier use separate columns")
+	_check(dead_row.get_node("Health").text == "" and dead_row.get_node("Money").text == ""
+		and dead_row.get_node("Status").text == "Dead" and dead_row.get_node("Latency").text == "31",
+		"opponent private stats stay hidden and Dead does not replace latency")
+	_check(hud.scoreboard_rows.get_child(0).name == "Team1Section"
+		and hud.scoreboard_rows.get_node("Team1Section/Score").text == "3"
+		and hud.scoreboard_rows.get_node("Team2Section/Score").text == "4",
+		"Terrorists are first and team totals occupy the Score column")
+	_check(local_row.get_meta("is_local") and local_row.draw.get_connections().size() == 1,
+		"local scoreboard row has a background highlight without extra layout children")
+	_check(not dead_row.get_meta("is_local") and dead_row.draw.get_connections().is_empty(),
+		"other player rows are not highlighted")
+	_check(local_row.get_child_count() == dead_row.get_child_count(), "highlight preserves scoreboard columns")
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--scoreboard-capture="):
+			await process_frame
+			await process_frame
+			RenderingServer.force_draw()
+			_check(root.get_texture().get_image().save_png(argument.trim_prefix("--scoreboard-capture=")) == OK,
+				"highlighted scoreboard capture saved")
+	# The reference uses text status, not additional skull/bomb artwork.
 	_check(
 		dead_row.find_child("Status_smallskull", true, false) == null,
 		"scoreboard draws no dead status glyph (CS 1.6 parity)",
 	)
 	players[0]["voice_active"] = true
+	players[0]["alive"] = false
 	players[1]["voice_muted"] = true
 	hud.update_scoreboard(players, "Protocol 47 Test", "de_dust2", 4, 3)
+	_check(hud.scoreboard_rows.get_node("Player_Alpha").get_meta("is_local"),
+		"local highlight survives death and scoreboard rebuild")
 	var active_voice := hud.scoreboard_rows.get_node("Player_Alpha").find_child(
 		"Status_voice_active", true, false
 	) as TextureRect
@@ -389,8 +426,23 @@ func _run() -> void:
 		if child.name.begins_with("Player_Full"):
 			full_row_count += 1
 	_check(full_row_count == 32, "all 32 full-server rows exist behind scoreboard scrolling")
+	await process_frame
+	await process_frame
+	var heading := hud.scoreboard_canvas.get_node("ClientScoreBoard/ScoreboardContent/ColumnHeader") as Control
+	var scored_row := hud.scoreboard_rows.get_node("Player_Full 31") as Control
+	for field in ["Health", "Money", "Score", "Deaths", "Latency"]:
+		_check(absf(heading.get_node(field).get_global_rect().get_center().x
+			- scored_row.get_node(field).get_global_rect().get_center().x) <= 2.0,
+			"scrollbar preserves heading alignment: " + field)
+	var scroll := hud.scoreboard_rows.get_parent() as ScrollContainer
+	scroll.scroll_vertical = 200
+	var old_scroll := scroll.scroll_vertical
+	hud.update_scoreboard(full_server, "Protocol 47 Test", "de_dust2", 4, 3)
+	await process_frame
+	await process_frame
+	_check(scroll.scroll_vertical == old_scroll and old_scroll > 0, "live refresh preserves scoreboard scroll position")
 	var server_label := hud.scoreboard_canvas.get_node(
-		"ClientScoreBoard/ScoreboardContent/ServerName"
+		"ClientScoreBoard/ScoreboardContent/ColumnHeader/ServerName"
 	) as Label
 	_check(server_label.text == "Protocol 47 Test  |  de_dust2", "scoreboard API updates server/map")
 

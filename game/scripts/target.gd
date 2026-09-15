@@ -13,6 +13,7 @@ const BallisticsScript = preload("res://scripts/cs16_ballistics.gd")
 const BotTacticsScript = preload("res://scripts/cs16_bot_tactics.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const GrenadeScript = preload("res://scripts/grenade.gd")
+const BrushContactsScript = preload("res://scripts/cs16_brush_contacts.gd")
 const TERRORIST_SKINS := ["terror", "leet", "arctic", "guerilla"]
 const COUNTER_TERRORIST_SKINS := ["urban", "gsg9", "sas", "gign"]
 const STANDING_HULL_SIZE := Vector3(32, 72, 32) * GOLDSRC_UNIT
@@ -45,6 +46,7 @@ var weapon_clip := BotTacticsScript.AK_CLIP_SIZE
 var weapon_reserve := BotTacticsScript.AK_RESERVE_SIZE
 var weapon_reloading := false
 var weapon_tick := 0
+var _reload_audio_schedule: Array[Dictionary] = []
 var active_weapon_name := "ak47"
 var grenade_counts := {}
 var shot_trace: Array[Dictionary] = []
@@ -66,11 +68,15 @@ var _safe_navigation_velocity := Vector3.ZERO
 var _navigation_velocity_ready := false
 var _effect_shot_sequence := 0
 var _ak_burst_shots := 0
+var _rifle_accuracy := 0.2
+var _pistol_accuracy := 0.9
 var _last_fire_tick := -1000
 var _next_footstep_tick := 0
 var _movement_tick := 0
 var _obstructed_ticks := 0
 var _next_jump_tick := 0
+var _movement_probe_result := KinematicCollision3D.new()
+var _brush_contacts := PackedInt32Array()
 var _left_foot := false
 var _footstep_serial := 0
 var combat_effects: CS16CombatEffects
@@ -95,6 +101,10 @@ func _ready() -> void:
 	floor_max_angle = acos(FLOOR_NORMAL_MINIMUM)
 	floor_snap_length = FLOOR_CATEGORIZE_DISTANCE
 	floor_stop_on_slope = true
+	# PM_ClipVelocity retains tangential movement (down to STOP_EPSILON),
+	# even when walking almost straight into a wall. Godot's default 15-degree
+	# guard discards the small lateral correction needed in narrow corridors.
+	wall_min_slide_angle = 0.0
 	_anchor = global_position
 	_build_actor()
 	combat_effects = CombatEffectsScript.for_scene(get_tree().current_scene)
@@ -224,7 +234,8 @@ func _physics_process(delta: float) -> void:
 			planar_motion = planar_motion - floor_normal * planar_motion.dot(floor_normal)
 	var wanted_motion := Vector2(planar_motion.x, planar_motion.z).length()
 	var climbed := false
-	var blocked := test_move(global_transform, planar_motion, null, 0.015)
+	var blocked := test_move(global_transform, planar_motion, _movement_probe_result, 0.015)
+	var brush_contact := blocked and _movement_probe_result.get_collider() is AnimatableBody3D
 	if blocked:
 		var x_motion := planar_motion
 		x_motion.z = 0.0
@@ -266,6 +277,11 @@ func _physics_process(delta: float) -> void:
 			climbed = true
 			movement_velocity.x = 0.0
 			movement_velocity.z = 0.0
+		elif brush_contact:
+			# Lookahead clipping stops short of movable brushes and prevents
+			# touch-operated doors from ever receiving contact. Let the actual
+			# body solver reach/slide against them; never move through them.
+			movement_velocity = desired_velocity
 	velocity.x = movement_velocity.x
 	velocity.z = movement_velocity.z
 	_update_obstruction_clock(planar_motion, wanted_motion, blocked, climbed)
@@ -278,6 +294,7 @@ func _physics_process(delta: float) -> void:
 			_next_jump_tick = _movement_tick + JUMP_COOLDOWN_TICKS
 			_obstructed_ticks = 0
 	move_and_slide()
+	_record_brush_contacts()
 	_resolve_combatant_hull_overlap()
 	_update_footstep_audio()
 	if is_instance_valid(character_model):
@@ -289,6 +306,20 @@ func _physics_process(delta: float) -> void:
 	if command.has("c4_equipped"):
 		set_c4_state(owns_c4, bool(command.c4_equipped))
 	consume_combat_weapon_command(command)
+
+
+func _record_brush_contacts() -> void:
+	_brush_contacts.clear()
+	BrushContactsScript.append_motion_contacts(self, _brush_contacts)
+
+
+func take_brush_contacts() -> PackedInt32Array:
+	# Consume actual movement contacts once. A collision solver can stop short
+	# of mathematical AABB overlap; its reported contact still owns Touch.
+	# Consuming also prevents old contacts persisting while an actor is frozen.
+	var contacts := _brush_contacts
+	_brush_contacts = PackedInt32Array()
+	return contacts
 
 
 func _damage_pool(target: Object, property: String) -> int:
@@ -486,17 +517,30 @@ func _resolve_combatant_hull_overlap() -> void:
 
 func consume_combat_weapon_command(command: Dictionary) -> void:
 	var command_aim_target: Vector3 = command.get("look_target", Vector3.INF)
-	var was_reloading := weapon_reloading
 	weapon_clip = int(command.get("weapon_clip", weapon_clip))
 	weapon_reserve = int(command.get("weapon_reserve", weapon_reserve))
 	weapon_reloading = bool(command.get("weapon_reloading", weapon_reloading))
 	weapon_tick = int(command.get("weapon_tick", weapon_tick))
 	if bool(command.reload):
+		_ak_burst_shots = 0
+		_rifle_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+		_pistol_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+		_last_fire_tick = -1
+		_reload_audio_schedule.clear()
+		var reload_ticks: Array = command.get("reload_ticks", [])
+		var start_tick := int(reload_ticks[-1]) if not reload_ticks.is_empty() else weapon_tick
+		for stage: Dictionary in AudioCatalogScript.RELOAD_AUDIO_STAGES.get(active_weapon_name, []):
+			_reload_audio_schedule.append({"tick": start_tick + int(stage.offset), "event": stage.event})
+		if active_weapon_name in ["m3", "xm1014"]:
+			_emit_audio("shotgun.insert", AudioRouterScript.CHAN_WEAPON)
+		publish_combat_presentation("reload", {"weapon": active_weapon_name})
 		if is_instance_valid(character_model):
 			character_model.play_action("reload")
-		_emit_audio("%s.clip_out" % active_weapon_name, AudioRouterScript.CHAN_ITEM)
-	elif was_reloading and not weapon_reloading:
-		_emit_audio("%s.clip_in" % active_weapon_name, AudioRouterScript.CHAN_ITEM)
+	if not alive or bool(command.fire):
+		_reload_audio_schedule.clear()
+	while not _reload_audio_schedule.is_empty() and int(_reload_audio_schedule[0].tick) <= weapon_tick:
+		var stage: Dictionary = _reload_audio_schedule.pop_front()
+		_emit_audio(str(stage.event), AudioRouterScript.CHAN_WEAPON)
 
 	var throw_request: Dictionary = command.get("throw_grenade", {})
 	if not throw_request.is_empty() and not c4_equipped:
@@ -530,8 +574,9 @@ func face_aim_target(world_target: Vector3) -> void:
 	var planar_distance := Vector2(delta.x, delta.z).length()
 	if planar_distance <= 0.001:
 		return
+	spectator_view_pitch = atan2(delta.y, planar_distance)
 	if is_instance_valid(character_model):
-		character_model.set_aim_pitch(atan2(delta.y, planar_distance))
+		character_model.set_aim_pitch(spectator_view_pitch)
 	var yaw_target := world_target
 	yaw_target.y = global_position.y
 	look_at(yaw_target, Vector3.UP)
@@ -539,6 +584,10 @@ func face_aim_target(world_target: Vector3) -> void:
 	# this child so aiming only rotates the actor's visuals, never its 32 HU hull.
 	if is_instance_valid(_collision_shape):
 		_collision_shape.rotation.y = -rotation.y
+
+
+func is_crouching() -> bool:
+	return objective_crouch or bool(last_command.get("crouch", false))
 
 
 func _try_fire(
@@ -557,15 +606,28 @@ func _try_fire(
 		fire_tick = weapon_tick
 	if origin.distance_squared_to(aim_target) <= 0.000001:
 		return
-	if fire_tick - _last_fire_tick > 40:
-		_ak_burst_shots = 0
-	_ak_burst_shots += 1
-	_last_fire_tick = fire_tick
-	var accuracy := minf(
-		1.25,
-		float(_ak_burst_shots * _ak_burst_shots * _ak_burst_shots) / 200.0 + 0.35,
+	if fire_tick - _last_fire_tick > 40 and BallisticsScript.AUTOMATIC_ACCURACY.has(active_weapon_name):
+		_ak_burst_shots = maxi(0, mini(15, _ak_burst_shots) - ceili(float(fire_tick - _last_fire_tick - 40) / 3.0))
+		if _ak_burst_shots == 0:
+			_rifle_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+	if active_weapon_name == "g3sg1":
+		_rifle_accuracy = BallisticsScript.sniper_accuracy(active_weapon_name,
+			float(fire_tick - _last_fire_tick) / 100.0 if _last_fire_tick >= 0 else -1.0)
+	var spread := BallisticsScript.weapon_spread(
+		active_weapon_name, is_on_floor(), Vector2(velocity.x, velocity.z).length(),
+		bool(last_command.get("crouch", false)), false,
+		_rifle_accuracy, _pistol_accuracy,
 	)
-	var spread := 0.0275 * accuracy
+	if BallisticsScript.AUTOMATIC_ACCURACY.has(active_weapon_name):
+		_ak_burst_shots += 1
+		_rifle_accuracy = BallisticsScript.automatic_accuracy(active_weapon_name, _ak_burst_shots)
+	elif active_weapon_name == "sg550":
+		_rifle_accuracy = BallisticsScript.sniper_accuracy(active_weapon_name,
+			float(fire_tick - _last_fire_tick) / 100.0 if _last_fire_tick >= 0 else -1.0)
+	elif _last_fire_tick >= 0:
+		_pistol_accuracy = BallisticsScript.pistol_accuracy(active_weapon_name,
+			_pistol_accuracy, float(fire_tick - _last_fire_tick) / 100.0)
+	_last_fire_tick = fire_tick
 	var forward := origin.direction_to(aim_target)
 	var right := forward.cross(Vector3.UP).normalized()
 	if right.is_zero_approx():
@@ -580,6 +642,8 @@ func _try_fire(
 		spread,
 	)
 	_effect_shot_sequence = (_effect_shot_sequence + 1) & 0xff
+	publish_combat_presentation("shot", {"weapon": active_weapon_name, "sequence": effect_sequence,
+		"origin": origin, "direction": direction, "right": right, "up": up, "punch": Vector2.ZERO})
 	_emit_audio("%s.fire" % active_weapon_name, AudioRouterScript.CHAN_WEAPON)
 	if is_instance_valid(combat_effects):
 		combat_effects.spawn_weapon_shot(
@@ -592,7 +656,22 @@ func _try_fire(
 		)
 	if is_instance_valid(character_model):
 		character_model.play_action("shoot")
-	var result := _fire_cs_bullet(origin, direction, effect_sequence)
+	var pellet_count := int(WeaponRegistryScript.definition(active_weapon_name).get("pellets", 1))
+	var result: Dictionary = {}
+	var health_damage := 0
+	var armor_damage := 0
+	for pellet_index in range(pellet_count):
+		var pellet_direction := direction
+		if pellet_count > 1:
+			pellet_direction = BallisticsScript.spread_direction(
+				forward, right, up, (effect_sequence * 16 + pellet_index) & 0xff, spread,
+			)
+		var pellet_result := _fire_cs_bullet(origin, pellet_direction, effect_sequence)
+		health_damage += int(pellet_result.health_damage)
+		armor_damage += int(pellet_result.armor_damage)
+		# Keep the first successful pellet's hit details and total shell damage.
+		if result.is_empty() or not bool(result.hit):
+			result = pellet_result
 	shot_trace.append({
 		"tick": fire_tick,
 		"sequence": effect_sequence,
@@ -601,11 +680,12 @@ func _try_fire(
 		"aim_target": aim_target,
 		"direction": direction,
 		"spread": spread,
+		"pellet_count": pellet_count,
 		"hit": bool(result.hit),
 		"hit_actor": str(result.hit_actor),
 		"hit_group": int(result.hit_group),
-		"health_damage": int(result.health_damage),
-		"armor_damage": int(result.armor_damage),
+		"health_damage": health_damage,
+		"armor_damage": armor_damage,
 		"trace_end": result.trace_end,
 	})
 	fired.emit()
@@ -654,14 +734,13 @@ func _fire_cs_bullet(
 			hit_collider != null
 			and hit_collider.has_method("receive_bullet_damage")
 		)
+		var surface_type := BallisticsScript.SURFACE_DEFAULT if damageable else BallisticsScript.surface_for_hit(hit)
 		var step := BallisticsScript.penetration_step(
 			current_damage,
 			float(profile.range_modifier),
 			traveled,
 			str(profile.bullet_type),
-			BallisticsScript.SURFACE_DEFAULT
-			if damageable
-			else BallisticsScript.SURFACE_CONCRETE,
+			surface_type,
 			not damageable,
 			penetrations,
 			penetration_power,
@@ -693,7 +772,7 @@ func _fire_cs_bullet(
 				0,
 				armor_before - _damage_pool(hit_collider, "armor"),
 			)
-			if is_instance_valid(combat_effects):
+			if is_instance_valid(combat_effects) and (hit_collider is Combatant or hit_collider is CS16Hostage):
 				combat_effects.spawn_blood_impact(
 					hit.position,
 					direction,
@@ -724,6 +803,7 @@ func _fire_cs_bullet(
 				hit.position,
 				hit.normal,
 				effect_sequence,
+				surface_type,
 			)
 		if not bool(step.can_continue):
 			break
@@ -746,6 +826,8 @@ func _fire_cs_bullet(
 
 
 func _hit_group_for_impact(hit_collider: Object, hit_position: Vector3) -> int:
+	if hit_collider is Combatant:
+		return hit_collider.hit_group_at(hit_position)
 	if (
 		not hit_collider is Node3D
 		or not hit_collider.has_method("head_height")
@@ -788,7 +870,7 @@ func _on_combatant_damaged(
 	hit_position: Vector3,
 	headshot: bool,
 ) -> void:
-	_emit_audio("player.pain", AudioRouterScript.CHAN_VOICE)
+	_emit_audio(last_damage_impact_audio, AudioRouterScript.CHAN_VOICE)
 	# A hit is the bot's only cue about an enemy behind it: the controller turns
 	# it toward the source instead of discarding the attacker.
 	if (
@@ -817,6 +899,8 @@ func _on_combatant_eliminated(_attacker: Combatant, headshot: bool) -> void:
 
 
 func reset_target(spawn_position: Vector3) -> void:
+	flash_blind_until_frame = -1
+	flash_blind_total_seconds = 0.0
 	reset_combatant(spawn_position)
 	active = true
 	collision_layer = 2
@@ -833,10 +917,13 @@ func reset_target(spawn_position: Vector3) -> void:
 	_navigation_velocity_ready = false
 	_effect_shot_sequence = 0
 	_ak_burst_shots = 0
+	_rifle_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+	_pistol_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
 	_last_fire_tick = -1000
 	_movement_tick = 0
 	_obstructed_ticks = 0
 	_next_jump_tick = 0
+	_brush_contacts.clear()
 	var weapon_definition := WeaponRegistryScript.definition(active_weapon_name)
 	weapon_clip = int(
 		weapon_definition.get("magazine", BotTacticsScript.AK_CLIP_SIZE)
@@ -846,6 +933,7 @@ func reset_target(spawn_position: Vector3) -> void:
 	)
 	weapon_reloading = false
 	weapon_tick = 0
+	_reload_audio_schedule.clear()
 	shot_trace.clear()
 	grenade_trace.clear()
 	# Utility does not survive a round; CS16BotBuyPlan re-buys it after this
@@ -864,7 +952,7 @@ func reset_target(spawn_position: Vector3) -> void:
 		_body_material.albedo_color = _team_color()
 
 
-func configure_weapon(weapon_name: String) -> bool:
+func configure_weapon(weapon_name: String, update_presentation := true) -> bool:
 	var definition := WeaponRegistryScript.definition(weapon_name)
 	if definition.is_empty() or str(definition.category) in ["melee", "objective"]:
 		return false
@@ -874,6 +962,11 @@ func configure_weapon(weapon_name: String) -> bool:
 		# replace the primary the bot just bought.
 		return grant_grenade(str(definition.weapon))
 	active_weapon_name = str(definition.weapon)
+	_reload_audio_schedule.clear()
+	_ak_burst_shots = 0
+	_rifle_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+	_pistol_accuracy = BallisticsScript.base_accuracy(active_weapon_name)
+	_last_fire_tick = -1000
 	if is_instance_valid(combat_controller):
 		(combat_controller as BotCombatController).configure_weapon(
 			active_weapon_name,
@@ -883,12 +976,19 @@ func configure_weapon(weapon_name: String) -> bool:
 	weapon_reloading = false
 	if is_instance_valid(navigation_agent):
 		navigation_agent.max_speed = float(definition.max_speed) * GOLDSRC_UNIT
-	if is_instance_valid(character_model) and not c4_equipped:
-		_replace_character_weapon(active_weapon_name)
+	if update_presentation:
+		refresh_weapon_presentation()
 	# Reconfiguring the gun re-seeds the tactic clock, which clears its utility
 	# mirror; the actor inventory stays authoritative.
 	_sync_tactics_grenades()
 	return true
+
+
+func refresh_weapon_presentation() -> void:
+	# Round buying applies several inventory operations synchronously. Only its
+	# final carried gun needs a model; all weapon/ammo/tactic updates still run.
+	if is_instance_valid(character_model) and not c4_equipped:
+		_replace_character_weapon(active_weapon_name)
 
 
 func grant_grenade(kind: String, count := 1) -> bool:
@@ -951,6 +1051,7 @@ func throw_grenade(kind: String, target_position: Vector3) -> bool:
 	})
 	if is_instance_valid(character_model):
 		character_model.play_action("throw")
+	publish_combat_presentation("grenade_action", {"weapon": kind, "action": "throw"})
 	return true
 
 
@@ -1020,6 +1121,12 @@ func c4_ready_for_plant() -> bool:
 
 
 func _replace_character_weapon(weapon_name: String) -> void:
+	if (is_instance_valid(character_model) and character_model.model_loaded
+		and character_model.skin_name == player_skin and character_model.weapon_name == weapon_name):
+		# Re-equipping the same gun resets the presentation state, but does not
+		# need another body, attached mesh, material set, or scene-tree teardown.
+		character_model.reset_animation()
+		return
 	if is_instance_valid(character_model):
 		remove_child(character_model)
 		character_model.queue_free()
@@ -1054,12 +1161,16 @@ func _team_color() -> Color:
 
 
 func _skin_for_identity() -> String:
+	return skin_for_team(team, index)
+
+
+static func skin_for_team(actor_team: String, bot_index: int) -> String:
 	var skins := (
 		TERRORIST_SKINS
-		if team == TEAM_TERRORIST
+		if actor_team == TEAM_TERRORIST
 		else COUNTER_TERRORIST_SKINS
 	)
-	return skins[index % skins.size()]
+	return skins[bot_index % skins.size()]
 
 
 func audio_entity_id() -> int:

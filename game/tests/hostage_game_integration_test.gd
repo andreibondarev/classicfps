@@ -53,6 +53,7 @@ func _run() -> void:
 			"%s preserves its authored skin family" % hostage_id,
 		)
 
+	_test_hostage_link_repath(game)
 	game.start_match()
 	_check(
 		game.round_state.bomb_owner.is_empty()
@@ -142,3 +143,52 @@ func _run() -> void:
 		game.queue_free()
 		await process_frame
 		quit(1)
+
+
+func _test_hostage_link_repath(game: Node) -> void:
+	var link: NavigationLink3D = game.imported_map.navigation_links[0]
+	var saved_tick: int = game.hostage_state.tick
+	var key := "link_repath_contract"
+	var start := link.get_global_start_position()
+	var finish := link.get_global_end_position()
+	_check(not game._hostage_traversing_link(PackedVector3Array(), 0, start),
+		"empty route does not suppress refresh")
+	_check(not game._hostage_traversing_link(PackedVector3Array([start, start + Vector3.RIGHT]), 1, start),
+		"ordinary route segments do not suppress refresh")
+	link.enabled = false
+	_check(not game._hostage_traversing_link(PackedVector3Array([start, finish]), 1, start),
+		"disabled links do not suppress refresh")
+	link.enabled = true
+	link.bidirectional = false
+	_check(not game._hostage_traversing_link(PackedVector3Array([finish, start]), 1, finish),
+		"one-way links cannot commit reverse traversal")
+	link.bidirectional = true
+	for reverse in [false, true]:
+		var entry := link.get_global_start_position() if not reverse else link.get_global_end_position()
+		var end := link.get_global_end_position() if not reverse else link.get_global_start_position()
+		var direction := (end - entry).normalized()
+		var target := end + direction * 2.0
+		for tick in [25, 26]:
+			for fraction in [0.0, 0.4]:
+				game._hostage_paths[key] = PackedVector3Array([entry - direction, entry, end, target])
+				game._hostage_path_indices[key] = 1 if fraction == 0.0 else 2
+				game._hostage_path_targets[key] = target - Vector3.RIGHT * 2.0
+				game.hostage_state.tick = tick
+				var point: Vector3 = game._hostage_navigation_point(key, entry.lerp(end, fraction), target)
+				_check(point.distance_to(end) < 0.001,
+					"route refresh preserves committed link exit, direction=%s tick=%d fraction=%s" % [reverse, tick, fraction])
+			# Arrival releases the commitment and permits the moved leader's route.
+			game._hostage_navigation_point(key, end, target)
+			_check(game._hostage_path_targets[key] == target,
+				"completed link permits normal target refresh")
+		game._hostage_paths[key] = PackedVector3Array([entry, end])
+		game._hostage_path_indices[key] = 1
+		game._hostage_path_targets[key] = end
+		game.hostage_state.tick = 25
+		game._hostage_navigation_point(key, end, target)
+		_check(game._hostage_path_targets[key] == target,
+			"arrival at a final link endpoint also permits route refresh")
+	game._hostage_paths.erase(key)
+	game._hostage_path_indices.erase(key)
+	game._hostage_path_targets.erase(key)
+	game.hostage_state.tick = saved_tick

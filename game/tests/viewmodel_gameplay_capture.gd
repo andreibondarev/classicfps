@@ -67,6 +67,8 @@ func _run() -> void:
 	for _frame in range(8):
 		await process_frame
 
+	if not game.combat_effects.presentation_is_ready:
+		await game.combat_effects.presentation_ready
 	game.start_match()
 	for _frame in range(8):
 		await process_frame

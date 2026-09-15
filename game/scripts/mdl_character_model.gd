@@ -1,9 +1,21 @@
 class_name MdlCharacterModel
 extends Node3D
 
+const PoseSampler := preload("res://scripts/mdl_pose_sampler.gd")
+
 # BSP geometry and converted MDL vertices both use 0.01 Godot units for one
 # GoldSrc unit. Keeping this at 1.0 preserves the original player-to-map ratio.
 const MODEL_SCALE := 1.0
+# The original low-poly player meshes read a little too narrow in a native
+# widescreen third-person view, most noticeably in the front-facing pistol
+# stance. Add a restrained horizontal-only presentation correction while
+# preserving authored height, foot grounding, camera height, and gameplay hulls.
+const SILHOUETTE_WIDTH_SCALE := 1.08
+const PRESENTATION_SCALE := Vector3(
+	MODEL_SCALE * SILHOUETTE_WIDTH_SCALE,
+	MODEL_SCALE,
+	MODEL_SCALE * SILHOUETTE_WIDTH_SCALE,
+)
 const AIM_PITCH_SCALE := 3.0
 const BLEND_KEY_STEPS := 1024.0
 const FRAME_KEY_STEPS := 4096.0
@@ -101,6 +113,8 @@ const DROP_RESTITUTION := 0.30
 const DROP_MIN_BOUNCE := 0.60
 
 static var _template_cache: Dictionary = {}
+static var _shadow_light_tree_id := 0
+static var _shadow_lights: Dictionary = {}
 
 
 static func release_cached_resources() -> void:
@@ -110,6 +124,38 @@ static func release_cached_resources() -> void:
 	_chrome_texture_cache.clear()
 	_light_probe_grid.clear()
 	_light_probe_map_id = 0
+	_release_shadow_light_registry()
+
+
+static func _release_shadow_light_registry() -> void:
+	if is_instance_id_valid(_shadow_light_tree_id):
+		var tree := instance_from_id(_shadow_light_tree_id) as SceneTree
+		tree.node_added.disconnect(_register_shadow_light)
+		tree.node_removed.disconnect(_unregister_shadow_light)
+	_shadow_light_tree_id = 0
+	_shadow_lights.clear()
+
+
+static func _ensure_shadow_light_registry(tree: SceneTree) -> void:
+	if _shadow_light_tree_id == tree.get_instance_id():
+		return
+	_release_shadow_light_registry()
+	_shadow_light_tree_id = tree.get_instance_id()
+	# Scan once, then track additions/removals. Never scan the BSP node hierarchy
+	# per actor/frame; runtime muzzle lights and staging worlds also live here.
+	for light: Node in tree.root.find_children("*", "Light3D", true, false):
+		_register_shadow_light(light)
+	tree.node_added.connect(_register_shadow_light)
+	tree.node_removed.connect(_unregister_shadow_light)
+
+
+static func _register_shadow_light(node: Node) -> void:
+	if node is Light3D:
+		_shadow_lights[node.get_instance_id()] = node
+
+
+static func _unregister_shadow_light(node: Node) -> void:
+	_shadow_lights.erase(node.get_instance_id())
 
 
 var skin_name := ""
@@ -143,28 +189,61 @@ var _environment_tint := Color(1.0, 1.0, 1.0)
 
 func _ready() -> void:
 	rotation.y = PI * 0.5
-	scale = Vector3.ONE * MODEL_SCALE
+	scale = PRESENTATION_SCALE
 
 
-func load_character(requested_skin: String, requested_weapon := "ak47") -> bool:
-	skin_name = requested_skin
-	weapon_name = requested_weapon
-	var body_path := "res://generated/players/%s/model.json" % skin_name
-	var family := str(WEAPON_FAMILIES.get(weapon_name, "rifle"))
+static func body_asset_path(requested_skin: String, requested_weapon: String) -> String:
+	var body_path := "res://generated/players/%s/model.json" % requested_skin
+	var family := str(WEAPON_FAMILIES.get(requested_weapon, "rifle"))
 	var family_body_path := (
 		"res://generated/player_action_families/%s/%s/model.json"
-		% [family, skin_name]
+		% [family, requested_skin]
 	)
 	if FileAccess.file_exists(family_body_path):
 		body_path = family_body_path
-	_body_template = _load_template(body_path)
-	if _body_template.is_empty():
+	return body_path
+
+
+static func character_assets_prepared(requested_skin: String, requested_weapon: String) -> bool:
+	return _template_cache.has(body_asset_path(requested_skin, requested_weapon)) and _template_cache.has(
+		"res://generated/player_weapons/%s/model.json" % requested_weapon)
+
+
+static func prepare_character_assets(requested_skin: String, requested_weapon: String) -> bool:
+	# Only immutable source templates; no actor, animated mesh, or actor-owned
+	# material is created or changed. load_character consumes these same entries.
+	var body := _load_template(body_asset_path(requested_skin, requested_weapon))
+	var weapon := _load_template("res://generated/player_weapons/%s/model.json" % requested_weapon)
+	return not body.is_empty() and not weapon.is_empty()
+
+
+func load_character(requested_skin: String, requested_weapon := "ak47") -> bool:
+	var body_template := _load_template(body_asset_path(requested_skin, requested_weapon))
+	if body_template.is_empty():
 		return false
+	var weapon_path := "res://generated/player_weapons/%s/model.json" % requested_weapon
+	var weapon_template := _load_template(weapon_path)
+	# Team/class changes can reload this node in place. Validate first so a
+	# failed replacement leaves the usable model intact, then detach old mesh
+	# owners immediately: queued deletion alone leaves overlapping renderers
+	# until the end of the frame. The immutable source cache remains shared.
+	for instance: MeshInstance3D in [body_instance, weapon_instance, dropped_weapon_instance]:
+		if is_instance_valid(instance):
+			remove_child(instance)
+			instance.queue_free()
+	body_instance = null
+	weapon_instance = null
+	dropped_weapon_instance = null
+	skin_name = requested_skin
+	weapon_name = requested_weapon
+	_body_template = body_template
+	_weapon_template = weapon_template
+	_environment_tint = Color.WHITE
+	_tint_timer = INF
+	_tint_refresh_position = Vector3.INF
 	body_instance = _create_instance("Authentic_%s" % skin_name, _body_template)
 	add_child(body_instance)
 
-	var weapon_path := "res://generated/player_weapons/%s/model.json" % weapon_name
-	_weapon_template = _load_template(weapon_path)
 	if not _weapon_template.is_empty():
 		weapon_instance = _create_instance("Attached_%s" % weapon_name, _weapon_template)
 		add_child(weapon_instance)
@@ -218,7 +297,12 @@ func play_death() -> void:
 	# starts: corpses are always empty-handed and the gun becomes a ground item.
 	if is_instance_valid(weapon_instance):
 		weapon_instance.visible = false
-	_spawn_dropped_weapon()
+	# Gameplay owns the pickup (and clients render its replicated world item).
+	# The decorative toss exists only for standalone force_pose captures.
+	if is_instance_valid(dropped_weapon_instance):
+		dropped_weapon_instance.visible = false
+		dropped_weapon_instance.queue_free()
+		dropped_weapon_instance = null
 
 
 func _spawn_dropped_weapon() -> void:
@@ -435,8 +519,7 @@ func force_pose(state: String, frame_fraction := 0.0, aim_pitch_degrees := 0.0) 
 		"",
 	)
 	if state == "die":
-		# Mirror production death visuals: the p_ model detaches the instant the
-		# death tape starts and the tossed gun's clock tracks the death clock.
+		# Standalone capture preview: there is no Game-owned pickup in this hook.
 		if is_instance_valid(weapon_instance):
 			weapon_instance.visible = false
 		_spawn_dropped_weapon()
@@ -478,8 +561,11 @@ func flash_hit(headshot: bool) -> void:
 
 
 func _process(delta: float) -> void:
-	advance_animation(delta)
+	var pose_visible := _pose_may_be_visible()
+	advance_animation(delta, pose_visible)
 	_tint_timer += delta
+	if not pose_visible:
+		return
 	# Refresh on the coarse clock, and immediately after teleports (round
 	# resets, staged captures) so the lightmap modulation never lags a warp.
 	if (
@@ -526,6 +612,9 @@ func _update_environment_tint() -> void:
 	tint.g = clampf(tint.g, TINT_FLOOR, 1.0)
 	tint.b = clampf(tint.b, TINT_FLOOR, 1.0)
 	tint.a = 1.0
+	var lighting_map := instance_from_id(_light_probe_map_id) as BspMap if is_instance_id_valid(_light_probe_map_id) else null
+	if lighting_map != null:
+		tint = BspMap.lift_shadow_tint(tint, lighting_map.shadow_lift)
 	if tint.is_equal_approx(_environment_tint):
 		return
 	_environment_tint = tint
@@ -731,7 +820,92 @@ func _sample_floor_light() -> Color:
 	)
 
 
-func advance_animation(delta: float) -> void:
+func _pose_may_be_visible() -> bool:
+	if not is_inside_tree():
+		return true
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return true
+	# A deliberately conservative two-metre sphere covers the complete stock
+	# actor, attached rifle, crouch/death poses, and animation origin correction.
+	# Only skip mesh deformation, never the animation/action clock or drop motion.
+	var center := global_position + Vector3.UP * 0.4
+	var world_scale := global_basis.get_scale().abs()
+	var radius := 2.0 * maxf(world_scale.x, maxf(world_scale.y, world_scale.z))
+	var frustum := camera.get_frustum()
+	if _sphere_intersects_frustum(center, radius, frustum):
+		return true
+	var caster_layers := 0
+	for instance: MeshInstance3D in [body_instance, weapon_instance]:
+		if (
+			is_instance_valid(instance)
+			and instance.is_visible_in_tree()
+			and instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		):
+			caster_layers |= instance.layers
+	if caster_layers == 0:
+		return false
+	_ensure_shadow_light_registry(get_tree())
+	var world := get_world_3d()
+	for light: Light3D in _shadow_lights.values():
+		if (
+			not light.shadow_enabled
+			or not light.is_visible_in_tree()
+			or light.get_world_3d() != world
+		):
+			continue
+		if (light.shadow_caster_mask & caster_layers) == 0:
+			continue
+		if light is DirectionalLight3D:
+			# A caster outside the camera can project a shadow into it. Clip its
+			# swept bounding sphere along the light's -Z ray against all six planes.
+			if _shadow_ray_intersects_frustum(
+				center, radius, -light.global_basis.z.normalized(), frustum,
+			):
+				return true
+		else:
+			# A positional light's entire influence sphere conservatively bounds
+			# its receivers (also for spots). No receiver/cone approximation may
+			# freeze a visible shadow; false positives only cost mesh updates.
+			var light_range := light.get_param(Light3D.PARAM_RANGE)
+			if (
+				center.distance_to(light.global_position) <= radius + light_range
+				and _sphere_intersects_frustum(light.global_position, light_range, frustum)
+			):
+				return true
+	return false
+
+
+static func _sphere_intersects_frustum(
+	center: Vector3, radius: float, frustum: Array[Plane],
+) -> bool:
+	for plane: Plane in frustum:
+		if plane.distance_to(center) > radius:
+			return false
+	return true
+
+
+static func _shadow_ray_intersects_frustum(
+	center: Vector3, radius: float, direction: Vector3, frustum: Array[Plane],
+) -> bool:
+	var minimum := 0.0
+	var maximum := INF
+	for plane: Plane in frustum:
+		var remaining := radius - plane.distance_to(center)
+		var slope := plane.normal.dot(direction)
+		if slope == 0.0:
+			if remaining < 0.0:
+				return false
+		elif slope > 0.0:
+			maximum = minf(maximum, remaining / slope)
+		else:
+			minimum = maxf(minimum, remaining / slope)
+		if maximum < minimum:
+			return false
+	return true
+
+
+func advance_animation(delta: float, render_pose := true) -> void:
 	## Advances the authoritative animation clock. Tests and fixed-tick gameplay
 	## can call this directly; rendering always samples the same continuous time.
 	if not model_loaded:
@@ -773,28 +947,20 @@ func advance_animation(delta: float) -> void:
 			_action_time = 0.0
 	else:
 		animation_state = _locomotion_state()
-	_body_frame_key = _set_frame(
-		body_instance,
-		_body_template,
-		animation_state,
-		state_time,
-		loop,
-		_body_frame_key,
-	)
+	if render_pose:
+		_body_frame_key = _set_frame(
+			body_instance, _body_template, animation_state, state_time, loop, _body_frame_key,
+		)
 	if _dead:
 		# The p_ model is detached at the moment of death; the corpse tape only
 		# ever drives the body while the dropped gun finishes its toss.
 		_drop_elapsed += delta
 		_update_dropped_weapon()
 		return
-	_weapon_frame_key = _set_frame(
-		weapon_instance,
-		_weapon_template,
-		animation_state,
-		state_time,
-		loop,
-		_weapon_frame_key,
-	)
+	if render_pose:
+		_weapon_frame_key = _set_frame(
+			weapon_instance, _weapon_template, animation_state, state_time, loop, _weapon_frame_key,
+		)
 
 
 func _set_frame(
@@ -910,6 +1076,8 @@ func _set_frame(
 		base_alpha,
 		blend_alpha,
 		lower_overlay,
+		_animation_culling_bounds(base_animation, base_frame, base_next, base_alpha,
+			blend_low, blend_high, blend_alpha, lower_overlay),
 	)
 	if instance == body_instance:
 		if lower_overlay.is_empty():
@@ -935,6 +1103,21 @@ func _set_frame(
 				0.0,
 			)
 	return frame_key
+
+
+static func _animation_culling_bounds(animation: Dictionary, frame: int, next_frame: int,
+		alpha: float, low: int, high: int, pitch: float, overlay: Dictionary = {}) -> AABB:
+	var frames := int(animation.frames)
+	var bounds := PoseSampler.interpolated_bounds(animation.pose_bounds,
+		low * frames + frame, high * frames + frame,
+		low * frames + next_frame, high * frames + next_frame, alpha, pitch)
+	if not overlay.is_empty():
+		var gait: Dictionary = overlay.animation
+		var gait_frame := int(overlay.frame_index)
+		var gait_next := int(overlay.next_frame_index)
+		bounds = bounds.merge(PoseSampler.interpolated_bounds(gait.pose_bounds,
+			gait_frame, gait_frame, gait_next, gait_next, float(overlay.frame_alpha), 0.0))
+	return bounds
 
 
 func _action_gait_state(action_state: String) -> String:
@@ -1076,20 +1259,39 @@ static func _blended_minimum_y(
 ) -> float:
 	var positions: PackedFloat32Array = animation.positions
 	var low_offset := _pose_float_offset(template, animation, frame_index, blend_low)
-	var high_offset := _pose_float_offset(template, animation, frame_index, blend_high)
 	var next_low_offset := _pose_float_offset(
 		template,
 		animation,
 		next_frame_index,
 		blend_low,
 	)
+	var minimum_y := INF
+	# Gait grounding and hostage poses use a single pitch sample. Preserve the
+	# exact vertex-wise minimum, but avoid reading/interpolating identical pitch
+	# samples. Endpoint minima cannot be interpolated: the lowest vertex may
+	# change between frames.
+	if blend_alpha == 0.0 or blend_low == blend_high:
+		if frame_alpha == 0.0 or low_offset == next_low_offset:
+			# An unblended source frame has an exact cached minimum. Interpolated
+			# poses still require the vertex-wise scan below: the lowest vertex
+			# can change between endpoints, so blending endpoint minima is wrong.
+			if animation.has("pose_bounds"):
+				var source_bounds: AABB = animation.pose_bounds[low_offset / int(template.vertex_float_count)]
+				return source_bounds.position.y
+			for vertex_float in range(1, int(template.vertex_float_count), 3):
+				minimum_y = minf(minimum_y, positions[low_offset + vertex_float])
+		else:
+			for vertex_float in range(1, int(template.vertex_float_count), 3):
+				minimum_y = minf(minimum_y, lerpf(positions[low_offset + vertex_float],
+					positions[next_low_offset + vertex_float], frame_alpha))
+		return minimum_y
+	var high_offset := _pose_float_offset(template, animation, frame_index, blend_high)
 	var next_high_offset := _pose_float_offset(
 		template,
 		animation,
 		next_frame_index,
 		blend_high,
 	)
-	var minimum_y := INF
 	for vertex_float in range(1, int(template.vertex_float_count), 3):
 		var current_y := lerpf(
 			positions[low_offset + vertex_float],
@@ -1181,6 +1383,7 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 			"blend_start": animation_data.get("blend_start", [0.0, 0.0]),
 			"blend_end": animation_data.get("blend_end", [1.0, 0.0]),
 			"positions": animation_positions,
+			"pose_bounds": PoseSampler.source_bounds(animation_positions, positions.size() / 3),
 		}
 
 	var groups: Array[Dictionary] = []
@@ -1208,20 +1411,23 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 			"material": material,
 		})
 
-	# Vertices below the belt line of the reference pose approximate the bones
-	# GoldSrc hands to the gait sequence (pelvis + legs). Classified once here;
-	# vertex order is identical across every animation tape of the template.
+	# Player exports preserve actual bone ownership, including entire thighs
+	# and the pelvis. A height cutoff can split one rigidly bound limb in two.
+	# Retain the old fallback for legacy/non-player assets without that metadata.
 	var lower_mask := PackedByteArray()
-	lower_mask.resize(positions.size() / 3)
-	var reference_minimum_y := INF
-	for index in range(1, positions.size(), 3):
-		reference_minimum_y = minf(reference_minimum_y, positions[index])
-	for vertex in range(lower_mask.size()):
-		lower_mask[vertex] = (
-			1
-			if positions[vertex * 3 + 1] < reference_minimum_y + LOWER_BODY_SPLIT
-			else 0
-		)
+	if parsed.has("lower_body_mask"):
+		var source_mask: Array = parsed.lower_body_mask
+		if source_mask.size() != positions.size() / 3 or not source_mask.all(func(value: Variant) -> bool: return value == 0 or value == 1):
+			push_error("Invalid source lower-body mask: " + path)
+			return {}
+		lower_mask = PackedByteArray(source_mask)
+	else:
+		lower_mask.resize(positions.size() / 3)
+		var reference_minimum_y := INF
+		for index in range(1, positions.size(), 3):
+			reference_minimum_y = minf(reference_minimum_y, positions[index])
+		for vertex in range(lower_mask.size()):
+			lower_mask[vertex] = int(positions[vertex * 3 + 1] < reference_minimum_y + LOWER_BODY_SPLIT)
 
 	return {
 		"positions": positions,
@@ -1317,115 +1523,69 @@ static func _render_interpolated_frame(
 	frame_alpha: float,
 	blend_alpha: float,
 	lower_overlay: Dictionary = {},
+	pose_bounds: Variant = null,
 ) -> void:
 	if not is_instance_valid(instance):
 		return
 	var mesh := instance.mesh as ArrayMesh
-	mesh.clear_surfaces()
+	# Keep GPU surfaces/material bindings alive while animating. Only positions
+	# change in these baked tapes; recreating every surface forces allocation
+	# and driver synchronization for every visible actor on every frame.
+	var update_existing: bool = (
+		DisplayServer.get_name() != "headless"
+		and instance.get_meta("pose_mesh_id", 0) == mesh.get_instance_id()
+		and mesh.get_surface_count() == int(instance.get_meta("pose_surface_count", -1))
+	)
+	if not update_existing:
+		mesh.clear_surfaces()
+	var bounds := AABB()
+	var has_bounds := false
+	var surface_index := 0
 	var uvs: PackedFloat32Array = template.uvs
 	var instance_materials: Array = instance.get_meta("group_materials", [])
-	var has_overlay := not lower_overlay.is_empty()
-	var overlay_mask := PackedByteArray()
-	var overlay_positions := PackedFloat32Array()
-	var overlay_current_base := 0
-	var overlay_next_base := 0
-	var overlay_alpha := 0.0
-	if has_overlay:
-		overlay_mask = lower_overlay.mask
-		overlay_positions = lower_overlay.positions
-		overlay_current_base = int(lower_overlay.current_offset)
-		overlay_next_base = int(lower_overlay.next_offset)
-		overlay_alpha = float(lower_overlay.frame_alpha)
 	for group_index in range(template.groups.size()):
 		var group: Dictionary = template.groups[group_index]
 		var start := int(group.start)
 		var count := int(group.count)
 		if count <= 0:
 			continue
-		var vertices := PackedVector3Array()
+		var vertices := PoseSampler.sample(positions, start, count,
+			current_low_float_offset, current_high_float_offset,
+			next_low_float_offset, next_high_float_offset, frame_alpha, blend_alpha, lower_overlay)
 		var texture_uvs := PackedVector2Array()
-		vertices.resize(count)
-		texture_uvs.resize(count)
-		for local_index in range(count):
-			var vertex_index := start + local_index
-			texture_uvs[local_index] = Vector2(
-				uvs[vertex_index * 2],
-				uvs[vertex_index * 2 + 1],
-			)
-			if has_overlay and overlay_mask[vertex_index] != 0:
-				var overlay_current := overlay_current_base + vertex_index * 3
-				var overlay_next := overlay_next_base + vertex_index * 3
-				vertices[local_index] = Vector3(
-					lerpf(
-						overlay_positions[overlay_current],
-						overlay_positions[overlay_next],
-						overlay_alpha,
-					),
-					lerpf(
-						overlay_positions[overlay_current + 1],
-						overlay_positions[overlay_next + 1],
-						overlay_alpha,
-					),
-					lerpf(
-						overlay_positions[overlay_current + 2],
-						overlay_positions[overlay_next + 2],
-						overlay_alpha,
-					),
-				)
-				continue
-			var current_low_offset := current_low_float_offset + vertex_index * 3
-			var current_high_offset := current_high_float_offset + vertex_index * 3
-			var next_low_offset := next_low_float_offset + vertex_index * 3
-			var next_high_offset := next_high_float_offset + vertex_index * 3
-			vertices[local_index] = Vector3(
-				lerpf(
-					lerpf(
-						positions[current_low_offset],
-						positions[current_high_offset],
-						blend_alpha,
-					),
-					lerpf(
-						positions[next_low_offset],
-						positions[next_high_offset],
-						blend_alpha,
-					),
-					frame_alpha,
-				),
-				lerpf(
-					lerpf(
-						positions[current_low_offset + 1],
-						positions[current_high_offset + 1],
-						blend_alpha,
-					),
-					lerpf(
-						positions[next_low_offset + 1],
-						positions[next_high_offset + 1],
-						blend_alpha,
-					),
-					frame_alpha,
-				),
-				lerpf(
-					lerpf(
-						positions[current_low_offset + 2],
-						positions[current_high_offset + 2],
-						blend_alpha,
-					),
-					lerpf(
-						positions[next_low_offset + 2],
-						positions[next_high_offset + 2],
-						blend_alpha,
-					),
-					frame_alpha,
-				),
-			)
+		if not update_existing:
+			texture_uvs.resize(count)
+			for local_index in count:
+				var vertex_index := start + local_index
+				texture_uvs[local_index] = Vector2(uvs[vertex_index * 2], uvs[vertex_index * 2 + 1])
+		# Region updates do not recalculate the culling box. Normal animation
+		# supplies enclosing source-derived bounds; direct/custom callers retain
+		# the exact vertex scan so every pose still has a valid culling box.
+		if pose_bounds == null:
+			for vertex in vertices:
+				if not has_bounds:
+					bounds = AABB(vertex, Vector3.ZERO)
+					has_bounds = true
+				else:
+					bounds = bounds.expand(vertex)
+		if update_existing:
+			mesh.surface_update_vertex_region(surface_index, 0, vertices.to_byte_array())
+			surface_index += 1
+			continue
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = vertices
 		arrays[Mesh.ARRAY_TEX_UV] = texture_uvs
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.add_surface_from_arrays(
+			Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, Mesh.ARRAY_FLAG_USE_DYNAMIC_UPDATE,
+		)
 		mesh.surface_set_material(
 			mesh.get_surface_count() - 1,
 			instance_materials[group_index]
 			if group_index < instance_materials.size()
 			else group.material,
 		)
+		surface_index += 1
+	mesh.custom_aabb = bounds if pose_bounds == null else pose_bounds as AABB
+	instance.set_meta("pose_mesh_id", mesh.get_instance_id())
+	instance.set_meta("pose_surface_count", surface_index)

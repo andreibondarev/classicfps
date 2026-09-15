@@ -167,10 +167,13 @@ func _run() -> void:
 		"held attack becomes plant-authoritative on the exact deploy deadline",
 	)
 	var plant_start_position: Vector3 = game.player.global_position
+	game.audio_router.reset(0xC516)
 	for plant_tick in 301:
+		game.audio_router.advance_ticks(1)
 		var command: Dictionary = game._round_tick_command()
 		var events: Array[Dictionary] = game.round_state.advance_tick(command)
 		game._consume_round_events(events)
+		game._advance_objective_audio()
 		game._consumed_round_events = game.round_state.trace.size()
 		game._sync_round_public_state()
 		game._update_round_hud(true)
@@ -183,6 +186,12 @@ func _run() -> void:
 		and is_instance_valid(game.bomb),
 		"301 production ticks complete the exact 300-tick plant and spawn w_c4",
 	)
+	var keypad_clicks: Array[Dictionary] = game.audio_router.trace().filter(
+		func(event: Dictionary) -> bool:
+			return str(event.kind) == "start" and str(event.event_name) == "c4.click"
+	)
+	_check(keypad_clicks.size() == 7,
+		"a completed plant plays all seven stock C4 keypad clicks")
 	if not is_instance_valid(game.bomb):
 		Input.action_release("fire")
 		await _finish(game)

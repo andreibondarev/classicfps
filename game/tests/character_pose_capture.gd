@@ -23,6 +23,12 @@ func _initialize() -> void:
 func _run() -> void:
 	var output_root := ProjectSettings.globalize_path("res://artifacts")
 	DirAccess.make_dir_recursive_absolute(output_root)
+	if "--gait-only" in OS.get_cmdline_user_args():
+		var gait_ok := await _capture_gait_grid(output_root.path_join("protocol47-character-gait-grid.png"))
+		if gait_ok:
+			print("GAME_CHARACTER_GAIT_CAPTURE_PASS")
+		quit(0 if gait_ok else 1)
+		return
 	var pose_ok := await _capture_pose_grid(
 		output_root.path_join("protocol47-character-pose-grid.png")
 	)
@@ -54,6 +60,29 @@ func _run() -> void:
 		quit(1)
 
 
+func _capture_gait_grid(output_path: String) -> bool:
+	var scene := _make_scene("Source gait cycle · 0 / 25 / 50 / 75% · run above, crouch-walk below")
+	root.add_child(scene)
+	for row in 2:
+		for column in 4:
+			var cell := Node3D.new()
+			cell.position = Vector3((1.5 - float(column)) * 0.88, 0.90 if row == 0 else 0.0, 0.0)
+			scene.add_child(cell)
+			var model := _make_model("terror", "ak47")
+			cell.add_child(model)
+			model.process_mode = Node.PROCESS_MODE_DISABLED
+			model.rotation.y += 0.38 * PI
+			model.set_locomotion(true, row == 1, true)
+			model.force_pose("run" if row == 0 else "crouchrun", float(column) * 0.25)
+			_add_projected_label(scene, "%d%%" % (column * 25), cell.global_position + Vector3(0, -0.12, 0), 20)
+	_add_floor(scene, 3.8, 0.0)
+	_add_floor(scene, 3.8, 0.90)
+	var captured := await _settle_and_capture(output_path)
+	scene.queue_free()
+	await process_frame
+	return captured
+
+
 func _capture_family_grid(output_path: String) -> bool:
 	# Three-quarter framing on purpose: the barrel line and grip-in-palm
 	# alignment of the bone-merged p_ model stay visible side-on, exactly
@@ -70,7 +99,10 @@ func _capture_family_grid(output_path: String) -> bool:
 		["urban", "m3", "idle", 0.50],
 		["guerilla", "m249", "idle", 0.50],
 		["sas", "knife", "idle", 0.50],
-		["gign", "hegrenade", "idle", 0.50],
+		# Keep the front-facing one-handed silhouette in the standard visual
+		# regression sheet: this was the stance that exposed the overly narrow
+		# widescreen presentation in live spectating.
+		["gign", "usp", "idle", 0.50],
 	]
 	for index in loadouts.size():
 		var loadout: Array = loadouts[index]
@@ -365,6 +397,7 @@ func _unshaded_material(color: Color) -> StandardMaterial3D:
 func _settle_and_capture(output_path: String) -> bool:
 	for frame in range(4):
 		await process_frame
+		RenderingServer.force_draw()
 	var image := root.get_viewport().get_texture().get_image()
 	var error := image.save_png(output_path)
 	if error != OK:

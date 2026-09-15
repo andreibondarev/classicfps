@@ -12,6 +12,9 @@ const RUN_SOURCE_SPEED_HU := RUN_CYCLE_DISTANCE_HU / (19.0 / 25.0)
 const RUN_SELECTION_SPEED_HU := 120.0
 const FRAME_KEY_STEPS := 4096.0
 
+static var _camera_tree_id := 0
+static var _pose_cameras: Dictionary = {}
+
 var model_loaded := false
 var skin_index := 0
 ## CS 1.6 hostages enter their idle sequence at a random start frame, so two
@@ -44,6 +47,8 @@ var _state_time := 0.0
 var _action_state := ""
 var _cowering := false
 var _dead := false
+var _applied_skin_index := -1
+var _grounded_bounds := AABB()
 
 
 func _ready() -> void:
@@ -51,6 +56,13 @@ func _ready() -> void:
 	scale = Vector3.ONE * SOURCE_SCALE
 	if not model_loaded:
 		load_hostage(skin_index)
+
+
+func _process(_delta: float) -> void:
+	# A camera can turn/re-enter on a render frame with no physics tick. Submit
+	# the current authoritative pose before that frame, not one tick later.
+	if model_loaded and _pose_may_be_visible():
+		_render_current_pose()
 
 
 func load_hostage(requested_skin := 0) -> bool:
@@ -70,8 +82,10 @@ func load_hostage(requested_skin := 0) -> bool:
 	if base_template.is_empty():
 		return false
 	_source_groups = parsed.get("groups", [])
+	_grounded_bounds = _source_grounded_bounds(base_template)
 	_template = _instance_template(base_template)
 	if is_instance_valid(mesh_instance):
+		remove_child(mesh_instance)
 		mesh_instance.queue_free()
 	mesh_instance = CharacterModelScript._create_instance("AuthenticHostage", _template)
 	# Stock CS 1.6 draws no shadows under studio models (the cl_shadows stencil
@@ -80,7 +94,9 @@ func load_hostage(requested_skin := 0) -> bool:
 	mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mesh_instance)
 	model_loaded = true
+	_applied_skin_index = -1
 	set_skin(requested_skin)
+	current_frame_key = ""
 	reset_animation()
 	return true
 
@@ -110,7 +126,7 @@ func _instance_template(base_template: Dictionary) -> Dictionary:
 
 func set_skin(requested_skin: int) -> void:
 	skin_index = posmod(requested_skin, 2)
-	if not model_loaded:
+	if not model_loaded or skin_index == _applied_skin_index:
 		return
 	var model_root := MODEL_PATH.get_base_dir()
 	var instance_materials: Array = (
@@ -131,6 +147,7 @@ func set_skin(requested_skin: int) -> void:
 			(
 				instance_materials[group_index] as StandardMaterial3D
 			).albedo_texture = skin_texture
+	_applied_skin_index = skin_index
 	_render_current_pose()
 
 
@@ -203,7 +220,10 @@ func advance_tick() -> void:
 	_set_state(selected)
 	playback_rate = _playback_rate_for_state(animation_state, motion_speed_hu)
 	_state_time += TICK_SECONDS * playback_rate
-	_render_current_pose()
+	# Advance every authoritative tick, but submit the final pose in _process.
+	# Catch-up physics can run several ticks before a single rendered frame;
+	# rebuilding intermediate meshes adds work that can never be displayed.
+	# Explicit state/action changes and force_state retain synchronous setup.
 	if not _action_state.is_empty():
 		var action: Dictionary = _template.animations.get(_action_state, {})
 		var duration := (
@@ -352,3 +372,92 @@ func _render_current_pose() -> void:
 	)
 	mesh_instance.position.y = -minimum_y
 	current_frame_key = key
+
+
+static func _source_grounded_bounds(template: Dictionary) -> AABB:
+	if template.has("hostage_grounded_bounds"):
+		return template.hostage_grounded_bounds
+	# Every interpolated coordinate is between authored coordinates. Grounding
+	# subtracts the interpolated minimum Y, so [0, global maxY - global minY]
+	# bounds even poses whose lowest vertex changes during interpolation.
+	var bounds := AABB()
+	var initialized := false
+	for animation: Dictionary in template.animations.values():
+		var positions: PackedFloat32Array = animation.positions
+		for offset in range(0, positions.size(), 3):
+			var vertex := Vector3(positions[offset], positions[offset + 1], positions[offset + 2])
+			if not initialized:
+				bounds = AABB(vertex, Vector3.ZERO)
+				initialized = true
+			else:
+				bounds = bounds.expand(vertex)
+	bounds.position.y = 0.0
+	# Include numeric interpolation/transform error at the frustum boundary.
+	bounds = bounds.grow(0.001)
+	template.hostage_grounded_bounds = bounds
+	return bounds
+
+
+func _pose_may_be_visible() -> bool:
+	if not is_inside_tree() or not is_instance_valid(mesh_instance):
+		return true
+	if not mesh_instance.is_visible_in_tree():
+		return false
+	# Production hostages do not cast shadows. Fail open if a caller enables
+	# them, rather than freeze a shadow projected into another camera's view.
+	if mesh_instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+		return true
+	# Authored bounds include the normal grounding translation. Unusual mesh
+	# transforms are not covered; ancestors may freely rotate/scale/shear.
+	if mesh_instance.basis != Basis.IDENTITY or mesh_instance.position.x != 0.0 or mesh_instance.position.z != 0.0:
+		return true
+	_ensure_camera_registry(get_tree())
+	var bounds := global_transform * _grounded_bounds
+	var center := bounds.get_center()
+	var half_size := bounds.size * 0.5
+	var has_camera := false
+	for camera: Camera3D in _pose_cameras.values():
+		if not camera.is_current() or camera.get_world_3d() != get_world_3d():
+			continue
+		has_camera = true
+		if (camera.cull_mask & mesh_instance.layers) == 0:
+			continue
+		var outside := false
+		for plane: Plane in camera.get_frustum():
+			if plane.distance_to(center) > plane.normal.abs().dot(half_size):
+				outside = true
+				break
+		if not outside:
+			return true
+	# Camera-free/headless actor fixtures retain synchronous reference poses.
+	return not has_camera
+
+
+static func _ensure_camera_registry(tree: SceneTree) -> void:
+	if _camera_tree_id == tree.get_instance_id():
+		return
+	release_camera_registry()
+	_camera_tree_id = tree.get_instance_id()
+	# Include shared-world SubViewports, not just the actor's own viewport.
+	for camera: Node in tree.root.find_children("*", "Camera3D", true, false):
+		_register_camera(camera)
+	tree.node_added.connect(_register_camera)
+	tree.node_removed.connect(_unregister_camera)
+
+
+static func release_camera_registry() -> void:
+	if is_instance_id_valid(_camera_tree_id):
+		var tree := instance_from_id(_camera_tree_id) as SceneTree
+		tree.node_added.disconnect(_register_camera)
+		tree.node_removed.disconnect(_unregister_camera)
+	_camera_tree_id = 0
+	_pose_cameras.clear()
+
+
+static func _register_camera(node: Node) -> void:
+	if node is Camera3D:
+		_pose_cameras[node.get_instance_id()] = node
+
+
+static func _unregister_camera(node: Node) -> void:
+	_pose_cameras.erase(node.get_instance_id())

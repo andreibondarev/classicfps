@@ -123,8 +123,29 @@ func _check_assault() -> void:
 			_check(door_root.transform.is_equal_approx(moved), "runtime transform reaches the shared model root")
 			_check(body.transform.is_equal_approx(Transform3D.IDENTITY), "collision stays locally aligned below the moving root")
 			_check(mesh.transform.is_equal_approx(Transform3D.IDENTITY), "visual stays locally aligned below the moving root")
+			await physics_frame
+			await physics_frame
+			_check(
+				(PhysicsServer3D.body_get_state(body.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM) as Transform3D).is_equal_approx(map.global_transform * moved),
+				"physics server receives the moved brush pose, not only the scene node",
+			)
+			_check(body.transform.is_equal_approx(Transform3D.IDENTITY), "physics synchronization does not counter-transform the collider")
+			map.set_model_runtime_position(11, Vector3(7.8, 0.48, -22.1))
+			map.set_model_runtime_rotation(11, Vector3(0, PI * 0.5, 0))
+			await physics_frame
+			await physics_frame
+			_check(
+				(PhysicsServer3D.body_get_state(body.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM) as Transform3D).is_equal_approx(door_root.global_transform),
+				"position and rotation setters also update real brush collision",
+			)
 			_check(map.reset_model_runtime_transform(11), "rotating door can reset to its imported transform")
 			_check_vector(door_root.position, Vector3(6.96, 0.48, -22.36), "reset restores the imported pivot")
+			await physics_frame
+			await physics_frame
+			_check(
+				(PhysicsServer3D.body_get_state(body.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM) as Transform3D).is_equal_approx(door_root.global_transform),
+				"reset restores the actual physics-server pose",
+			)
 
 	_check(map.model_collision_body(42) is AnimatableBody3D, "Assault button model 42 has a solid proxy")
 	_check(map.model_collision_body(71) is AnimatableBody3D, "Assault sliding door model 71 has a solid proxy")

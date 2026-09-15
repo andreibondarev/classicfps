@@ -10,6 +10,11 @@ const WORLD_MASK := 1
 const ARTIFACT_PATH := "/tmp/protocol47-bot-crowd-1000-ticks.json"
 
 var failures: Array[String] = []
+var _previous_motion := {}
+var _jump_flights := {}
+var _jump_count := 0
+var _audited_airborne_ticks := 0
+var _max_airborne_floor_gap := 0.0
 
 
 func _initialize() -> void:
@@ -23,6 +28,12 @@ func _check(condition: bool, message: String) -> void:
 
 
 func _run() -> void:
+	_check(_ballistic_step_valid(Vector3.ZERO, Vector3(0, 0.026, 0), 2.68, 2.60),
+		"jump audit accepts source gravity and integrated displacement")
+	_check(not _ballistic_step_valid(Vector3.ZERO, Vector3(0, 0.2, 0), 2.68, 2.60),
+		"jump audit rejects a vertical teleport even during a declared jump")
+	_check(not _ballistic_step_valid(Vector3.ZERO, Vector3.ZERO, 0.0, 0.0),
+		"jump audit rejects hovering without gravity")
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_check(packed != null, "main scene loads")
 	if packed == null:
@@ -30,6 +41,8 @@ func _run() -> void:
 		return
 
 	var game := packed.instantiate()
+	if OS.get_cmdline_user_args().has("--profile-phases"):
+		game.set_script(load("res://tests/profiled_match_game.gd"))
 	root.add_child(game)
 	current_scene = game
 	await process_frame
@@ -55,6 +68,7 @@ func _run() -> void:
 	# removing the measured hull before tick 1000.
 	for combatant: Node3D in combatants:
 		combatant.health = 1000000
+		_previous_motion[combatant] = _motion_sample(combatant)
 
 	var starting_positions: Dictionary = {}
 	for bot in game._all_bots():
@@ -126,6 +140,7 @@ func _run() -> void:
 
 		for combatant: Node3D in combatants:
 			var feet := combatant.global_position
+			var valid_jump_airborne := _audit_jump_tick(combatant)
 			# GoldSrc categorizes the floor with the player hull, not a zero-width
 			# ray through its center. Probe the center and four inset hull corners
 			# and use the highest walkable support plane.
@@ -139,15 +154,28 @@ func _run() -> void:
 					"feet": _vector_array(feet),
 				})
 			else:
-				var floor_error := absf(feet.y - float(floor_hit.position_y))
-				max_floor_error = maxf(max_floor_error, floor_error)
-				if floor_error > FLOOR_TOLERANCE + 0.000001:
+				var signed_floor_gap := feet.y - float(floor_hit.position_y)
+				var floor_error := absf(signed_floor_gap)
+				# A verified source impulse/gravity trajectory is airborne, not
+				# bad floor support. Negative gaps (penetration) are never exempt.
+				var audited_airborne := valid_jump_airborne and signed_floor_gap >= 0.0
+				if audited_airborne:
+					_audited_airborne_ticks += 1
+					_max_airborne_floor_gap = maxf(_max_airborne_floor_gap, signed_floor_gap)
+				else:
+					max_floor_error = maxf(max_floor_error, floor_error)
+				if not audited_airborne and floor_error > FLOOR_TOLERANCE + 0.000001:
 					floor_error_count += 1
 					_add_sample(violation_samples, {
 						"kind": "floor_error",
 						"tick": tick + 1,
 						"combatant": combatant.name,
 						"error_hu": floor_error / 0.01,
+						"feet": _vector_array(feet),
+						"velocity": _vector_array(combatant.velocity),
+						"on_floor": combatant.is_on_floor(),
+						"movement_tick": combatant._movement_tick if combatant is TargetActor else -1,
+						"next_jump_tick": combatant._next_jump_tick if combatant is TargetActor else -1,
 					})
 
 			var hull_query := PhysicsShapeQueryParameters3D.new()
@@ -199,6 +227,9 @@ func _run() -> void:
 		"pair_overlap_count": pair_overlap_count,
 		"missing_floor_trace_count": missing_floor_count,
 		"floor_error_over_2hu_count": floor_error_count,
+		"verified_jump_count": _jump_count,
+		"audited_airborne_ticks": _audited_airborne_ticks,
+		"maximum_airborne_floor_gap_hu": _max_airborne_floor_gap / 0.01,
 		"bsp_hull_intersection_count": world_intersection_count,
 		"bot_travel_hu": travel_hu,
 		"canonical_quantum_hu": 1.0 / 64.0,
@@ -226,7 +257,7 @@ func _run() -> void:
 	_check(missing_floor_count == 0, "every combatant has a valid BSP floor trace")
 	_check(
 		floor_error_count == 0,
-		"every combatant's feet stay within 2 HU of its BSP floor trace",
+		"feet stay within 2 HU of BSP support except during audited source-impulse jumps",
 	)
 	_check(
 		world_intersection_count == 0,
@@ -351,3 +382,47 @@ func _trace_hull_floor(
 			continue
 		highest = maxf(highest, float(hit.position.y))
 	return {} if highest == -INF else {"position_y": highest}
+
+
+func _motion_sample(combatant: Node3D) -> Dictionary:
+	return {"position": combatant.global_position, "velocity_y": float(combatant.velocity.y),
+		"grounded": combatant.is_on_floor(),
+		"jump_serial": combatant._next_jump_tick if combatant is TargetActor else 0}
+
+
+func _ballistic_step_valid(before: Vector3, after: Vector3, previous_vy: float, vy: float) -> bool:
+	var dt := 1.0 / TICK_RATE_HZ
+	# Collisions may remove upward velocity, but cannot add lift or cancel
+	# gravity in mid-air. The displacement must still match that velocity.
+	return (vy <= previous_vy - TargetActor.PLAYER_GRAVITY * dt + 0.002
+		and absf(after.y - before.y - vy * dt) <= 0.004)
+
+
+func _audit_jump_tick(combatant: Node3D) -> bool:
+	var previous: Dictionary = _previous_motion[combatant]
+	var current := _motion_sample(combatant)
+	_previous_motion[combatant] = current
+	var launched := int(current.jump_serial) > int(previous.jump_serial)
+	if launched:
+		var dt := 1.0 / TICK_RATE_HZ
+		var launch_valid := (bool(previous.grounded)
+			and absf(float(current.velocity_y) - TargetActor.JUMP_SPEED) <= 0.002
+			and absf(Vector3(current.position).y - Vector3(previous.position).y - TargetActor.JUMP_SPEED * dt) <= 0.004)
+		_check(launch_valid, "a jump begins on grounded support with the source impulse, without teleporting")
+		_jump_count += 1
+		_jump_flights[combatant] = {"start_y": Vector3(previous.position).y, "ticks": 0, "valid": launch_valid}
+	if bool(current.grounded):
+		_jump_flights.erase(combatant)
+		return false
+	if not _jump_flights.has(combatant):
+		return false
+	var flight: Dictionary = _jump_flights[combatant]
+	flight.ticks = int(flight.ticks) + 1
+	var apex := TargetActor.JUMP_SPEED * TargetActor.JUMP_SPEED / (2.0 * TargetActor.PLAYER_GRAVITY)
+	var step_valid := (int(flight.ticks) <= TICK_RATE_HZ
+		and Vector3(current.position).y <= float(flight.start_y) + apex + FLOOR_TOLERANCE
+		and (launched or _ballistic_step_valid(previous.position, current.position, previous.velocity_y, current.velocity_y)))
+	if bool(flight.valid) and not step_valid:
+		_check(false, "airborne motion obeys source gravity, apex, duration, and per-tick displacement")
+	flight.valid = bool(flight.valid) and step_valid
+	return bool(flight.valid)
