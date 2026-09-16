@@ -279,8 +279,6 @@ func _ready() -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_apply_performance_settings()
 	_prepare_gameplay_presentation()
-	if _dedicated_server_mode:
-		start_match()
 
 
 var bot_asset_preparation: Dictionary = {}
@@ -494,6 +492,10 @@ func _on_remote_human_added(actor_id: String, _peer_id: int, actor: PlayerContro
 	actor.combatant_eliminated.connect(_on_human_eliminated)
 	round_state.register_player(actor_id, Combatant.TEAM_UNASSIGNED)
 	bomb_knowledge.register_actor(actor_id, Combatant.TEAM_UNASSIGNED)
+	if _dedicated_server_mode and not match_started:
+		# An empty public server waits in deploy instead of letting bots age the
+		# match. The first transport peer always receives a fresh Dust2 session.
+		start_match()
 	_update_scoreboard()
 
 
@@ -708,6 +710,17 @@ func _on_remote_human_removing(actor_id: String, _peer_id: int, actor: PlayerCon
 	if is_instance_valid(spectator_camera) and spectator_camera.target == actor:
 		spectator_camera._advance_after_target_loss()
 	_update_scoreboard()
+	if _dedicated_server_mode and is_instance_valid(remote_roster) and remote_roster.size() == 1:
+		_reset_empty_dedicated_server.call_deferred()
+
+
+func _reset_empty_dedicated_server() -> void:
+	# RemoteHumanRoster emits removal before releasing its record. By the next
+	# deferred turn the session is empty, so rebuild the scene and recover every
+	# bot/spawn slot removed during that group's play without touching ENet.
+	if not _dedicated_server_mode or not is_instance_valid(remote_roster) or remote_roster.size() != 0:
+		return
+	get_tree().reload_current_scene()
 
 
 func _prepare_gameplay_presentation() -> void:

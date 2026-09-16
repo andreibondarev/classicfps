@@ -705,7 +705,9 @@ npm run game:build:server
 ```
 
 The resulting `game/builds/protocol47-server.x86_64` accepts ten remote
-players, starts a 5v5 Dust2 match automatically, and listens on UDP 27447.
+players and listens on UDP 27447. It starts a fresh 5v5 Dust2 match when the
+first player connects, then restores the full bot roster after the last player
+leaves.
 Run it on Linux with:
 
 ```bash

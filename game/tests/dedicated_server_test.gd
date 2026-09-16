@@ -30,8 +30,8 @@ func _run() -> void:
 	_check(network.dedicated_server and network.is_host, "dedicated CLI starts the authoritative host")
 	_check(network.listen_port == 27549, "dedicated CLI honors the requested UDP port")
 	_check(game._dedicated_server_mode and game.map_name == "de_dust2", "dedicated server is locked to Dust2")
-	_check(game.match_started and game.player.team == Combatant.TEAM_UNASSIGNED,
-		"headless match auto-starts without a local combatant")
+	_check(not game.match_started and game.player.team == Combatant.TEAM_UNASSIGNED,
+		"empty headless server waits without consuming a local combatant")
 	_check(not game.player.alive and not game.player.visible and game.player.collision_layer == 0,
 		"server sentinel is invisible and non-solid")
 	_check(game.allied_bots.size() == 5 and game.targets.size() == 5
@@ -42,6 +42,8 @@ func _run() -> void:
 		var peer_id := 100 + index
 		network._register_input_peer(peer_id, Time.get_ticks_msec())
 		game.remote_roster._on_peer_joined(peer_id)
+		if index == 0:
+			_check(game.match_started, "first remote peer starts a fresh match")
 		var team := "T" if index % 2 == 0 else "CT"
 		var selection: Dictionary = game.select_remote_join_team(peer_id, team)
 		_check(bool(selection.get("accepted", false)), "remote slot %d can join %s" % [index + 1, team])
@@ -55,7 +57,20 @@ func _run() -> void:
 	_check(game.round_state.team_counts() == {"T": 5, "CT": 5},
 		"full dedicated roster remains five-versus-five")
 
-	game.queue_free()
+	for index in range(10):
+		var peer_id := 100 + index
+		network._remove_input_peer(peer_id)
+		game.remote_roster._on_peer_left(peer_id)
+	await process_frame
+	await process_frame
+	var reset_game := current_scene
+	_check(reset_game != game and is_instance_valid(reset_game),
+		"last disconnect rebuilds the dedicated scene")
+	if is_instance_valid(reset_game):
+		_check(not reset_game.match_started and reset_game._all_bots().size() == 10
+			and reset_game.round_state.team_counts() == {"T": 5, "CT": 5},
+			"empty server restores its idle five-versus-five bot roster")
+		reset_game.queue_free()
 	await process_frame
 	network.disconnect_session()
 	if failures.is_empty():
