@@ -20,7 +20,10 @@ class ExportPackageRegressionTests(unittest.TestCase):
         self.assertIn("--headless", args)
         self.assertEqual(args[args.index("--audio-driver") + 1], "Dummy")
         self.assertEqual(args[args.index("--log-file") + 1], "/tmp/run.log")
-        self.assertEqual(args[args.index("--") + 1:], ["--verify-settings-storage"])
+        self.assertEqual(
+            args[args.index("--") + 1:],
+            ["--verify-settings-storage", "--verify-packaged-audio"],
+        )
 
     def test_environment_selects_a_temporary_settings_file(self):
         with patch.dict("os.environ", {"PROTOCOL47_SETTINGS_PATH": "/old/profile.cfg"}, clear=True):
@@ -38,6 +41,11 @@ class ExportPackageRegressionTests(unittest.TestCase):
                         "GAME_SETTINGS_STORAGE_READY malformed", valid + '\nGAME_SETTINGS_STORAGE_READY {}'):
             with self.subTest(output=invalid):
                 self.assertFalse(regression.isolated_storage_confirmed(invalid, path))
+
+    def test_requires_packaged_audio_confirmation(self):
+        self.assertTrue(regression.packaged_audio_confirmed("GAME_PACKAGED_AUDIO_READY\n"))
+        self.assertFalse(regression.packaged_audio_confirmed(""))
+        self.assertFalse(regression.packaged_audio_confirmed("GAME_PACKAGED_AUDIO_FAIL\n"))
 
     def test_rejects_errors_even_if_process_would_exit_zero(self):
         for line in (

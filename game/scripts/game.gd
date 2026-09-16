@@ -232,6 +232,12 @@ func _ready() -> void:
 		map_name = DEFAULT_MAP_NAME
 		imported_map_path = "res://generated/%s/map.json" % DEFAULT_MAP_NAME
 	_build_audio_runtime()
+	if "--verify-packaged-audio" in OS.get_cmdline_user_args():
+		# This path runs from the exported PCK. It guards against checking source
+		# WAVs with FileAccess, which works in-editor but silences release builds.
+		set_physics_process(false)
+		_verify_packaged_audio.call_deferred()
+		return
 	sprays = SprayScript.new()
 	sprays.name = "SprayPaint"
 	add_child(sprays)
@@ -279,6 +285,26 @@ func _ready() -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_apply_performance_settings()
 	_prepare_gameplay_presentation()
+
+
+func _verify_packaged_audio() -> void:
+	var voice_id := audio_router.emit_catalog_event(
+		"glock18.fire",
+		1,
+		AudioRouterScript.CHAN_WEAPON,
+		Vector3.ZERO,
+	)
+	var adapter_started := audio_playback.trace().any(func(event: Dictionary) -> bool:
+		return event.kind == "start" and event.sample == "weapons/glock18-2.wav"
+	)
+	if voice_id < 0 or not adapter_started:
+		push_error("GAME_PACKAGED_AUDIO_FAIL " + audio_router.last_error)
+		get_tree().quit(1)
+		return
+	print("GAME_PACKAGED_AUDIO_READY")
+	audio_router.stop_all("packaged_audio_probe")
+	audio_playback.clear_pool()
+	get_tree().quit(0)
 
 
 var bot_asset_preparation: Dictionary = {}
@@ -2164,8 +2190,13 @@ func _publish_network_audio(event: Dictionary) -> void:
 	var network := get_node("/root/NetworkSession")
 	if not network.is_host or not network.is_online() or event.event_name == "weapon.mode_switch":
 		return
-	# Replicate actual catalog/sample choices, never pick a fresh random variant.
-	if not AudioRouterScript.AudioCatalog.EVENT_SAMPLES.has(event.event_name):
+	# Replicate actual sample choices, never pick a fresh random variant. Dynamic
+	# material footsteps are permitted only when the selected sample belongs to
+	# the named material family.
+	if not AudioRouterScript.AudioCatalog.network_audio_sample_valid(
+		str(event.event_name),
+		str(event.sample),
+	):
 		return
 	for actor: Combatant in _human_players_stable() + _all_bots():
 		if actor.audio_entity_id() == int(event.entity_id):

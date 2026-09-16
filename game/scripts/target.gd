@@ -22,8 +22,10 @@ const PLAYER_GRAVITY := 800.0 * GOLDSRC_UNIT
 const AK47_MAX_SPEED := 221.0 * GOLDSRC_UNIT
 const FLOOR_NORMAL_MINIMUM := 0.7
 const FLOOR_CATEGORIZE_DISTANCE := 2.0 * GOLDSRC_UNIT
-const FOOTSTEP_MINIMUM_SPEED := 220.0 * GOLDSRC_UNIT
+const FOOTSTEP_MINIMUM_SPEED := 150.0 * GOLDSRC_UNIT
 const FOOTSTEP_INTERVAL_TICKS := 30
+const LANDING_MINIMUM_SPEED_UPS := 350.0
+const LANDING_FULL_VOLUME_SPEED_UPS := 500.0
 ## Fraction of the wanted planar motion a clipped slide must keep before the
 ## walk resolution is considered good enough to skip the step-up attempt.
 const STEP_CLIMB_SLIDE_FRACTION := 0.9
@@ -79,6 +81,7 @@ var _movement_probe_result := KinematicCollision3D.new()
 var _brush_contacts := PackedInt32Array()
 var _left_foot := false
 var _footstep_serial := 0
+var _fall_velocity_ups := 0.0
 var combat_effects: CS16CombatEffects
 var audio_router: CS16AudioEventRouter
 
@@ -294,8 +297,13 @@ func _physics_process(delta: float) -> void:
 	velocity.x = movement_velocity.x
 	velocity.z = movement_velocity.z
 	_update_obstruction_clock(planar_motion, wanted_motion, blocked, climbed)
-	if not is_on_floor():
+	var was_on_floor := is_on_floor()
+	if not was_on_floor:
 		velocity.y -= PLAYER_GRAVITY * delta
+		_fall_velocity_ups = maxf(
+			_fall_velocity_ups,
+			maxf(0.0, -velocity.y / GOLDSRC_UNIT),
+		)
 	else:
 		velocity.y = -0.1
 		if _should_jump_obstacle(planar_motion):
@@ -303,6 +311,10 @@ func _physics_process(delta: float) -> void:
 			_next_jump_tick = _movement_tick + JUMP_COOLDOWN_TICKS
 			_obstructed_ticks = 0
 	move_and_slide()
+	if is_on_floor():
+		if not was_on_floor:
+			_emit_landing_audio(_fall_velocity_ups)
+		_fall_velocity_ups = 0.0
 	_record_brush_contacts()
 	_resolve_combatant_hull_overlap()
 	_update_footstep_audio()
@@ -953,6 +965,7 @@ func reset_target(spawn_position: Vector3) -> void:
 	_next_footstep_tick = audio_router.current_tick if is_instance_valid(audio_router) else 0
 	_left_foot = false
 	_footstep_serial = 0
+	_fall_velocity_ups = 0.0
 	if is_instance_valid(combat_controller):
 		(combat_controller as BotCombatController).reset_tactics()
 	if is_instance_valid(character_model):
@@ -1247,6 +1260,24 @@ func _update_footstep_audio() -> void:
 	)
 	_left_foot = not _left_foot
 	_footstep_serial += 1
+
+
+func _emit_landing_audio(fall_speed_ups: float) -> void:
+	if fall_speed_ups < LANDING_MINIMUM_SPEED_UPS:
+		return
+	var texture_name := _ground_texture_name()
+	var descriptor := AudioCatalogScript.footstep_descriptor(
+		texture_name,
+		_left_foot,
+		1.0 if fall_speed_ups > LANDING_FULL_VOLUME_SPEED_UPS else 0.85,
+	)
+	_emit_audio_descriptor(
+		"player.step.%s" % AudioCatalogScript.material_code(texture_name),
+		descriptor,
+	)
+	_left_foot = not _left_foot
+	_footstep_serial += 1
+	_next_footstep_tick = audio_router.current_tick + FOOTSTEP_INTERVAL_TICKS
 
 
 func _ground_texture_name() -> String:

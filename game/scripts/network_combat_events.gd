@@ -55,9 +55,9 @@ static func validate(packet: Variant) -> Dictionary:
 					return {}
 			if not World.keys_match(d, fields):
 				return {}
-			if typeof(d.name) != TYPE_STRING or not Catalog.EVENT_SAMPLES.has(d.name) or d.name == "weapon.mode_switch":
+			if typeof(d.name) != TYPE_STRING or typeof(d.sample) != TYPE_STRING:
 				return {}
-			if typeof(d.sample) != TYPE_STRING or not d.sample in Catalog.EVENT_SAMPLES[d.name]:
+			if not Catalog.network_audio_sample_valid(d.name, d.sample):
 				return {}
 			if not World.integer(d.channel, 0, 6) or not World.integer(d.pitch, 1, 255) or not World.vector(d.origin, 10000.0):
 				return {}

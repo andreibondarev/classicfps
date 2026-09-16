@@ -214,7 +214,7 @@ func _run() -> void:
 
 	game.player._walking = true
 	game.player._standing = true
-	game.player.velocity = Vector3(2.0, 0.0, 0.0)
+	game.player.velocity = Vector3(game.player.WALK_SPEED, 0.0, 0.0)
 	game.player._next_footstep_tick = game.player.weapon_clock.tick
 	var audio_trace_size := int(game.audio_router.trace().size())
 	game.player._apply_view_bob()

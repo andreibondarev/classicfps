@@ -48,6 +48,7 @@ def launch_args(executable: Path, log_path: Path) -> list[str]:
         "180",
         "--",
         "--verify-settings-storage",
+        "--verify-packaged-audio",
     ]
 
 
@@ -68,6 +69,10 @@ def isolated_storage_confirmed(output: str, settings_path: Path) -> bool:
         return False
     expected = {"path": str(settings_path), "fresh": True}
     return bool(records) and all(record == expected for record in records)
+
+
+def packaged_audio_confirmed(output: str) -> bool:
+    return output.splitlines().count("GAME_PACKAGED_AUDIO_READY") >= 1
 
 
 def main() -> int:
@@ -117,10 +122,11 @@ def main() -> int:
 
         rejected = rejected_output(output)
         storage_confirmed = isolated_storage_confirmed(output, settings_path)
-        if result.returncode != 0 or rejected or not storage_confirmed:
+        packaged_audio_ready = packaged_audio_confirmed(output)
+        if result.returncode != 0 or rejected or not storage_confirmed or not packaged_audio_ready:
             print(output, file=sys.stderr)
             print(
-                f"export launch rejected: exit={result.returncode}, markers={rejected}, isolated_settings={storage_confirmed}",
+                f"export launch rejected: exit={result.returncode}, markers={rejected}, isolated_settings={storage_confirmed}, packaged_audio={packaged_audio_ready}",
                 file=sys.stderr,
             )
             return 1

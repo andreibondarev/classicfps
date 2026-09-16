@@ -177,6 +177,16 @@ func _run() -> void:
 	world_audio.data.source = 50
 	world_audio.data.sample = "weapons/c4_explode1.wav"
 	_check(Events.validate(world_audio).is_empty(), "world audio rejects mismatched catalog sample")
+	var actor_step := world_audio.duplicate(true)
+	actor_step.kind = "audio"
+	actor_step.actor = "player"
+	actor_step.data.erase("source")
+	actor_step.data.name = "player.step.M"
+	actor_step.data.sample = "player/pl_metal2.wav"
+	actor_step.data.channel = 4
+	_check(Events.validate(actor_step) == actor_step, "actor material footstep validates")
+	actor_step.data.sample = "player/pl_step2.wav"
+	_check(Events.validate(actor_step).is_empty(), "actor footstep rejects a mismatched material sample")
 	var game := (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	root.add_child(game)
 	current_scene = game

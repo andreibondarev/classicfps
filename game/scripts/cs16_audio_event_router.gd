@@ -139,7 +139,10 @@ func emit_descriptor(
 		variant_index = posmod(variant_index, samples.size())
 	var relative_sample := str(samples[variant_index])
 	var sample_path := _sample_path(relative_sample)
-	if not FileAccess.file_exists(sample_path):
+	# Exported PCKs retain imported AudioStreams behind resource remaps, not the
+	# original WAV as a directly openable file. FileAccess therefore reports a
+	# false negative in release builds even though load() can resolve the sample.
+	if not ResourceLoader.exists(sample_path):
 		return _fail("Missing classic audio sample: %s" % sample_path)
 
 	var pitch_min := int(descriptor.get("pitch_min", PITCH_NORM))

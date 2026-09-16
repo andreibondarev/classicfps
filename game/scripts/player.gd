@@ -69,7 +69,11 @@ const AUDIO_ENTITY_ID := 1
 const REMOTE_AUDIO_ENTITY_BASE := 0x10000000
 const MAX_HUMAN_SLOT := 32
 const FOOTSTEP_INTERVAL_TICKS := 30
-const FOOTSTEP_MINIMUM_SPEED := 220.0 * WORLD_SCALE
+# CS 1.6 PM_UpdateStepSound delays steps at <= 150 HU/s. Shift walking (130)
+# remains quiet, while running with slower weapons and acceleration are audible.
+const FOOTSTEP_MINIMUM_SPEED := 150.0 * WORLD_SCALE
+const LANDING_MINIMUM_SPEED_UPS := 350.0
+const LANDING_FULL_VOLUME_SPEED_UPS := 500.0
 const HE_PIN_AUDIO_TICK := 66
 const RELOAD_AUDIO_STAGES := AudioCatalogScript.RELOAD_AUDIO_STAGES
 const WEAPONS := WeaponRegistryScript.WEAPONS
@@ -121,6 +125,8 @@ var _step_distance := 0.0
 var _next_footstep_tick := 0
 var _left_foot := false
 var _footstep_serial := 0
+var _fall_velocity_ups := 0.0
+var _last_landing_speed_ups := 0.0
 var _recoil_index := 0
 var _last_shot_at := -10.0
 var _ak_accuracy := 0.2
@@ -461,6 +467,9 @@ func _physics_process(delta: float) -> void:
 	_drop_punch_angle()
 	_apply_command_look(command)
 	var horizontal_distance := simulate_movement(command, delta)
+	if _last_landing_speed_ups >= LANDING_MINIMUM_SPEED_UPS:
+		_emit_landing_audio(_last_landing_speed_ups)
+	_last_landing_speed_ups = 0.0
 	if _movement_grounded and horizontal_distance > 0.0:
 		_step_distance += horizontal_distance
 		_apply_view_bob()
@@ -517,6 +526,7 @@ func simulate_movement(command: Dictionary, delta: float) -> float:
 	# the pre-categorization origin so downward stairs cancel upward-only view
 	# smoothing on the same tick instead of one frame late.
 	var view_origin_y := global_position.y
+	_last_landing_speed_ups = 0.0
 	_movement_grounded = movement_kernel.categorize_ground(velocity)
 	var wants_crouch := objective_crouch_locked if objective_movement_locked else bool(command.get("crouch", false))
 	_update_crouch(delta, wants_crouch)
@@ -545,6 +555,10 @@ func simulate_movement(command: Dictionary, delta: float) -> float:
 		# GoldSrc splits gravity equally around PM_AirMove.
 		velocity.y -= GRAVITY * delta * 0.5
 		_air_accelerate(wish_direction, wish_speed, AIR_ACCEL, delta)
+		_fall_velocity_ups = maxf(
+			_fall_velocity_ups,
+			maxf(0.0, -velocity.y / WORLD_SCALE),
+		)
 
 	var previous := global_position
 	var movement_result: Dictionary = movement_kernel.move(
@@ -558,6 +572,9 @@ func simulate_movement(command: Dictionary, delta: float) -> float:
 		velocity.y -= GRAVITY * delta * 0.5
 	else:
 		# PM_PlayerMove clears residual downward velocity after categorizing a landing.
+		if not was_on_floor and not jumped:
+			_last_landing_speed_ups = _fall_velocity_ups
+		_fall_velocity_ups = 0.0
 		velocity.y = 0.0
 	_update_stair_view_smoothing(delta, global_position.y - view_origin_y, _movement_grounded)
 	return Vector2(
@@ -871,8 +888,8 @@ func _update_footstep_audio() -> void:
 		return
 	_next_footstep_tick = current_tick + FOOTSTEP_INTERVAL_TICKS
 	var planar_speed := Vector2(velocity.x, velocity.z).length()
-	# ReGameDLL suppresses ordinary multiplayer steps at <= 220 ups. This
-	# naturally makes shift-walking and crouch movement silent.
+	# CS 1.6 delays ordinary steps at <= 150 ups. This naturally makes the
+	# 130-ups shift walk and crouch movement silent.
 	if planar_speed <= FOOTSTEP_MINIMUM_SPEED:
 		return
 	var texture_name := _ground_texture_name()
@@ -894,6 +911,26 @@ func _update_footstep_audio() -> void:
 	)
 	_left_foot = not _left_foot
 	_footstep_serial += 1
+
+
+func _emit_landing_audio(fall_speed_ups: float) -> void:
+	# PM_CheckFalling uses a material step for a real impact, not a synthetic
+	# jump cue. Ordinary 268-ups hops stay below the 350-ups bounce threshold.
+	if fall_speed_ups < LANDING_MINIMUM_SPEED_UPS:
+		return
+	var texture_name := _ground_texture_name()
+	var descriptor := AudioCatalogScript.footstep_descriptor(
+		texture_name,
+		_left_foot,
+		1.0 if fall_speed_ups > LANDING_FULL_VOLUME_SPEED_UPS else 0.85,
+	)
+	_emit_audio_descriptor(
+		"player.step.%s" % AudioCatalogScript.material_code(texture_name),
+		descriptor,
+	)
+	_left_foot = not _left_foot
+	_footstep_serial += 1
+	_next_footstep_tick = weapon_clock.tick + FOOTSTEP_INTERVAL_TICKS
 
 
 func _ground_texture_name() -> String:
@@ -1925,6 +1962,8 @@ func reset_player(spawn_position: Vector3, keep_loadout := true) -> void:
 	_next_footstep_tick = weapon_clock.tick
 	_left_foot = false
 	_footstep_serial = 0
+	_fall_velocity_ups = 0.0
+	_last_landing_speed_ups = 0.0
 	if is_instance_valid(muzzle_light):
 		muzzle_light.visible = false
 	_movement_grounded = false

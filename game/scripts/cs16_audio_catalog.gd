@@ -518,6 +518,35 @@ static func footstep_sample(texture_name: String, step_index: int) -> String:
 	return "%s/player/%s%d.wav" % [SOUND_ROOT, str(family.prefix), sample_index]
 
 
+static func network_event_samples(event_name: String) -> Array[String]:
+	## Network audio normally comes from the fixed event catalog. Footsteps are
+	## the one intentional dynamic family: GoldSrc derives the event from the
+	## material under the actor, while the selected sample still has to belong
+	## to that exact material family.
+	if EVENT_SAMPLES.has(event_name):
+		var catalog_samples: Array[String] = []
+		for sample: Variant in EVENT_SAMPLES[event_name]:
+			catalog_samples.append(str(sample))
+		return catalog_samples
+	var prefix := "player.step."
+	if not event_name.begins_with(prefix):
+		return []
+	var code := event_name.trim_prefix(prefix)
+	if code.length() != 1 or not FOOTSTEP_FAMILIES.has(code):
+		return []
+	var family: Dictionary = FOOTSTEP_FAMILIES[code]
+	var samples: Array[String] = []
+	for index in range(1, int(family.count) + 1):
+		samples.append("player/%s%d.wav" % [str(family.prefix), index])
+	return samples
+
+
+static func network_audio_sample_valid(event_name: String, sample: String) -> bool:
+	if event_name == "weapon.mode_switch":
+		return false
+	return sample in network_event_samples(event_name)
+
+
 static func event_sample(event_name: String, variant_index := 0) -> String:
 	var variants: Array = EVENT_SAMPLES.get(event_name, [])
 	if variants.is_empty():

@@ -40,6 +40,12 @@ func _run() -> void:
 	_check(AudioCatalog.material_code("TSFlrGrt") == AudioCatalog.GRATE, "grate table entry")
 	_check(AudioCatalog.material_code("brickPath") == AudioCatalog.DIRT, "dirt table entry")
 	_check(AudioCatalog.material_code("pi_steptop1") == AudioCatalog.TILE, "tile table entry")
+	_check(AudioCatalog.network_audio_sample_valid("player.step.M", "player/pl_metal3.wav"),
+		"network accepts a sample from the named dynamic footstep family")
+	_check(not AudioCatalog.network_audio_sample_valid("player.step.M", "player/pl_step1.wav")
+		and not AudioCatalog.network_audio_sample_valid("player.step.Z", "player/pl_step1.wav")
+		and not AudioCatalog.network_audio_sample_valid("player.step.C", "../player/pl_step1.wav"),
+		"network rejects mismatched, unknown, and traversing footstep samples")
 	_check(
 		AudioCatalog.material_code("unlisted_dust_texture") == AudioCatalog.CONCRETE,
 		"unlisted textures use classic concrete fallback",

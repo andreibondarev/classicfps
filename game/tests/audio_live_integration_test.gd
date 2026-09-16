@@ -344,6 +344,14 @@ func _run() -> void:
 	)
 
 	router.reset(0xC516)
+	player._emit_landing_audio(349.0)
+	_check(router.trace().is_empty(), "ordinary jumps do not invent a landing cue")
+	player._emit_landing_audio(350.0)
+	var landing := _event(router, "player.step.C")
+	_check(is_equal_approx(float(landing.get("volume", 0.0)), 0.85),
+		"hard landings use the CS material-step impact volume")
+
+	router.reset(0xC516)
 	var grenade: HEGrenade = GrenadeScript.new()
 	game.add_child(grenade)
 	grenade.launch(Vector3(10.0, 0.0, 0.0), Vector3(2.0, 0.0, 0.0), player)
