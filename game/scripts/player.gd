@@ -166,6 +166,11 @@ func is_local_human() -> bool:
 	return _remote_human_slot == 0
 
 
+func _is_dedicated_server() -> bool:
+	var session := get_node_or_null("/root/NetworkSession")
+	return is_instance_valid(session) and bool(session.get("dedicated_server"))
+
+
 func _ready() -> void:
 	if team == TEAM_UNASSIGNED and is_local_human():
 		configure_identity(TEAM_TERRORIST, get_node("/root/GameSettings").player_name)
@@ -200,11 +205,11 @@ func _ready() -> void:
 	weapon_clock.reset(active_weapon)
 	combat_effects = CombatEffectsScript.for_scene(get_tree().current_scene)
 	audio_router = AudioRouterScript.for_scene(get_tree().current_scene)
-	if is_local_human():
+	if is_local_human() and not _is_dedicated_server():
 		_build_viewmodel()
 		_apply_settings()
 		settings.changed.connect(_apply_settings)
-	else:
+	elif not is_local_human() and not _is_dedicated_server():
 		character_model = CharacterModelScript.new()
 		character_model.name = "PlayerModel"
 		add_child(character_model)

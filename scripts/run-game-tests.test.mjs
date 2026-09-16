@@ -9,6 +9,13 @@ test("the full gate checks fresh settings, restart persistence and profile isola
   assert.equal(config.scripts["game:test:settings"], "node scripts/test-settings-persistence.mjs");
 });
 
+test("the full gate validates the headless ten-slot Dust2 server", () => {
+  assert.ok(SUITES.includes("game:test:dedicated"));
+  const config = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));
+  assert.match(config.scripts["game:test:dedicated"],
+    /--headless --audio-driver Dummy .*dedicated_server_test\.gd -- --dedicated --port=27549$/);
+});
+
 test("HUD gate clicks Quit and requires silent process exit offline and while hosting", () => {
   assert.ok(SUITES.includes("game:test:hud"));
   const config = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));

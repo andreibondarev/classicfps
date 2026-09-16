@@ -89,6 +89,8 @@ var _world_assemblies: Dictionary = {}
 var _connection_deadline_ms := 0
 var _resolver_id := IP.RESOLVER_INVALID_ID
 var _resolver_port := 0
+var dedicated_server := false
+var listen_port := DEFAULT_PORT
 
 
 func _ready() -> void:
@@ -126,11 +128,32 @@ func _physics_process(_delta: float) -> void:
 
 
 func _start_from_command_line() -> void:
-	for argument in OS.get_cmdline_user_args():
-		if argument == "--host":
-			host_game()
-		elif argument.begins_with("--join="):
-			join_game(argument.trim_prefix("--join="))
+	var arguments := OS.get_cmdline_user_args()
+	dedicated_server = OS.has_feature("dedicated_server") or arguments.has("--dedicated")
+	var should_host := dedicated_server or arguments.has("--host")
+	for argument in arguments:
+		if argument.begins_with("--port="):
+			var requested_port := argument.trim_prefix("--port=")
+			if requested_port.is_valid_int() and int(requested_port) in range(1, 65536):
+				listen_port = int(requested_port)
+			else:
+				push_error("Invalid listen port: %s" % requested_port)
+				if dedicated_server:
+					get_tree().quit(2)
+				return
+	if should_host:
+		var result := host_game(listen_port)
+		if dedicated_server:
+			if result == OK:
+				print("Protocol 47 dedicated server listening on UDP %d (de_dust2, 10 slots)" % listen_port)
+			else:
+				push_error("Dedicated server could not bind UDP %d: %s" % [listen_port, error_string(result)])
+				get_tree().quit(1)
+		return
+	for argument in arguments:
+		if argument.begins_with("--join="):
+			join_game(argument.trim_prefix("--join="), listen_port)
+			return
 
 
 func host_game(port := DEFAULT_PORT, bind_address := "*") -> Error:

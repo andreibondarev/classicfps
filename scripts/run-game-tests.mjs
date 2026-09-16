@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SUITES = [
-  "settings", "network", "chat", "assets", "audio", "hud", "viewmodels", "characters", "movement",
+  "settings", "network", "dedicated", "chat", "assets", "audio", "hud", "viewmodels", "characters", "movement",
   "collision", "ballistics", "weapons", "timing", "vfx", "rounds", "matches", "observers", "joins", "smoke",
   "map", "lighting", "bots", "bot-determinism", "hostage-bot-determinism", "assault-traversal", "match-driver",
 ].map((name) => `game:test:${name}`);

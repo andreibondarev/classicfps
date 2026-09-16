@@ -695,6 +695,27 @@ Install Godot 4.7.1 and its official macOS export template, then run:
 npm run game:build:mac
 ```
 
+### Dedicated Dust2 server
+
+Build the headless Linux server with:
+
+```bash
+npm run game:test:dedicated
+npm run game:build:server
+```
+
+The resulting `game/builds/protocol47-server.x86_64` accepts ten remote
+players, starts a 5v5 Dust2 match automatically, and listens on UDP 27447.
+Run it on Linux with:
+
+```bash
+./protocol47-server.x86_64 --headless --audio-driver Dummy -- --dedicated --port=27447
+```
+
+The production systemd unit lives at `deploy/protocol47.service`. The client
+joins the server's public IPv4 address through **Play Online → Join**. The
+host firewall must allow inbound UDP 27447; TCP 27447 is not used.
+
 The universal Apple Silicon/Intel release is written to
 `game/builds/Protocol47.zip`. The build command also extracts that archive,
 launches the packaged main scene headlessly with the Dummy audio driver, and

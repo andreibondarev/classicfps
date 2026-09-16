@@ -1,0 +1,26 @@
+[Unit]
+Description=Protocol 47 dedicated Dust2 server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=protocol47
+Group=protocol47
+WorkingDirectory=/opt/protocol47
+Environment=HOME=/var/lib/protocol47
+ExecStart=/opt/protocol47/protocol47-server.x86_64 --headless --audio-driver Dummy -- --dedicated --port=27447
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/protocol47
+MemoryMax=3584M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

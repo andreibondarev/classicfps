@@ -205,6 +205,7 @@ var remote_roster: Node
 var _bot_brush_activator_ids: Dictionary = {}
 var _human_death_serials: Dictionary = {}
 var _network_client_mode := false
+var _dedicated_server_mode := false
 var _next_network_item_id := 1
 var _network_objective_result := ""
 var network_client_view: Node3D
@@ -221,8 +222,15 @@ func _ready() -> void:
 	# into ALWAYS separately, so offline menus can still resume or quit.
 	process_mode = Node.PROCESS_MODE_PAUSABLE
 	var network := get_node("/root/NetworkSession")
+	_dedicated_server_mode = bool(network.dedicated_server)
 	_network_client_mode = (network.is_online() or network.is_connecting()) and not network.is_host
 	_select_map_from_command_line()
+	if _dedicated_server_mode:
+		# The first production server intentionally supports one map. Keeping this
+		# override here prevents an accidental command-line map from creating a
+		# server clients cannot faithfully join.
+		map_name = DEFAULT_MAP_NAME
+		imported_map_path = "res://generated/%s/map.json" % DEFAULT_MAP_NAME
 	_build_audio_runtime()
 	sprays = SprayScript.new()
 	sprays.name = "SprayPaint"
@@ -244,6 +252,10 @@ func _ready() -> void:
 	_spawn_player()
 	_build_trigger_camera()
 	if not _network_client_mode:
+		if _dedicated_server_mode:
+			# A listen server uses the first T spawn for its local player. A dedicated
+			# server has no local combatant, so make that fifth slot a replaceable bot.
+			allied_spawns.push_front(player_spawn)
 		_spawn_targets()
 	player.combat_effects = combat_effects
 	for bot: TargetActor in allied_bots + targets:
@@ -252,7 +264,10 @@ func _ready() -> void:
 	_build_bomb_sites()
 	_build_round_state()
 	_build_hud()
-	_build_spectator_camera()
+	if _dedicated_server_mode:
+		hud.visible = false
+	if not _dedicated_server_mode:
+		_build_spectator_camera()
 	hud.update_match(round_number, phase, seconds_left, ct_score, terrorist_score, money)
 	_update_tactical_hud()
 	hud.set_deploy_visible(true)
@@ -260,9 +275,12 @@ func _ready() -> void:
 	_build_network_roster()
 	network.status_changed.connect(_on_network_role_changed)
 	_on_network_role_changed(str(network.status))
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if not _dedicated_server_mode:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_apply_performance_settings()
 	_prepare_gameplay_presentation()
+	if _dedicated_server_mode:
+		start_match()
 
 
 var bot_asset_preparation: Dictionary = {}
@@ -631,7 +649,7 @@ func _remove_replaced_bot(bot: TargetActor) -> void:
 		if int(_brush_touch_pairs[key].activator_id) == activator_id:
 			entity_world.queue_touch(int(_brush_touch_pairs[key].entity_id), activator_id, EntityWorldScript.TOUCH_EXIT)
 			_brush_touch_pairs.erase(key)
-	if spectator_camera.target == bot:
+	if is_instance_valid(spectator_camera) and spectator_camera.target == bot:
 		spectator_camera._advance_after_target_loss()
 	if allied_bots.has(bot):
 		allied_spawns.remove_at(allied_bots.find(bot))
@@ -3370,9 +3388,22 @@ func _apply_player_name() -> void:
 func _spawn_player() -> void:
 	player = PlayerScript.new()
 	player.name = "Player"
-	player.configure_identity(Combatant.TEAM_TERRORIST, get_node("/root/GameSettings").player_name)
+	player.configure_identity(
+		Combatant.TEAM_UNASSIGNED if _dedicated_server_mode else Combatant.TEAM_TERRORIST,
+		"Dedicated Server" if _dedicated_server_mode else get_node("/root/GameSettings").player_name,
+	)
 	player.position = player_spawn
 	add_child(player)
+	if _dedicated_server_mode:
+		# Player's local-human _ready() supplies the normal offline T default.
+		# Override it after tree entry so the server never occupies a team slot.
+		player.configure_identity(Combatant.TEAM_UNASSIGNED, "Dedicated Server")
+		player.alive = false
+		player.visible = false
+		player.collision_layer = 0
+		player.controls_enabled = false
+		player.look_enabled = false
+		player.set_physics_process(false)
 	if using_imported_map and not target_spawns.is_empty():
 		player.face_toward(target_spawns[0])
 
@@ -3678,8 +3709,9 @@ func _enter_waiting_participant_view() -> void:
 	player.last_command = {}
 	player.collision_layer = 0
 	player.visible = false
-	spectator_camera.stop()
-	spectator_camera.schedule(0.0)
+	if is_instance_valid(spectator_camera):
+		spectator_camera.stop()
+		spectator_camera.schedule(0.0)
 
 
 func _on_deploy_cancel_requested() -> void:
@@ -3694,7 +3726,8 @@ func _on_deploy_cancel_requested() -> void:
 
 func _close_deploy_menu() -> void:
 	hud.set_deploy_visible(false)
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if not _dedicated_server_mode:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _on_deploy_requested() -> void:
@@ -3724,8 +3757,9 @@ func _enter_observer_view() -> void:
 	player.visible = false
 	player.set_meta("cs16_team_id", 0)
 	player.set_objective_movement_locked(false)
-	spectator_camera.stop()
-	spectator_camera.schedule(0.0)
+	if is_instance_valid(spectator_camera):
+		spectator_camera.stop()
+		spectator_camera.schedule(0.0)
 
 
 func _on_class_selected(class_id: int) -> void:

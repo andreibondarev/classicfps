@@ -83,6 +83,11 @@ var combat_effects: CS16CombatEffects
 var audio_router: CS16AudioEventRouter
 
 
+func _is_dedicated_server() -> bool:
+	var session := get_node_or_null("/root/NetworkSession")
+	return is_instance_valid(session) and bool(session.get("dedicated_server"))
+
+
 func _ready() -> void:
 	if team == TEAM_UNASSIGNED:
 		configure_identity(TEAM_COUNTER_TERRORIST, "CT Bot %02d" % (index + 1))
@@ -148,6 +153,11 @@ func _build_actor() -> void:
 	_fallback_visual = Node3D.new()
 	_fallback_visual.name = "FallbackVisual"
 	add_child(_fallback_visual)
+	# Skin identity is gameplay/network state even when the dedicated export
+	# omits its corresponding mesh and animation assets.
+	player_skin = _skin_for_identity()
+	if _is_dedicated_server():
+		return
 	_body_material = StandardMaterial3D.new()
 	_body_material.albedo_color = _team_color()
 	_body_material.roughness = 0.64
@@ -173,7 +183,6 @@ func _build_actor() -> void:
 	visor.position = Vector3(0, 0.61, -0.13)
 	_fallback_visual.add_child(visor)
 
-	player_skin = _skin_for_identity()
 	character_model = CharacterModelScript.new()
 	character_model.name = "PlayerModel"
 	add_child(character_model)
@@ -1121,6 +1130,8 @@ func c4_ready_for_plant() -> bool:
 
 
 func _replace_character_weapon(weapon_name: String) -> void:
+	if _is_dedicated_server():
+		return
 	if (is_instance_valid(character_model) and character_model.model_loaded
 		and character_model.skin_name == player_skin and character_model.weapon_name == weapon_name):
 		# Re-equipping the same gun resets the presentation state, but does not
