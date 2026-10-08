@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-cargo build --quiet --manifest-path crate/Cargo.toml --bin godot_mdl
-exporter="$repo_root/crate/target/debug/godot_mdl"
+cargo build --quiet --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_mdl
+exporter="$repo_root/../shared/goldsrc-crate/target/debug/godot_mdl"
 
 # The canonical CS 1.6 weapon surface. The same identifier is used by the
 # gameplay catalog, v_ first-person model, p_ third-person model and generated
@@ -43,8 +43,8 @@ weapons=(
 )
 
 for weapon in "${weapons[@]}"; do
-  view_model="public/models/weapons/v_${weapon}.mdl"
-  player_model="public/models/weapons/p_${weapon}.mdl"
+  view_model="../cs16-demo-player/public/models/weapons/v_${weapon}.mdl"
+  player_model="../cs16-demo-player/public/models/weapons/p_${weapon}.mdl"
 
   if [[ ! -f "$view_model" ]]; then
     printf 'Missing required first-person model: %s\n' "$view_model" >&2
@@ -59,7 +59,7 @@ for weapon in "${weapons[@]}"; do
   if [[ -f "$player_model" ]]; then
     "$exporter" \
       --attached \
-      public/models/player/terror/terror.mdl \
+      ../cs16-demo-player/public/models/player/terror/terror.mdl \
       "$player_model" \
       "game/generated/player_weapons/$weapon"
   else

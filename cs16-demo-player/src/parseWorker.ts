@@ -1,6 +1,6 @@
 // Web Worker: parses a demo off the main thread and streams progress back.
 // Returns an SoA timeline whose typed arrays are transferred zero-copy.
-import init, { parse_demo_soa } from '../crate/pkg/cs16_demo_parser.js';
+import init, { parse_demo_soa } from '../../shared/goldsrc-crate/pkg/cs16_demo_parser.js';
 
 self.onmessage = async (e: MessageEvent<ArrayBuffer>) => {
   try {

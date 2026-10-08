@@ -2,8 +2,10 @@
 
 Protocol 47 is the playable native game built alongside the CS 1.6 replay
 viewer. Godot owns the client, classic 100 Hz simulation, UI, audio, and rendering. The
-existing Rust crate converts GoldSrc BSP and WAD data into portable game
-content.
+shared Rust crate (`../shared/goldsrc-crate`) converts GoldSrc BSP, WAD and MDL
+data into portable game content, reading the source assets from
+`../cs16-demo-player/public`. Run the `npm run game:*` commands from the
+`cs16-game/` folder.
 
 ## Run
 

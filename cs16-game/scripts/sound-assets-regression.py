@@ -8,7 +8,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_SOUNDS = ROOT / "public" / "sounds"
+ASSETS = ROOT.parent / "cs16-demo-player" / "public"
+SOURCE_SOUNDS = ASSETS / "sounds"
 GAME_SOUNDS = ROOT / "game" / "assets" / "sounds" / "classic"
 EXPECTED_WAVS = 808
 EXPECTED_WAV_BUNDLE_SHA256 = (

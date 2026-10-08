@@ -5,7 +5,7 @@ The production service runs the Dust2-only Linux export as the unprivileged
 An empty server waits for its first player, and restores its initial 5v5 bot
 roster after the final player disconnects.
 
-Build and validate locally:
+Build and validate locally (from `cs16-game/`):
 
 ```bash
 npm run game:test:dedicated

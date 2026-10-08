@@ -5,9 +5,9 @@ turns GoldSrc `.dem` recordings into a deterministic timeline; Three.js renders
 textured BSP maps, studio models, first-person viewmodels, effects, and replay
 UI.
 
-The repository now also contains the native playable game under `game/`.
-See [`game/README.md`](game/README.md) for controls, validation, Dust2 content
-conversion, and macOS release packaging.
+Run every command below from this `cs16-demo-player/` folder. The Rust parser
+lives in [`../shared/goldsrc-crate`](../shared/goldsrc-crate), shared with the
+playable game in [`../cs16-game`](../cs16-game/game/README.md).
 
 ## Current capabilities
 
@@ -42,7 +42,7 @@ high-fidelity spectator views, not claims of forensically exact client output.
 ## Architecture
 
 ```text
-crate/src/
+shared/goldsrc-crate/src/
   demo.rs        demo framing and timeline construction
   netmsg.rs      SVC/user-message and entity stream parsing
   events.rs      kills, rounds, HUD, observer, audio, and effects
@@ -103,13 +103,11 @@ npm run test:corpus -- --shard-index 1 --shard-count 2 --port 5218
 ## Rebuilding the parser
 
 ```bash
-cd crate
-wasm-pack build --target web
-cd ..
+npm run wasm     # wasm-pack build in ../shared/goldsrc-crate
 npm run build
 ```
 
-The frontend imports the generated package from `crate/pkg`.
+The frontend imports the generated package from `../shared/goldsrc-crate/pkg`.
 
 ## Asset layout
 

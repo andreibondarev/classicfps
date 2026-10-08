@@ -1596,9 +1596,9 @@ mod tests {
     #[test]
     fn grenade_viewmodels_preserve_all_authored_sequences() {
         let models: [&[u8]; 3] = [
-            include_bytes!("../../public/models/weapons/v_hegrenade.mdl"),
-            include_bytes!("../../public/models/weapons/v_flashbang.mdl"),
-            include_bytes!("../../public/models/weapons/v_smokegrenade.mdl"),
+            include_bytes!("../../../cs16-demo-player/public/models/weapons/v_hegrenade.mdl"),
+            include_bytes!("../../../cs16-demo-player/public/models/weapons/v_flashbang.mdl"),
+            include_bytes!("../../../cs16-demo-player/public/models/weapons/v_smokegrenade.mdl"),
         ];
         for bytes in models {
             let (model, animations) = parse_mdl_animated(bytes).expect("grenade viewmodel");
@@ -1619,16 +1619,16 @@ mod tests {
         }
     }
 
-    const TERROR_MODEL: &[u8] = include_bytes!("../../public/models/player/terror/terror.mdl");
+    const TERROR_MODEL: &[u8] = include_bytes!("../../../cs16-demo-player/public/models/player/terror/terror.mdl");
     const PLAYER_MODELS: [&[u8]; 8] = [
         TERROR_MODEL,
-        include_bytes!("../../public/models/player/leet/leet.mdl"),
-        include_bytes!("../../public/models/player/arctic/arctic.mdl"),
-        include_bytes!("../../public/models/player/guerilla/guerilla.mdl"),
-        include_bytes!("../../public/models/player/urban/urban.mdl"),
-        include_bytes!("../../public/models/player/gsg9/gsg9.mdl"),
-        include_bytes!("../../public/models/player/sas/sas.mdl"),
-        include_bytes!("../../public/models/player/gign/gign.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/leet/leet.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/arctic/arctic.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/guerilla/guerilla.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/urban/urban.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/gsg9/gsg9.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/sas/sas.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/player/gign/gign.mdl"),
     ];
 
     #[test]
@@ -1688,19 +1688,19 @@ mod tests {
                 "bone mask must retain thighs above the old height cutoff");
         }
     }
-    const AK47_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_ak47.mdl");
-    const C4_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_c4.mdl");
-    const DEAGLE_PLAYER_MODEL: &[u8] = include_bytes!("../../public/models/weapons/p_deagle.mdl");
-    const HOSTAGE_MODEL: &[u8] = include_bytes!("../../public/models/classic/hostage.mdl");
+    const AK47_PLAYER_MODEL: &[u8] = include_bytes!("../../../cs16-demo-player/public/models/weapons/p_ak47.mdl");
+    const C4_PLAYER_MODEL: &[u8] = include_bytes!("../../../cs16-demo-player/public/models/weapons/p_c4.mdl");
+    const DEAGLE_PLAYER_MODEL: &[u8] = include_bytes!("../../../cs16-demo-player/public/models/weapons/p_deagle.mdl");
+    const HOSTAGE_MODEL: &[u8] = include_bytes!("../../../cs16-demo-player/public/models/classic/hostage.mdl");
     const HOSTAGE_SEQUENCE_GROUPS: [&[u8]; 8] = [
-        include_bytes!("../../public/models/classic/hostage01.mdl"),
-        include_bytes!("../../public/models/classic/hostage02.mdl"),
-        include_bytes!("../../public/models/classic/hostage03.mdl"),
-        include_bytes!("../../public/models/classic/hostage04.mdl"),
-        include_bytes!("../../public/models/classic/hostage05.mdl"),
-        include_bytes!("../../public/models/classic/hostage06.mdl"),
-        include_bytes!("../../public/models/classic/hostage07.mdl"),
-        include_bytes!("../../public/models/classic/hostage08.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage01.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage02.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage03.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage04.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage05.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage06.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage07.mdl"),
+        include_bytes!("../../../cs16-demo-player/public/models/classic/hostage08.mdl"),
     ];
 
     #[test]

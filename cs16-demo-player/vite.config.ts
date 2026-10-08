@@ -112,4 +112,6 @@ function demoLibraryPlugin(): Plugin {
 export default defineConfig({
   base: './',
   plugins: [demoLibraryPlugin()],
+  // The WASM parser is built into the shared crate, outside this project root.
+  server: { fs: { allow: ['.', '../shared/goldsrc-crate/pkg'] } },
 });

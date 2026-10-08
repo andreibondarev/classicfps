@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-cargo build --quiet --manifest-path crate/Cargo.toml --bin godot_mdl
-exporter="$repo_root/crate/target/debug/godot_mdl"
+cargo build --quiet --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_mdl
+exporter="$repo_root/../shared/goldsrc-crate/target/debug/godot_mdl"
 
 # Static GoldSrc gib models used by TE_BREAKMODEL and stock Counter-Strike
 # maps. Keep source basenames stable so runtime descriptors map directly to a
@@ -22,7 +22,7 @@ gibs=(
 )
 
 for gib in "${gibs[@]}"; do
-  source_model="public/models/classic/${gib}.mdl"
+  source_model="../cs16-demo-player/public/models/classic/${gib}.mdl"
   if [[ ! -f "$source_model" ]]; then
     printf 'Missing required stock gib model: %s\n' "$source_model" >&2
     exit 1

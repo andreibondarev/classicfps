@@ -2,9 +2,10 @@
 """Test script to verify the CS 1.6 Demo Player is working correctly."""
 
 from playwright.sync_api import sync_playwright
+import os
 import time
 
-DEMO_FILE = "/Users/andrei/Code/cs16-demo-player/demos/territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem"
+DEMO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demos", "territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem")
 
 def test_demo_player():
     with sync_playwright() as p:

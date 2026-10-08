@@ -71,8 +71,8 @@ func _run() -> void:
 		str(manifest.get("source_hud_sha256", "")) == EXPECTED_SOURCE_HUD_SHA256,
 		"manifest pins the validated App 90 hud.txt hash",
 	)
-	var repo_root := ProjectSettings.globalize_path("res://").path_join("..").simplify_path()
-	var source_root := repo_root.path_join("public/sprites/classic")
+	var repo_root := ProjectSettings.globalize_path("res://").path_join("../..").simplify_path()
+	var source_root := repo_root.path_join("cs16-demo-player/public/sprites/classic")
 	_check(
 		_sha256(source_root.path_join("hud.txt")) == EXPECTED_SOURCE_HUD_SHA256,
 		"staged hud.txt matches the manifest hash",

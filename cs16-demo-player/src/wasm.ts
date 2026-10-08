@@ -1,5 +1,5 @@
 // WASM module interface
-import init, { parse_demo, parse_bsp, parse_bsp_textured, parse_mdl, parse_mdl_attached, get_state_at_time } from '../crate/pkg/cs16_demo_parser.js';
+import init, { parse_demo, parse_bsp, parse_bsp_textured, parse_mdl, parse_mdl_attached, get_state_at_time } from '../../shared/goldsrc-crate/pkg/cs16_demo_parser.js';
 
 let wasmInitialized = false;
 
