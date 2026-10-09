@@ -39,6 +39,20 @@ func _run() -> void:
 		push_error("MIXED TRANSPORT PROBE: lost the session while lingering")
 		quit(1)
 		return
-	print("MIXED_TRANSPORT_PROBE_PASS status=%s actors=%d" % [network.status, actors.size()])
+	# The host pings every 2 s, so after lingering this probe's own row carries a
+	# measured round trip for the scoreboard; bots never do.
+	var own_ping := -1
+	for row: Dictionary in _latest.get("actors", []):
+		if row.kind == "bot" and int(row.ping) != -1:
+			push_error("MIXED TRANSPORT PROBE: bot %s reports ping %d" % [row.id, row.ping])
+			quit(1)
+			return
+		if row.id == _latest.get("owner_id", ""):
+			own_ping = int(row.ping)
+	if linger_ms >= 3000 and own_ping < 0:
+		push_error("MIXED TRANSPORT PROBE: own ping was never measured")
+		quit(1)
+		return
+	print("MIXED_TRANSPORT_PROBE_PASS status=%s actors=%d ping=%d" % [network.status, actors.size(), own_ping])
 	network.disconnect_session()
 	quit(0)

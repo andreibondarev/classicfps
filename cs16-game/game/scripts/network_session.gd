@@ -418,6 +418,11 @@ func _client_pong(stamp: Variant) -> void:
 	_peer_rtt[peer_id] = sample if not _peer_rtt.has(peer_id) else lerpf(float(_peer_rtt[peer_id]), sample, 0.3)
 
 
+## Host: smoothed round trip in ms, or -1 before the first pong.
+func peer_rtt_ms(peer_id: int) -> int:
+	return clampi(roundi(float(_peer_rtt.get(peer_id, -1.0))), -1, 9999)
+
+
 ## Host: round trip, loss (ENet only) and payload bytes for the admin dashboard.
 func peer_quality(peer_id: int) -> Dictionary:
 	var quality := {"rtt_ms": roundf(float(_peer_rtt.get(peer_id, -1.0))), "loss": -1.0, "bytes_in": 0, "bytes_out": 0}

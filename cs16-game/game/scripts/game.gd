@@ -2208,7 +2208,29 @@ func _network_actor_state(actor: Combatant) -> Dictionary:
 		"life": human.spawn_serial if human != null else round_state.round_number,
 		"crouched": not human._standing if human != null else bot.is_crouching(),
 		"kills": int(row.get("kills", 0)), "deaths": int(row.get("deaths", 0)), "money": int(row.get("money", 800)),
-		"class_id": int(human.get_meta("cs16_class_id", 0)) if human != null else 0}
+		"class_id": int(human.get_meta("cs16_class_id", 0)) if human != null else 0,
+		"ping": _actor_ping_ms(actor)}
+
+
+## Scoreboard latency: the host's own player is 0 ms, remote humans carry the
+## session's measured round trip, and bots (or unmeasured peers) are -1.
+func _actor_ping_ms(actor: Combatant) -> int:
+	var human := actor as PlayerController
+	if human == null:
+		return -1
+	if human == player:
+		return 0
+	var peer_id := int(human.combat_controller._peer_id) if is_instance_valid(human.combat_controller) else 0
+	if peer_id <= 1:
+		return -1
+	return get_node("/root/NetworkSession").peer_rtt_ms(peer_id)
+
+
+## CS 1.6 shows "BOT" in the latency column for bots.
+static func scoreboard_latency(kind: String, ping_ms: int) -> String:
+	if kind == "bot":
+		return "BOT"
+	return str(ping_ms) if ping_ms >= 0 else ""
 
 
 func publish_combat_presentation(actor: Combatant, kind: String, data: Dictionary) -> void:
@@ -5736,7 +5758,11 @@ func _update_scoreboard() -> void:
 		row.name = _combatant_display_name(actor) if is_instance_valid(actor) else raw_row.name
 		row.health = actor.health if is_instance_valid(actor) else 0
 		row.show_private_stats = player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST] and str(raw_row.team) == player.team
-		row.latency = 0
+		row.latency = (
+			scoreboard_latency("human", _actor_ping_ms(actor))
+			if actor is PlayerController
+			else scoreboard_latency("bot", -1)
+		)
 		rows.append(row)
 	hud.update_scoreboard(
 		rows,

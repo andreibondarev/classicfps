@@ -39,7 +39,7 @@ func _run() -> void:
 			"position": Vector3(index * 0.71, 0, index * -0.33), "velocity": Vector3.ZERO, "angles": Vector2.ZERO,
 			"alive": true, "visible": true, "health": 100, "armor": 0, "helmet": false, "weapon": human.active_weapon,
 			"clip": human.clip, "reserve": human.reserve, "reloading": false, "skin": "terror", "life": 1,
-			"crouched": false, "kills": 0, "deaths": 0, "money": 800, "class_id": 1})
+			"crouched": false, "kills": 0, "deaths": 0, "money": 800, "class_id": 1, "ping": -1})
 	for index in range(State.MAX_WORLD_ITEMS):
 		snapshot.items.append({"id": index + 1, "kind": "gun", "weapon": "ak47",
 			"position": Vector3(index * 0.33, index * 0.11, index * 0.79),

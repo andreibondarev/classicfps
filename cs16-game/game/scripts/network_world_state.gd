@@ -5,7 +5,7 @@ extends RefCounted
 ## Transient combat events have their own codec. Reject before client mutation.
 const Weapons = preload("res://scripts/cs16_weapon_registry.gd")
 const Spray = preload("res://scripts/cs16_spray.gd")
-const VERSION := 7
+const VERSION := 8
 const MAX_ACTORS := 32
 const MAX_WORLD_ITEMS := 512
 const MAX_COUNTER := 0x7fffffff
@@ -19,7 +19,7 @@ const MOTION_FIELDS := ["enabled", "standing", "duck_elapsed", "jump_down", "obj
 const EQUIPMENT := ["kevlar", "helmet", "defuser", "nvgs", "shield"]
 const ROUND_FIELDS := ["number", "phase", "seconds", "t_score", "ct_score"]
 const ACTOR_FIELDS := ["id", "kind", "name", "team", "position", "velocity", "angles", "alive", "visible",
-	"health", "armor", "helmet", "weapon", "clip", "reserve", "reloading", "skin", "life", "crouched", "kills", "deaths", "money", "class_id"]
+	"health", "armor", "helmet", "weapon", "clip", "reserve", "reloading", "skin", "life", "crouched", "kills", "deaths", "money", "class_id", "ping"]
 
 
 static func keys_match(value: Variant, fields: Array) -> bool:
@@ -259,6 +259,9 @@ static func validate(packet: Variant) -> Dictionary:
 		if typeof(row.skin) != TYPE_STRING or row.skin not in SKINS or not integer(row.life, 0, MAX_COUNTER):
 			return {}
 		if not integer(row.kills, -MAX_COUNTER, MAX_COUNTER) or not integer(row.deaths, 0, MAX_COUNTER) or not integer(row.money, 0, 16000) or not integer(row.class_id, 0, 4):
+			return {}
+		# Round-trip milliseconds the host measured; -1 = not measured (bots, fresh joins).
+		if not integer(row.ping, -1, 9999):
 			return {}
 		if row.id == packet.owner_id:
 			if row.kind != "human":

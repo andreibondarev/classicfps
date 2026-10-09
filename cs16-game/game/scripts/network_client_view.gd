@@ -827,7 +827,8 @@ func update_scoreboard() -> void:
 			# No new carrier field on the wire: show only a known equipped C4,
 			# or the owner's replicated inventory. Do not infer other inventories.
 			"bomb": row.get("weapon", "") == "c4" or (row.id == owner_id and game.player.owns_weapon("c4")),
-			"score": row.kills, "deaths": row.deaths, "alive": row.alive, "latency": 0})
+			"score": row.kills, "deaths": row.deaths, "alive": row.alive,
+			"latency": game.scoreboard_latency(str(row.get("kind", "human")), int(row.get("ping", -1)))})
 	game.hud.update_scoreboard(rows, "Classic FPS", game.map_name, game.ct_score, game.terrorist_score)
 
 

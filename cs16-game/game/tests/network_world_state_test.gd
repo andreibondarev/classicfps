@@ -18,7 +18,7 @@ func _run() -> void:
 		"position": Vector3.ZERO, "velocity": Vector3.ZERO, "angles": Vector2.ZERO, "alive": true,
 		"visible": true, "health": 100, "armor": 0, "helmet": false, "weapon": "glock18", "clip": 20,
 		"reserve": 40, "reloading": false, "skin": "terror", "life": 1, "crouched": false,
-		"kills": 0, "deaths": 0, "money": 800, "class_id": 1}
+		"kills": 0, "deaths": 0, "money": 800, "class_id": 1, "ping": -1}
 	var valid := {"version": State.VERSION, "epoch": 2, "tick": 10, "map": "de_dust2", "owner_id": row.id,
 		"input_ack": 4, "started": true, "concluded": false, "items": [], "can_buy": true, "feedback": State.empty_feedback(), "broken_brushes": [],
 		"motion": {"enabled": true, "standing": true, "duck_elapsed": 0.0, "jump_down": false,
@@ -129,7 +129,7 @@ func _run() -> void:
 		["position", Vector3(NAN, 0, 0)], ["position", Vector3(10001, 0, 0)], ["velocity", Vector3(INF, 0, 0)],
 		["angles", Vector2(4, 0)], ["angles", Vector2(0, NAN)], ["health", 0], ["health", 101], ["armor", -1],
 		["alive", 1], ["visible", "true"], ["weapon", "invented"], ["clip", -1], ["reserve", 1001], ["skin", "missing"],
-		["life", -1], ["class_id", 5], ["money", 16001], ["deaths", -1], ["owner", 1]]:
+		["life", -1], ["class_id", 5], ["ping", -2], ["ping", 10000], ["ping", 1.5], ["money", 16001], ["deaths", -1], ["owner", 1]]:
 		var bad := valid.duplicate(true)
 		bad.actors[0][pair[0]] = pair[1]
 		_check(State.validate(bad).is_empty(), "invalid actor field rejected: " + str(pair[0]))
