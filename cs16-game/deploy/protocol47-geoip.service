@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh the DB-IP City Lite database for the Protocol 47 admin dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=p47admin
+Group=p47admin
+ExecStart=/opt/protocol47-admin/update-geoip.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/protocol47-admin

@@ -14,7 +14,11 @@ kept for --retention-days (30) and then erased; play statistics are kept.
 """
 import argparse
 import html
+import ipaddress
 import json
+import mmap
+import os
+import struct
 import sqlite3
 import subprocess
 import threading
@@ -34,6 +38,7 @@ create index if not exists sessions_tag on sessions(tag);
 create table if not exists names(tag text, name text, first_seen real, last_seen real, primary key(tag, name));
 create table if not exists rounds(id integer primary key, ts real, winner text, t_score integer, ct_score integer);
 create table if not exists matches(id integer primary key, ts real, t_score integer, ct_score integer);
+create table if not exists geo(ip text primary key, label text, looked_up real);
 create table if not exists ws_connections(
   id integer primary key, ended real, duration real, ip text, user_agent text, session integer,
   unique(ended, ip));
@@ -42,8 +47,158 @@ LOCAL_ADDRESSES = ("127.0.0.1", "::1", "")
 MATCH_TOLERANCE = 3.0
 
 
+class GeoDatabase:
+    """Minimal reader for MaxMind DB files (the format DB-IP's free City Lite
+    database uses), standard library only, so lookups never leave the server.
+    The file is reopened when it changes (monthly updates)."""
+
+    METADATA_MARKER = b"\xab\xcd\xefMaxMind.com"
+
+    def __init__(self, path):
+        self.path = Path(path) if path else None
+        self.mtime = None
+        self.buffer = None
+
+    def _ensure_open(self):
+        if self.path is None or not self.path.is_file():
+            self.buffer = None
+            return False
+        mtime = self.path.stat().st_mtime
+        if self.buffer is not None and mtime == self.mtime:
+            return True
+        with self.path.open("rb") as handle:
+            self.buffer = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        self.mtime = mtime
+        marker = self.buffer.rfind(self.METADATA_MARKER)
+        if marker < 0:
+            self.buffer = None
+            return False
+        self.metadata, _ = self._decode(marker + len(self.METADATA_MARKER), 0)
+        self.node_count = int(self.metadata["node_count"])
+        self.record_size = int(self.metadata["record_size"])
+        self.ip_version = int(self.metadata["ip_version"])
+        self.node_bytes = self.record_size * 2 // 8
+        self.search_tree_size = self.node_count * self.node_bytes
+        self.data_start = self.search_tree_size + 16
+        self.ipv4_start = 0
+        if self.ip_version == 6:
+            node = 0
+            for _ in range(96):
+                if node >= self.node_count:
+                    break
+                node = self._record(node, 0)
+            self.ipv4_start = node
+        return True
+
+    def _record(self, node, bit):
+        offset = node * self.node_bytes
+        data = self.buffer[offset:offset + self.node_bytes]
+        if self.record_size == 24:
+            chunk = data[3:6] if bit else data[0:3]
+            return int.from_bytes(chunk, "big")
+        if self.record_size == 28:
+            if bit:
+                return ((data[3] & 0x0F) << 24) | int.from_bytes(data[4:7], "big")
+            return ((data[3] & 0xF0) << 20) | int.from_bytes(data[0:3], "big")
+        if self.record_size == 32:
+            return int.from_bytes(data[4:8] if bit else data[0:4], "big")
+        raise ValueError(f"unsupported record size {self.record_size}")
+
+    def _decode(self, offset, base):
+        control = self.buffer[offset]
+        offset += 1
+        kind = control >> 5
+        if kind == 1:  # pointer
+            size = (control >> 3) & 0x3
+            low = control & 0x7
+            if size == 0:
+                pointer = (low << 8) | self.buffer[offset]
+            elif size == 1:
+                pointer = ((low << 16) | int.from_bytes(self.buffer[offset:offset + 2], "big")) + 2048
+            elif size == 2:
+                pointer = ((low << 24) | int.from_bytes(self.buffer[offset:offset + 3], "big")) + 526336
+            else:
+                pointer = int.from_bytes(self.buffer[offset:offset + 4], "big")
+            value, _ = self._decode(base + pointer, base)
+            return value, offset + size + 1
+        if kind == 0:  # extended type
+            kind = 7 + self.buffer[offset]
+            offset += 1
+        size = control & 0x1F
+        if size >= 29:
+            extra = size - 28
+            raw = int.from_bytes(self.buffer[offset:offset + extra], "big")
+            offset += extra
+            size = {1: 29, 2: 285, 3: 65821}[extra] + raw
+        if kind == 2:
+            return self.buffer[offset:offset + size].decode("utf-8", "replace"), offset + size
+        if kind == 3:
+            return struct.unpack(">d", self.buffer[offset:offset + 8])[0], offset + 8
+        if kind == 4:
+            return bytes(self.buffer[offset:offset + size]), offset + size
+        if kind in (5, 6, 9, 10):
+            return int.from_bytes(self.buffer[offset:offset + size], "big"), offset + size
+        if kind == 7:
+            result = {}
+            for _ in range(size):
+                key, offset = self._decode(offset, base)
+                result[key], offset = self._decode(offset, base)
+            return result, offset
+        if kind == 8:
+            return int.from_bytes(self.buffer[offset:offset + size], "big", signed=True), offset + size
+        if kind == 11:
+            result = []
+            for _ in range(size):
+                item, offset = self._decode(offset, base)
+                result.append(item)
+            return result, offset
+        if kind == 14:
+            return bool(size), offset
+        if kind == 15:
+            return struct.unpack(">f", self.buffer[offset:offset + 4])[0], offset + 4
+        raise ValueError(f"unsupported MaxMind DB type {kind}")
+
+    def lookup(self, ip):
+        """The database record for ip, or None."""
+        if not self._ensure_open():
+            return None
+        address = ipaddress.ip_address(ip)
+        if address.version == 6 and self.ip_version == 4:
+            return None
+        node = self.ipv4_start if address.version == 4 else 0
+        packed = address.packed
+        for index in range(len(packed) * 8):
+            if node >= self.node_count:
+                break
+            bit = (packed[index >> 3] >> (7 - (index & 7))) & 1
+            node = self._record(node, bit)
+        if node <= self.node_count:
+            return None
+        offset = node - self.node_count - 16 + self.search_tree_size + 16
+        return self._decode(offset, self.data_start)[0]
+
+    @property
+    def available(self):
+        return self._ensure_open()
+
+
+def geo_label(record):
+    """'City, Region, CC' from a City-database record."""
+    if not record:
+        return ""
+    def name(entry):
+        return ((entry or {}).get("names") or {}).get("en", "")
+    city = name(record.get("city"))
+    subdivisions = record.get("subdivisions") or []
+    region = name(subdivisions[0]) if subdivisions else ""
+    country = (record.get("country") or {}).get("iso_code", "")
+    parts = [part for part in (city, region if region != city else "", country) if part]
+    return ", ".join(parts)
+
+
 class Store:
-    def __init__(self, path: str, events: Path, retention_days: int):
+    def __init__(self, path: str, events: Path, retention_days: int, geoip: str = ""):
+        self.geo = GeoDatabase(geoip)
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
@@ -186,7 +341,36 @@ class Store:
         cutoff = time.time() - self.retention
         self.db.execute("update sessions set address=null, user_agent=null where connected < ?", (cutoff,))
         self.db.execute("delete from ws_connections where ended < ?", (cutoff,))
+        self.db.execute("delete from geo where looked_up < ?", (cutoff,))
         self.db.commit()
+
+    def location(self, ip):
+        """Approximate 'City, Region, CC' for an IP (cached; '' when unknown)."""
+        if not ip or ip in LOCAL_ADDRESSES:
+            return ""
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            return ""
+        if address.is_private or address.is_loopback or address.is_link_local:
+            return "local network"
+        row = self.db.execute("select label from geo where ip=?", (ip,)).fetchone()
+        if row is not None:
+            return row["label"]
+        if not self.geo.available:
+            return ""
+        try:
+            label = geo_label(self.geo.lookup(ip))
+        except (ValueError, IndexError, KeyError, struct.error):
+            label = ""
+        self.db.execute("insert or replace into geo(ip, label, looked_up) values(?, ?, ?)", (ip, label, time.time()))
+        self.db.commit()
+        return label
+
+    def _with_location(self, rows, field="address"):
+        for row in rows:
+            row["location"] = self.location(row.get(field) or "")
+        return rows
 
     def refresh(self):
         with self.lock:
@@ -202,6 +386,8 @@ class Store:
         except (OSError, json.JSONDecodeError):
             return {"online": False, "players": []}
         status["online"] = time.time() - float(status.get("ts", 0)) < 15
+        with self.lock:
+            self._with_location(status.get("players", []))
         return status
 
     def sessions(self, limit=100, tag=None):
@@ -213,7 +399,7 @@ class Store:
         query += " order by connected desc limit ?"
         args.append(limit)
         with self.lock:
-            return [dict(row) for row in self.db.execute(query, args)]
+            return self._with_location([dict(row) for row in self.db.execute(query, args)])
 
     def players(self, limit=200):
         with self.lock:
@@ -231,7 +417,7 @@ class Store:
                     "order by connected desc limit 1", (row["tag"],)).fetchone()
                 player["last_address"] = last["address"] if last else ""
                 players.append(player)
-            return players
+            return self._with_location(players, "last_address")
 
     def totals(self):
         with self.lock:
@@ -269,18 +455,24 @@ def address(session):
     value = session.get("address") or ""
     if session.get("transport") == "ws" and value in LOCAL_ADDRESSES:
         return '<span class="dim">after disconnect</span>' if not session.get("left") else '<span class="dim">unmatched</span>'
-    return esc(value)
+    return esc(value) + place(session.get("location"))
+
+
+def place(label):
+    return f'<br><span class="dim">{esc(label)}</span>' if label else ""
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Protocol 47 admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15">
 <style>
+footer {{ margin-top: 32px; font-size: 12px; color: #7d786e; }}
 body {{ font: 14px/1.45 system-ui, sans-serif; margin: 24px; background: #15171a; color: #e6e1d6; }}
 h1 {{ font-size: 20px; margin: 0 0 4px; }} h2 {{ font-size: 16px; margin: 28px 0 8px; color: #f0b54a; }}
 table {{ border-collapse: collapse; width: 100%; }} th, td {{ text-align: left; padding: 5px 10px; border-bottom: 1px solid #2c3036; }}
 th {{ color: #a8a296; font-weight: 600; }} code {{ color: #9fd3ff; }} a {{ color: #9fd3ff; }}
 .dim {{ color: #7d786e; }} .T {{ color: #ff8f70; }} .CT {{ color: #8fb6ff; }} .tiles span {{ margin-right: 22px; }}
-</style></head><body><h1>Protocol 47 admin</h1><div class="dim">{subtitle}</div>{body}</body></html>"""
+</style></head><body><h1>Protocol 47 admin</h1><div class="dim">{subtitle}</div>{body}
+<footer>IP geolocation by <a href="https://db-ip.com">DB-IP</a> (CC BY 4.0); approximate, city level.</footer></body></html>"""
 
 
 def render_dashboard(store):
@@ -309,7 +501,7 @@ def render_dashboard(store):
     players = store.players()
     rows = "".join(
         f'<tr><td>{short_tag(p["tag"])}</td><td>{esc(", ".join(p["names"][:4]))}</td><td>{p["sessions"]}</td>'
-        f'<td>{duration(p["seconds"])}</td><td>{kd(p["kills"], p["deaths"])}</td><td>{esc(p["last_address"])}</td>'
+        f'<td>{duration(p["seconds"])}</td><td>{kd(p["kills"], p["deaths"])}</td><td>{esc(p["last_address"])}{place(p.get("location"))}</td>'
         f'<td>{when(p["last_seen"])}</td></tr>' for p in players)
     body.append('<h2>Players</h2><table><tr><th>Player</th><th>Names</th><th>Sessions</th><th>Time</th><th>K/D</th>'
                 f'<th>Last address</th><th>Last seen</th></tr>{rows}</table>')
@@ -376,9 +568,11 @@ def main():
     parser.add_argument("--listen", default="127.0.0.1:8090")
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--retention-days", type=int, default=30)
+    parser.add_argument("--geoip", default="/var/lib/protocol47-admin/dbip-city-lite.mmdb",
+                        help="DB-IP City Lite (MaxMind DB format); optional")
     parser.add_argument("--once", action="store_true", help="ingest once and exit (for testing)")
     args = parser.parse_args()
-    store = Store(args.db, Path(args.events), args.retention_days)
+    store = Store(args.db, Path(args.events), args.retention_days, args.geoip)
     store.refresh()
     if args.once:
         return

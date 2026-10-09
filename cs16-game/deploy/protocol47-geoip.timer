@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly DB-IP City Lite refresh for the Protocol 47 admin dashboard
+
+[Timer]
+# DB-IP publishes each month's edition at the start of the month.
+OnCalendar=*-*-03 04:30:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

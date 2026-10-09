@@ -1,5 +1,6 @@
 """Tests for protocol47_admin.py (python3 -m unittest, standard library only)."""
 import json
+import os
 import tempfile
 import threading
 import time
@@ -98,6 +99,34 @@ class AdminStoreTest(unittest.TestCase):
             self.assertEqual(len(json.loads(urllib.request.urlopen(base + "/api/sessions").read())), 2)
         finally:
             server.shutdown()
+
+
+class GeoLocationTest(unittest.TestCase):
+    def test_labels(self):
+        record = {"city": {"names": {"en": "London"}}, "subdivisions": [{"names": {"en": "England"}}],
+                  "country": {"iso_code": "GB"}}
+        self.assertEqual(admin.geo_label(record), "London, England, GB")
+        self.assertEqual(admin.geo_label({"country": {"iso_code": "US"}}), "US")
+        self.assertEqual(admin.geo_label(None), "")
+
+    def test_private_and_unknown_addresses(self):
+        directory = Path(tempfile.mkdtemp(prefix="p47-geo-test-"))
+        store = admin.Store(str(directory / "admin.db"), directory / "events.jsonl", 30, geoip=str(directory / "absent.mmdb"))
+        self.assertEqual(store.location("192.168.1.20"), "local network")
+        self.assertEqual(store.location("127.0.0.1"), "")
+        self.assertEqual(store.location("not an ip"), "")
+        self.assertEqual(store.location("8.8.8.8"), "", "no database: no location, no error")
+
+    @unittest.skipUnless(os.environ.get("P47_GEOIP_DB"), "set P47_GEOIP_DB to a DB-IP City Lite .mmdb")
+    def test_real_database_lookup_and_cache(self):
+        directory = Path(tempfile.mkdtemp(prefix="p47-geo-test-"))
+        store = admin.Store(str(directory / "admin.db"), directory / "events.jsonl", 30, geoip=os.environ["P47_GEOIP_DB"])
+        self.assertTrue(store.location("8.8.8.8").endswith(", US"))
+        self.assertIn("GB", store.location("81.2.69.142"))
+        self.assertRegex(store.location("2001:4860:4860::8888"), r", [A-Z]{2}$", "IPv6 lookups resolve")
+        cached = store.db.execute("select count(*) n from geo").fetchone()["n"]
+        store.location("8.8.8.8")
+        self.assertEqual(store.db.execute("select count(*) n from geo").fetchone()["n"], cached, "lookups are cached")
 
 
 if __name__ == "__main__":
