@@ -268,6 +268,7 @@ var _ammo_icon: TextureRect
 var _buyzone_icon: TextureRect
 var _defuse_kit_icon: TextureRect
 var _c4_icon: TextureRect
+var _crosshair_preview: Control
 var _c4_flash: Tween
 var _carrying_c4 := false
 var _c4_in_bomb_zone := false
@@ -2365,6 +2366,30 @@ func _bind_source_option_control(tab_key: String, source_name: String, control: 
 		entry.max_length = settings.MAX_PLAYER_NAME_LENGTH
 		entry.text = settings.player_name
 		entry.text_changed.connect(func(value: String) -> void: _options_pending["player_name"] = value)
+	elif tab_key == "multiplayer" and source_name in ["CrosshairSizeComboBox", "CrosshairColorComboBox"] and control is OptionButton:
+		var key := "crosshair_size" if source_name == "CrosshairSizeComboBox" else "crosshair_color"
+		var option := control as OptionButton
+		option.select(int(settings.get(key)))
+		option.item_selected.connect(func(index: int) -> void:
+			_options_pending[key] = index
+			_refresh_crosshair_preview()
+		)
+	elif tab_key == "multiplayer" and source_name == "CrosshairTranslucencyCheckbox" and control is CheckBox:
+		var translucent := control as CheckBox
+		translucent.button_pressed = settings.crosshair_translucent
+		translucent.toggled.connect(func(enabled: bool) -> void:
+			_options_pending["crosshair_translucent"] = enabled
+			_refresh_crosshair_preview()
+		)
+	elif tab_key == "multiplayer" and source_name == "CrosshairImage" and control is TextureRect:
+		# GameUI previews the chosen crosshair in this panel.
+		var preview := Control.new()
+		preview.name = "CrosshairPreview"
+		preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		preview.set_anchors_preset(Control.PRESET_FULL_RECT)
+		preview.draw.connect(func() -> void: _draw_crosshair_preview(preview))
+		control.add_child(preview)
+		_crosshair_preview = preview
 	elif tab_key == "mouse" and source_name == "ReverseMouse" and control is CheckBox:
 		var reverse := control as CheckBox
 		reverse.button_pressed = settings.invert_y
@@ -2527,6 +2552,9 @@ func _settings_values() -> Dictionary:
 		"performance_preset": settings.performance_preset,
 		"vsync_enabled": settings.vsync_enabled,
 		"master_volume_db": settings.master_volume_db,
+		"crosshair_size": settings.crosshair_size,
+		"crosshair_color": settings.crosshair_color,
+		"crosshair_translucent": settings.crosshair_translucent,
 		"voice_transmit_volume": 75.0,
 		"voice_receive_volume": 75.0,
 		"voice_enabled": true,
@@ -2543,6 +2571,11 @@ func _restore_settings(values: Dictionary) -> void:
 		bool(values.vsync_enabled),
 	)
 	settings.update_volume(float(values.master_volume_db))
+	settings.update_crosshair(
+		int(values.get("crosshair_size", settings.crosshair_size)),
+		int(values.get("crosshair_color", settings.crosshair_color)),
+		bool(values.get("crosshair_translucent", settings.crosshair_translucent)),
+	)
 
 
 func _options_apply() -> void:
@@ -2576,6 +2609,9 @@ func _options_defaults() -> void:
 		"performance_preset": 1,
 		"vsync_enabled": true,
 		"master_volume_db": 0.0,
+		"crosshair_size": 0,
+		"crosshair_color": 0,
+		"crosshair_translucent": true,
 		"voice_transmit_volume": 75.0,
 		"voice_receive_volume": 75.0,
 		"voice_enabled": true,
@@ -2614,6 +2650,16 @@ func _sync_source_option_controls() -> void:
 		voice_enabled.button_pressed = bool(_options_pending.voice_enabled)
 	if mic_boost != null:
 		mic_boost.button_pressed = bool(_options_pending.mic_boost)
+	var crosshair_size_option := options_pages.get_node_or_null("Page_multiplayer/Source_CrosshairSizeComboBox") as OptionButton
+	var crosshair_color_option := options_pages.get_node_or_null("Page_multiplayer/Source_CrosshairColorComboBox") as OptionButton
+	var crosshair_translucent := options_pages.get_node_or_null("Page_multiplayer/Source_CrosshairTranslucencyCheckbox") as CheckBox
+	if crosshair_size_option != null:
+		crosshair_size_option.select(int(_options_pending.get("crosshair_size", 0)))
+	if crosshair_color_option != null:
+		crosshair_color_option.select(int(_options_pending.get("crosshair_color", 0)))
+	if crosshair_translucent != null:
+		crosshair_translucent.set_pressed_no_signal(bool(_options_pending.get("crosshair_translucent", true)))
+	_refresh_crosshair_preview()
 
 
 func _show_options_tab(tab_key: String) -> void:
@@ -2828,13 +2874,11 @@ func _update_crosshair_scale() -> void:
 	if window != null and parent != null and parent.size.y > 0.0:
 		stretch = maxf(float(window.size.y) / parent.size.y, 0.001)
 	var user_scale: float = settings.crosshair_scale if settings != null else 1.0
+	user_scale *= _crosshair_size_factor(
+		settings.crosshair_size if settings != null else 0, float(window.size.y) if window != null else 720.0)
 	var arm := maxf(1.0, roundf(9.0 * user_scale))
 	var gap := maxf(1.0, roundf(3.0 * user_scale)) + _crosshair_spread_px
-	var color := (
-		Color("#fff316")
-		if settings != null and settings.high_contrast
-		else Color(0.1, 1.0, 0.1, 0.78)
-	)
+	var color := _crosshair_color()
 	crosshair.scale = Vector2.ONE
 	# Pin the (zero-sized) control exactly to the parent's center via offsets;
 	# assigning `position` here would re-anchor it to the parent's top-left.
@@ -3145,13 +3189,61 @@ func _apply_accessibility() -> void:
 	if not is_instance_valid(crosshair):
 		return
 	_update_crosshair_scale()
-	for child in crosshair.get_children():
-		if child is ColorRect:
-			child.color = (
-				Color("#fff316")
-				if settings.high_contrast
-				else Color(0.1, 1.0, 0.1, 0.78)
-			)
+	_refresh_crosshair_preview()
+
+
+## Crosshair color from the Multiplayer tab, unless high contrast overrides it.
+## Translucent keeps the long-standing 78% alpha; opaque draws solid.
+func _crosshair_color(
+	color_index: int = -1,
+	translucent: Variant = null,
+) -> Color:
+	if settings == null:
+		return Color(0.1, 1.0, 0.1, 0.78)
+	if settings.high_contrast:
+		return Color("#fff316")
+	var index: int = settings.crosshair_color if color_index < 0 else color_index
+	var color: Color = settings.CROSSHAIR_COLORS[clampi(index, 0, settings.CROSSHAIR_COLORS.size() - 1)]
+	color.a = 0.78 if bool(settings.crosshair_translucent if translucent == null else translucent) else 1.0
+	return color
+
+
+## cl_crosshair_size: small/medium/large are fixed, auto follows the window
+## height (medium covers the 720p-1080p range the crosshair was tuned for).
+static func _crosshair_size_factor(size_index: int, window_height: float) -> float:
+	match size_index:
+		1:
+			return 0.75
+		2:
+			return 1.0
+		3:
+			return 1.5
+	if window_height <= 600.0:
+		return 0.75
+	return 1.0 if window_height <= 1080.0 else 1.5
+
+
+func _refresh_crosshair_preview() -> void:
+	if is_instance_valid(_crosshair_preview):
+		_crosshair_preview.queue_redraw()
+
+
+func _draw_crosshair_preview(preview: Control) -> void:
+	preview.draw_rect(Rect2(Vector2.ZERO, preview.size), Color(0.0, 0.0, 0.0, 0.55))
+	var size_index := int(_options_pending.get("crosshair_size", settings.crosshair_size))
+	var factor := _crosshair_size_factor(size_index, float(get_window().size.y) if get_window() != null else 720.0)
+	var arm := maxf(1.0, roundf(9.0 * factor))
+	var gap := maxf(1.0, roundf(3.0 * factor))
+	var color := _crosshair_color(
+		int(_options_pending.get("crosshair_color", settings.crosshair_color)),
+		bool(_options_pending.get("crosshair_translucent", settings.crosshair_translucent)),
+	)
+	var center := (preview.size * 0.5).floor()
+	for rect: Rect2 in [
+		Rect2(-1.0, -gap - arm, 1.0, arm), Rect2(-1.0, gap, 1.0, arm),
+		Rect2(-gap - arm, -1.0, arm, 1.0), Rect2(gap, -1.0, arm, 1.0),
+	]:
+		preview.draw_rect(Rect2(center + rect.position, rect.size), color)
 
 
 func _classic_radar_texture(texture: Texture2D) -> Texture2D:

@@ -163,7 +163,9 @@ func _client(port: int) -> void:
 	_check(joined.team == "T" and joined.class_id == 0 and not joined.spawned, "team reply reserves appearance, not a life")
 	# Replay does not have a new pending request and must not remove another bot.
 	network._submit_action.rpc_id(1, {"version": 1, "sequence": 2, "action": "join_team", "value": "T"})
-	await _request("join_team", "CT", false, "already_joined")
+	# Re-picking the joined side is rejected; switching sides is a separate,
+	# allowed request (network_team_switch_test.gd).
+	await _request("join_team", "T", false, "already_joined")
 	var spawned: Dictionary = await _request("join_class", 4, true)
 	_check(spawned.get("actor_id") == joined.actor_id and spawned.get("spawned", false)
 		and spawned.get("class_id", 0) == 4, "class reply confirms the same owned actor actually spawned")

@@ -14,6 +14,15 @@ var master_volume_db := 0.0
 var performance_preset := 1
 var vsync_enabled := true
 var crosshair_scale := 1.0
+## Multiplayer-tab crosshair appearance (cl_crosshair_size / _color /
+## _translucent), as indices into the GameUI combo boxes.
+const CROSSHAIR_SIZES := ["auto", "small", "medium", "large"]
+const CROSSHAIR_COLORS: Array[Color] = [
+	Color8(50, 250, 50), Color8(250, 50, 50), Color8(50, 50, 250), Color8(250, 250, 50), Color8(50, 250, 250),
+]
+var crosshair_size := 0
+var crosshair_color := 0
+var crosshair_translucent := true
 var high_contrast := false
 var reduced_motion := false
 
@@ -64,6 +73,9 @@ func load_settings() -> void:
 	vsync_enabled = bool(config.get_value("video", "vsync_enabled", vsync_enabled))
 	master_volume_db = clampf(float(config.get_value("audio", "master_volume_db", master_volume_db)), -40.0, 6.0)
 	crosshair_scale = clampf(float(config.get_value("accessibility", "crosshair_scale", crosshair_scale)), 0.75, 2.0)
+	crosshair_size = clampi(int(config.get_value("crosshair", "size", crosshair_size)), 0, CROSSHAIR_SIZES.size() - 1)
+	crosshair_color = clampi(int(config.get_value("crosshair", "color", crosshair_color)), 0, CROSSHAIR_COLORS.size() - 1)
+	crosshair_translucent = bool(config.get_value("crosshair", "translucent", crosshair_translucent))
 	high_contrast = bool(config.get_value("accessibility", "high_contrast", high_contrast))
 	reduced_motion = bool(config.get_value("accessibility", "reduced_motion", reduced_motion))
 
@@ -80,6 +92,9 @@ func save() -> void:
 	config.set_value("video", "vsync_enabled", vsync_enabled)
 	config.set_value("audio", "master_volume_db", master_volume_db)
 	config.set_value("accessibility", "crosshair_scale", crosshair_scale)
+	config.set_value("crosshair", "size", crosshair_size)
+	config.set_value("crosshair", "color", crosshair_color)
+	config.set_value("crosshair", "translucent", crosshair_translucent)
 	config.set_value("accessibility", "high_contrast", high_contrast)
 	config.set_value("accessibility", "reduced_motion", reduced_motion)
 	var error := config.save(settings_path)
@@ -115,6 +130,13 @@ func update_video(fov: float, preset: int, vsync: bool) -> void:
 
 func update_volume(volume_db: float) -> void:
 	master_volume_db = clampf(volume_db, -40.0, 6.0)
+	_commit()
+
+
+func update_crosshair(size_index: int, color_index: int, translucent: bool) -> void:
+	crosshair_size = clampi(size_index, 0, CROSSHAIR_SIZES.size() - 1)
+	crosshair_color = clampi(color_index, 0, CROSSHAIR_COLORS.size() - 1)
+	crosshair_translucent = translucent
 	_commit()
 
 

@@ -718,6 +718,14 @@ func handle_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_ESCAPE:
 			game._set_paused(not game._pause_menu_open())
+		elif event.keycode == KEY_M and game.match_started and not game._pause_menu_open() and not get_tree().paused \
+				and game.player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+			# Change team, as offline: the host validates the switch.
+			game._close_radio_menu()
+			game.hud.set_buy_menu_visible(false)
+			game.hud.set_deploy_visible(true)
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_T and not game._pause_menu_open() and not get_tree().paused and game.player.alive and game.match_started:
 			session.submit_action("spray", "")
 			get_viewport().set_input_as_handled()

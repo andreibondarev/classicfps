@@ -541,7 +541,10 @@ func select_remote_join_team(peer_id: int, selected_team: String) -> Dictionary:
 	if selected_team not in ["T", "CT"]:
 		return {"accepted": false, "reason": "invalid_team"}
 	var actor_id := _round_id_for_actor(human)
-	if human.team != Combatant.TEAM_UNASSIGNED:
+	# Joined players may switch sides (the M menu). The round kernel applies
+	# CS 1.6's rules: a living switch is a suicide, the new side waits for the
+	# next round, and a dead player may switch once per round.
+	if human.team == selected_team:
 		return {"accepted": false, "reason": "already_joined"}
 	var capacities := {"T": mini(5, terrorist_team_spawns.size()), "CT": mini(5, counter_terrorist_team_spawns.size())}
 	var replacement: TargetActor
@@ -574,6 +577,11 @@ func select_remote_join_team(peer_id: int, selected_team: String) -> Dictionary:
 	var result: Dictionary = round_state.select_player_team(actor_id, selected_team, capacities, human.global_position, replaced_id)
 	if not result.accepted:
 		return result
+	if bool(result.get("selection_death", false)):
+		# Kernel death/drop is idempotent; actor death adds the physical weapon
+		# and C4 drops without a second recorded death (as offline).
+		human.receive_damage(100000.0, human.global_position)
+		_consume_new_round_trace()
 	human.configure_identity(selected_team, human.display_name)
 	human.set_meta("network_spawn_slot", slot)
 	human.set_meta("cs16_class_id", 0)
@@ -3758,7 +3766,11 @@ func _enter_waiting_participant_view() -> void:
 
 func _on_deploy_cancel_requested() -> void:
 	if _network_client_mode:
-		_set_paused(true)
+		# A joined player opened the team menu with M: cancel just closes it.
+		if match_started and player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+			_close_deploy_menu()
+		else:
+			_set_paused(true)
 		return
 	if match_started:
 		_close_deploy_menu()
