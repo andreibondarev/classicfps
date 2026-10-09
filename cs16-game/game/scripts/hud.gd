@@ -872,6 +872,38 @@ func add_chat_message(message: Dictionary) -> void:
 	var text := str(message.get("text", "")).replace("\n", " ").strip_edges().left(CHAT_MAX_LENGTH)
 	if text.is_empty():
 		return
+	var row := _new_chat_row()
+	if bool(message.get("team_only", false)):
+		row.push_color(CLASSIC_GREEN)
+		row.add_text("(TEAM) ")
+		row.pop()
+	row.push_color(Color(_kill_feed_team_hex(str(message.get("team", "UNASSIGNED")))))
+	row.add_text(sender_name)
+	row.pop()
+	row.push_color(Color("#f2d6aa"))
+	row.add_text(" :  " + text)
+	row.pop()
+	_push_chat_row(row)
+
+
+## Server notices in the chat area, worded as CS 1.6's #Game_connected and
+## #Game_disconnected ("<name> has joined the game").
+func add_notice(message: Dictionary) -> void:
+	if not is_instance_valid(chat_feed_box):
+		return
+	var player_name := str(message.get("name", "")).replace("\n", " ").left(32)
+	var wording := {"joined": " has joined the game", "left": " has left the game"}
+	if player_name.is_empty() or not wording.has(str(message.get("kind", ""))):
+		return
+	var row := _new_chat_row()
+	row.name = "NoticeRow"
+	row.push_color(Color("#f2d6aa"))
+	row.add_text(player_name + str(wording[str(message.kind)]))
+	row.pop()
+	_push_chat_row(row)
+
+
+func _new_chat_row() -> RichTextLabel:
 	var row := RichTextLabel.new()
 	row.name = "ChatRow"
 	row.fit_content = true
@@ -885,17 +917,11 @@ func add_chat_message(message: Dictionary) -> void:
 	row.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 	row.add_theme_constant_override("shadow_offset_x", 1)
 	row.add_theme_constant_override("shadow_offset_y", 1)
-	if bool(message.get("team_only", false)):
-		row.push_color(CLASSIC_GREEN)
-		row.add_text("(TEAM) ")
-		row.pop()
-	row.push_color(Color(_kill_feed_team_hex(str(message.get("team", "UNASSIGNED")))))
-	row.add_text(sender_name)
-	row.pop()
-	row.push_color(Color("#f2d6aa"))
-	row.add_text(" :  " + text)
-	row.pop()
-	chat_feed_box.add_child(row)
+	return row
+
+
+func _push_chat_row(row: RichTextLabel) -> void:
+	chat_feed_box.add_child(row, true)  # readable names: ChatRow2, NoticeRow2
 	while chat_feed_box.get_child_count() > CHAT_MAX_ROWS:
 		var oldest := chat_feed_box.get_child(0)
 		chat_feed_box.remove_child(oldest)

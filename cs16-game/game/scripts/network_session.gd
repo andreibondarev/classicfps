@@ -5,6 +5,8 @@ signal snapshot_received(snapshot: Dictionary)
 signal peer_joined(peer_id: int)
 signal peer_left(peer_id: int)
 signal peer_name_changed(peer_id: int, player_name: String)
+## "<name> has joined the game" / "has left the game" lines for the chat area.
+signal notice_received(message: Dictionary)
 signal action_result_received(result: Dictionary)
 signal world_snapshot_received(snapshot: Dictionary)
 signal combat_event_received(event: Dictionary)
@@ -37,6 +39,9 @@ var _game_voice_handler := Callable()
 var _voice_sequence := 0
 ## Host: each peer's self-reported install tag (settings.client_tag).
 var _client_tags: Dictionary = {}
+## Host: peers whose arrival was announced (on their first name), so only they
+## get a matching departure line.
+var _announced_peers: Dictionary = {}
 ## Client: why the host is about to drop this connection (kick or ban); shown
 ## in place of SERVER DISCONNECTED.
 var _disconnect_reason := ""
@@ -87,6 +92,8 @@ const CHAT_MAX_LENGTH := 120
 const CHAT_RATE := 1.0
 const CHAT_BURST := 4
 const CHAT_REQUEST_FIELDS := ["version", "sequence", "team_only", "text"]
+const NOTICE_FIELDS := ["version", "kind", "name"]
+const NOTICE_KINDS := ["joined", "left"]
 const CHAT_EVENT_FIELDS := ["version", "epoch", "sequence", "sender_id", "sender_name", "team", "team_only", "text"]
 ## Voice: 20 ms Opus frames (about 60 bytes at 24 kbps). The host relays each
 ## frame to the listeners the game allows, never trusting client routing.
@@ -138,8 +145,13 @@ func _ready() -> void:
 		peer_joined.emit(peer_id)
 	)
 	multiplayer.peer_disconnected.connect(func(peer_id: int) -> void:
+		var departed_name := peer_player_name(peer_id, "")
+		var announced := _announced_peers.has(peer_id)
+		_announced_peers.erase(peer_id)
 		_remove_input_peer(peer_id)
 		peer_left.emit(peer_id)
+		if is_host and announced:
+			publish_notice("left", departed_name)
 	)
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(func() -> void:
@@ -350,6 +362,7 @@ func disconnect_session() -> void:
 	_voice_peers.clear()
 	_voice_sequence = 0
 	_client_tags.clear()
+	_announced_peers.clear()
 	_disconnect_reason = ""
 	_peer_rtt.clear()
 	_ping_sent.clear()
@@ -546,7 +559,47 @@ func accept_peer_name(peer_id: int, value: Variant, now_ms: int) -> bool:
 	if str(state.get("name", "")) != value:
 		state.name = value
 		peer_name_changed.emit(peer_id, value)
+		if not _announced_peers.has(peer_id):
+			# Clients send their name right after connecting; CS announces the
+			# arrival by name, so the first one is the join.
+			_announced_peers[peer_id] = true
+			publish_notice("joined", value)
 	return true
+
+
+## Host: tells every connected player (and the host's own HUD) that someone
+## joined or left.
+func publish_notice(kind: String, player_name: String) -> bool:
+	if not is_host:
+		return false
+	var packet := {"version": PROTOCOL_VERSION, "kind": kind, "name": player_name}
+	if validate_notice(packet).is_empty():
+		return false
+	notice_received.emit(packet.duplicate())
+	if is_online():
+		for peer_id: int in multiplayer.get_peers():
+			if has_input_peer(peer_id):
+				_receive_notice.rpc_id(peer_id, packet)
+	return true
+
+
+func validate_notice(packet: Variant) -> Dictionary:
+	if not _packet_keys(packet, NOTICE_FIELDS) or not _valid_integer(packet.version, PROTOCOL_VERSION, PROTOCOL_VERSION):
+		return {}
+	if typeof(packet.kind) != TYPE_STRING or packet.kind not in NOTICE_KINDS or typeof(packet.name) != TYPE_STRING:
+		return {}
+	if packet.name.is_empty() or packet.name != SettingsScript.sanitize_player_name(packet.name):
+		return {}
+	return packet.duplicate()
+
+
+@rpc("authority", "call_remote", "reliable", 2)
+func _receive_notice(packet: Variant) -> void:
+	if is_host or not is_online():
+		return
+	var message := validate_notice(packet)
+	if not message.is_empty():
+		notice_received.emit(message)
 
 
 static func sanitize_chat_text(value: Variant) -> String:

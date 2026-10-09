@@ -329,6 +329,8 @@ func _build_network_roster() -> void:
 	remote_roster.bind_session(network)
 	if not network.chat_received.is_connected(_on_network_chat_received):
 		network.chat_received.connect(_on_network_chat_received)
+	if not network.notice_received.is_connected(_on_network_notice_received):
+		network.notice_received.connect(_on_network_notice_received)
 	if not _network_client_mode and not network.bind_game_actions(_handle_network_action):
 		push_error("Game could not bind authoritative network actions")
 	if not _network_client_mode and not network.bind_chat(_handle_network_chat):
@@ -384,6 +386,8 @@ func _exit_tree() -> void:
 		session.unbind_voice(_handle_network_voice)
 		if session.chat_received.is_connected(_on_network_chat_received):
 			session.chat_received.disconnect(_on_network_chat_received)
+		if session.notice_received.is_connected(_on_network_notice_received):
+			session.notice_received.disconnect(_on_network_notice_received)
 
 
 func _chat_actor_for_peer(peer_id: int) -> PlayerController:
@@ -446,6 +450,11 @@ func _handle_network_chat(peer_id: int, team_only: bool, text: String) -> bool:
 		text,
 		recipients,
 	)
+
+
+func _on_network_notice_received(message: Dictionary) -> void:
+	if is_instance_valid(hud):
+		hud.add_notice(message)
 
 
 func _on_network_chat_received(message: Dictionary) -> void:
