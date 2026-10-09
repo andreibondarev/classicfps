@@ -35,6 +35,11 @@ var _game_voice_handler := Callable()
 var _voice_sequence := 0
 ## Host: each peer's self-reported install tag (settings.client_tag).
 var _client_tags: Dictionary = {}
+## Host: application-level round trip per peer (works for every transport).
+const PING_INTERVAL_MS := 2000
+var _peer_rtt: Dictionary = {}
+var _ping_sent: Dictionary = {}
+var _next_ping_ms := 0
 
 const DEFAULT_PORT := 27447
 ## Path a browser build joins on the server it was loaded from; the reverse
@@ -148,6 +153,7 @@ func _physics_process(_delta: float) -> void:
 	_poll_hostname()
 	if is_host:
 		expire_inputs(Time.get_ticks_msec())
+		_send_pings(Time.get_ticks_msec())
 	else:
 		_publish_player_name()
 		expire_actions(Time.get_ticks_msec())
@@ -338,6 +344,9 @@ func disconnect_session() -> void:
 	_voice_peers.clear()
 	_voice_sequence = 0
 	_client_tags.clear()
+	_peer_rtt.clear()
+	_ping_sent.clear()
+	_next_ping_ms = 0
 	_sent_player_name = ""
 	_next_name_send_ms = 0
 	_input_sequence = 0
@@ -377,6 +386,52 @@ func _submit_client_tag(tag: Variant) -> void:
 	if is_host and multiplayer.is_server() and has_input_peer(peer_id) \
 			and not _client_tags.has(peer_id) and SettingsScript.is_valid_client_tag(tag):
 		_client_tags[peer_id] = str(tag)
+
+
+func _send_pings(now_ms: int) -> void:
+	if not is_online() or now_ms < _next_ping_ms:
+		return
+	_next_ping_ms = now_ms + PING_INTERVAL_MS
+	for peer_id: int in multiplayer.get_peers():
+		if has_input_peer(peer_id):
+			_ping_sent[peer_id] = now_ms
+			_server_ping.rpc_id(peer_id, now_ms)
+
+
+@rpc("authority", "call_remote", "reliable", 2)
+func _server_ping(stamp: Variant) -> void:
+	if not is_host and typeof(stamp) == TYPE_INT:
+		_client_pong.rpc_id(1, stamp)
+
+
+@rpc("any_peer", "call_remote", "reliable", 2)
+func _client_pong(stamp: Variant) -> void:
+	var peer_id := multiplayer.get_remote_sender_id()
+	var now := Time.get_ticks_msec()
+	# Only the latest ping this host actually sent counts; replies are not trusted
+	# to carry their own timing.
+	if not is_host or typeof(stamp) != TYPE_INT or int(_ping_sent.get(peer_id, -1)) != int(stamp) \
+			or now - int(stamp) > 10000:
+		return
+	_ping_sent.erase(peer_id)
+	var sample := float(now - int(stamp))
+	_peer_rtt[peer_id] = sample if not _peer_rtt.has(peer_id) else lerpf(float(_peer_rtt[peer_id]), sample, 0.3)
+
+
+## Host: round trip, loss (ENet only) and payload bytes for the admin dashboard.
+func peer_quality(peer_id: int) -> Dictionary:
+	var quality := {"rtt_ms": roundf(float(_peer_rtt.get(peer_id, -1.0))), "loss": -1.0, "bytes_in": 0, "bytes_out": 0}
+	var transport: MultiplayerPeer = multiplayer.multiplayer_peer
+	if transport is MultiTransportPeer:
+		var traffic: Dictionary = (transport as MultiTransportPeer).traffic().get(peer_id, {})
+		quality.bytes_in = int(traffic.get("in", 0))
+		quality.bytes_out = int(traffic.get("out", 0))
+		transport = (transport as MultiTransportPeer).transport_for_peer(peer_id)
+	if transport is ENetMultiplayerPeer:
+		var packet_peer := (transport as ENetMultiplayerPeer).get_peer(peer_id)
+		if packet_peer != null:
+			quality.loss = packet_peer.get_statistic(ENetPacketPeer.PEER_PACKET_LOSS) / float(ENetPacketPeer.PACKET_LOSS_SCALE)
+	return quality
 
 
 func client_tag(peer_id: int) -> String:
@@ -812,6 +867,8 @@ func _remove_input_peer(peer_id: int) -> void:
 	_chat_peers.erase(peer_id)
 	_voice_peers.erase(peer_id)
 	_client_tags.erase(peer_id)
+	_peer_rtt.erase(peer_id)
+	_ping_sent.erase(peer_id)
 
 
 func has_input_peer(peer_id: int) -> bool:

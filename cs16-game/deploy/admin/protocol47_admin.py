@@ -27,6 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import protocol47_health as health
+
 SCHEMA = """
 create table if not exists meta(key text primary key, value text);
 create table if not exists sessions(
@@ -39,12 +41,21 @@ create table if not exists names(tag text, name text, first_seen real, last_seen
 create table if not exists rounds(id integer primary key, ts real, winner text, t_score integer, ct_score integer);
 create table if not exists matches(id integer primary key, ts real, t_score integer, ct_score integer);
 create table if not exists geo(ip text primary key, label text, looked_up real);
+create table if not exists server_events(id integer primary key, ts real, kind text, detail text, unique(ts, kind));
+create table if not exists errors(
+  fingerprint text primary key, kind text, message text, location text, backtrace text,
+  count integer default 0, first_seen real, last_seen real);
+create table if not exists perf(
+  ts real primary key, players integer, tick_rate real, target_tick_rate real, physics_ms real, process_ms real,
+  cpu_pct real, rss_mb real, load1 real, mem_used_pct real, disk_used_pct real, net_in_kbps real, net_out_kbps real);
 create table if not exists ws_connections(
   id integer primary key, ended real, duration real, ip text, user_agent text, session integer,
   unique(ended, ip));
 """
 LOCAL_ADDRESSES = ("127.0.0.1", "::1", "")
 MATCH_TOLERANCE = 3.0
+PERF_RETENTION = 7 * 86400
+EVENT_RETENTION = 30 * 86400
 
 
 class GeoDatabase:
@@ -206,6 +217,11 @@ class Store:
         self.status = events.parent / "status.json"
         self.retention = retention_days * 86400
         self.lock = threading.Lock()
+        # Health sources (replaceable in tests).
+        self.sampler = health.HostSampler()
+        self.read_game_journal = health.read_game_journal
+        self.read_service_state = health.service_state
+        self.service = {}
 
     # -- meta ------------------------------------------------------------
     def _meta(self, key, default=""):
@@ -372,12 +388,82 @@ class Store:
             row["location"] = self.location(row.get(field) or "")
         return rows
 
+    # -- server health ---------------------------------------------------
+    def ingest_game_journal(self):
+        cursor = self._meta("game_journal_cursor", "")
+        entries, cursor = self.read_game_journal(cursor, since=None if cursor else time.time() - 7 * 86400)
+        count = 0
+        for kind, record in health.parse_game_journal(entries):
+            count += 1
+            if kind == "lifecycle":
+                self.db.execute("insert or ignore into server_events(ts, kind, detail) values(?, ?, ?)",
+                                (record["ts"], record["kind"], record["detail"]))
+            else:
+                self.db.execute(
+                    "insert into errors(fingerprint, kind, message, location, backtrace, count, first_seen, last_seen) "
+                    "values(?, ?, ?, ?, ?, 1, ?, ?) on conflict(fingerprint) do update set count=count+1, "
+                    "last_seen=excluded.last_seen, backtrace=coalesce(nullif(excluded.backtrace, ''), backtrace)",
+                    (record["fingerprint"], record["kind"], record["message"], record["location"],
+                     record["backtrace"], record["ts"], record["ts"]))
+        if cursor:
+            self._set_meta("game_journal_cursor", cursor)
+        self.db.commit()
+        return count
+
+    def sample_health(self, now=None):
+        now = time.time() if now is None else now
+        self.service = self.read_service_state() or {}
+        status = self._read_status()
+        server = status.get("server") or {}
+        fresh = now - float(status.get("ts", 0)) < 15
+        sample = self.sampler.sample(int(self.service.get("MainPID") or 0), now)
+        self.db.execute(
+            "insert or replace into perf values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (now, len(status.get("players", [])) if fresh else None,
+             server.get("tick_rate") if fresh else None, server.get("target_tick_rate"),
+             server.get("physics_ms") if fresh else None, server.get("process_ms") if fresh else None,
+             sample["cpu_pct"], sample["rss_mb"], sample["load1"], sample["mem_used_pct"],
+             sample["disk_used_pct"], sample["net_in_kbps"], sample["net_out_kbps"]))
+        self.db.execute("delete from perf where ts < ?", (now - PERF_RETENTION,))
+        self.db.execute("delete from server_events where ts < ?", (now - EVENT_RETENTION,))
+        self.db.execute("delete from errors where last_seen < ?", (now - EVENT_RETENTION,))
+        self.db.commit()
+        return sample
+
+    def _read_status(self):
+        try:
+            return json.loads(self.status.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def health(self, now=None):
+        now = time.time() if now is None else now
+        with self.lock:
+            crashes = lambda seconds: self.db.execute(  # noqa: E731
+                "select count(*) n from server_events where kind='crash' and ts >= ?", (now - seconds,)).fetchone()["n"]
+            latest = self.db.execute("select * from perf order by ts desc limit 1").fetchone()
+            # 24 h in 5-minute buckets, averaged (maxima for the stress metrics).
+            series = [dict(row) for row in self.db.execute(
+                "select cast(ts / 300 as integer) * 300 bucket, avg(players) players, avg(tick_rate) tick_rate, "
+                "max(physics_ms) physics_ms, avg(cpu_pct) cpu_pct, max(rss_mb) rss_mb, avg(net_in_kbps) net_in_kbps, "
+                "avg(net_out_kbps) net_out_kbps from perf where ts >= ? group by bucket order by bucket", (now - 86400,))]
+            events = [dict(row) for row in self.db.execute(
+                "select * from server_events order by ts desc limit 20")]
+            errors = [dict(row) for row in self.db.execute(
+                "select * from errors order by last_seen desc limit 30")]
+        state = dict(self.service)
+        uptime = state.get("uptime")
+        return {"state": state, "uptime": uptime, "crashes_24h": crashes(86400), "crashes_7d": crashes(7 * 86400),
+                "latest": dict(latest) if latest else {}, "series": series, "events": events, "errors": errors}
+
     def refresh(self):
         with self.lock:
             self.ingest_events()
             self.ingest_journal()
             self.match_browser_addresses()
             self.apply_retention()
+            self.ingest_game_journal()
+            self.sample_health()
 
     # -- queries ---------------------------------------------------------
     def live(self):
@@ -388,6 +474,11 @@ class Store:
         status["online"] = time.time() - float(status.get("ts", 0)) < 15
         with self.lock:
             self._with_location(status.get("players", []))
+            for player in status.get("players", []):
+                # Earlier sessions from the same install in the last hour = drops/reconnects.
+                player["reconnects_1h"] = self.db.execute(
+                    "select count(*) n from sessions where tag=? and tag != '' and left is not null and connected >= ?",
+                    (player.get("tag", ""), time.time() - 3600)).fetchone()["n"] if player.get("tag") else 0
         return status
 
     def sessions(self, limit=100, tag=None):
@@ -466,6 +557,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Protocol 47 ad
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15">
 <style>
 footer {{ margin-top: 32px; font-size: 12px; color: #7d786e; }}
+.ok {{ color: #7fd18b; }} .bad {{ color: #ff7a6b; font-weight: 600; }}
+.charts {{ display: flex; flex-wrap: wrap; gap: 18px; }} .chart {{ font-size: 12px; }}
+pre {{ font-size: 11px; white-space: pre-wrap; color: #c8c2b6; margin: 6px 0; }} summary {{ cursor: pointer; }}
 body {{ font: 14px/1.45 system-ui, sans-serif; margin: 24px; background: #15171a; color: #e6e1d6; }}
 h1 {{ font-size: 20px; margin: 0 0 4px; }} h2 {{ font-size: 16px; margin: 28px 0 8px; color: #f0b54a; }}
 table {{ border-collapse: collapse; width: 100%; }} th, td {{ text-align: left; padding: 5px 10px; border-bottom: 1px solid #2c3036; }}
@@ -475,10 +569,93 @@ th {{ color: #a8a296; font-weight: 600; }} code {{ color: #9fd3ff; }} a {{ color
 <footer>IP geolocation by <a href="https://db-ip.com">DB-IP</a> (CC BY 4.0); approximate, city level.</footer></body></html>"""
 
 
+def number(value, digits=0, suffix=""):
+    return "&mdash;" if value is None else f"{value:.{digits}f}{suffix}"
+
+
+def sparkline(values, color, label, unit="", digits=0, floor=None):
+    """Inline SVG line chart for the last 24 h (one value per 5 minutes)."""
+    width, height = 240, 48
+    points = [v for v in values if v is not None]
+    if not points:
+        return f'<div class="chart"><div class="dim">{esc(label)}: no data yet</div></div>'
+    low = min(points) if floor is None else min(floor, min(points))
+    high = max(points)
+    span = (high - low) or 1.0
+    step = width / max(1, len(values) - 1)
+    path, pen = [], "M"
+    for index, value in enumerate(values):
+        if value is None:
+            pen = "M"
+            continue
+        y = height - 2 - (value - low) / span * (height - 4)
+        path.append(f"{pen}{index * step:.1f},{y:.1f}")
+        pen = "L"
+    current = points[-1]
+    return (f'<div class="chart"><div>{esc(label)} <b>{number(current, digits, unit)}</b> '
+            f'<span class="dim">max {number(high, digits, unit)}</span></div>'
+            f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+            f'<path d="{" ".join(path)}" fill="none" stroke="{color}" stroke-width="1.5"/></svg></div>')
+
+
+def render_health(store):
+    data = store.health()
+    state, latest = data["state"], data["latest"]
+    active = state.get("ActiveState") == "active"
+    status = (f'<span class="{"ok" if active else "bad"}">{esc(state.get("ActiveState") or "unknown")}</span>'
+              f' &middot; up {duration(data["uptime"]) if data["uptime"] is not None else "&mdash;"}'
+              f' &middot; restarts {state.get("NRestarts", 0)}'
+              f' &middot; <span class="{"bad" if data["crashes_24h"] else ""}">crashes 24h: {data["crashes_24h"]}</span>'
+              f' &middot; 7d: {data["crashes_7d"]}')
+    tick = latest.get("tick_rate")
+    target = latest.get("target_tick_rate") or 100
+    tiles = (f'<p class="tiles">'
+             f'<span>Tick rate <b class="{"bad" if tick is not None and tick < 0.95 * target else ""}">{number(tick, 1)}</b>/{number(target)}</span>'
+             f'<span>Physics <b>{number(latest.get("physics_ms"), 2, " ms")}</b> of {number(1000 / target, 0, " ms")}</span>'
+             f'<span>CPU <b>{number(latest.get("cpu_pct"), 0, "%")}</b></span>'
+             f'<span>Memory <b>{number(latest.get("rss_mb"), 0, " MB")}</b></span>'
+             f'<span>Load <b>{number(latest.get("load1"), 2)}</b></span>'
+             f'<span>Droplet RAM <b>{number(latest.get("mem_used_pct"), 0, "%")}</b></span>'
+             f'<span>Disk <b>{number(latest.get("disk_used_pct"), 0, "%")}</b></span>'
+             f'<span>Net <b>{number(latest.get("net_in_kbps"), 0)}</b> in / <b>{number(latest.get("net_out_kbps"), 0)}</b> out kbit/s</span></p>')
+    series = data["series"]
+    column = lambda key: [row[key] for row in series]  # noqa: E731
+    charts = ('<div class="charts">'
+              + sparkline(column("players"), "#f0b54a", "Players", floor=0)
+              + sparkline(column("tick_rate"), "#7fd18b", "Tick rate", digits=1)
+              + sparkline(column("physics_ms"), "#ff8f70", "Physics (max)", " ms", 2, floor=0)
+              + sparkline(column("cpu_pct"), "#9fd3ff", "CPU", "%", floor=0)
+              + sparkline(column("rss_mb"), "#c9a0ff", "Memory", " MB")
+              + sparkline(column("net_out_kbps"), "#8fb6ff", "Net out", " kbit/s", floor=0)
+              + '</div><p class="dim">Last 24 hours, 5-minute buckets.</p>')
+    events = "".join(
+        f'<tr><td>{when(e["ts"])}</td><td class="{"bad" if e["kind"] == "crash" else ""}">{esc(e["kind"])}</td>'
+        f'<td class="dim">{esc(e["detail"])}</td></tr>' for e in data["events"])
+    errors = "".join(
+        f'<tr><td>{esc(e["kind"])}</td><td>{e["count"]}</td><td>{when(e["last_seen"])}</td>'
+        f'<td><details><summary>{esc(e["message"][:140])}</summary><div class="dim">{esc(e["location"])}</div>'
+        f'<pre>{esc(e["backtrace"])}</pre></details></td></tr>' for e in data["errors"])
+    return (f'<h2>Server health</h2><p>{status}</p>{tiles}{charts}'
+            '<h2>Server events</h2><table><tr><th>When</th><th>Event</th><th>Detail</th></tr>'
+            f'{events or "<tr><td colspan=3 class=dim>None recorded</td></tr>"}</table>'
+            '<h2>Errors</h2><table><tr><th>Kind</th><th>Count</th><th>Last seen</th><th>Message</th></tr>'
+            f'{errors or "<tr><td colspan=4 class=dim>No errors logged</td></tr>"}</table>')
+
+
+def quality(player):
+    rtt = player.get("rtt_ms")
+    loss = player.get("loss")
+    rtt_text = "&mdash;" if rtt is None or rtt < 0 else f'<span class="{"bad" if rtt > 150 else ""}">{rtt:.0f} ms</span>'
+    loss_text = "n/a" if loss is None or loss < 0 else f"{loss * 100:.1f}%"
+    return (f'<td>{rtt_text}</td><td>{loss_text}</td>'
+            f'<td>{number(player.get("kbps_in"), 0)} / {number(player.get("kbps_out"), 0)}</td>'
+            f'<td class="{"bad" if player.get("reconnects_1h", 0) >= 3 else ""}">{player.get("reconnects_1h", 0)}</td>')
+
+
 def render_dashboard(store):
     live = store.live()
     totals = store.totals()
-    body = ['<p class="tiles">'
+    body = [render_health(store), '<p class="tiles">'
             f'<span>Players seen: <b>{totals["players"] or 0}</b></span>'
             f'<span>Sessions: <b>{totals["sessions"] or 0}</b></span>'
             f'<span>Play time: <b>{duration(totals["seconds"])}</b></span>'
@@ -488,13 +665,14 @@ def render_dashboard(store):
                     f'({esc(live.get("phase"))}) &middot; <span class="T">T {esc(live.get("t_score"))}</span> : '
                     f'<span class="CT">{esc(live.get("ct_score"))} CT</span> &middot; {esc(live.get("bots"))} bots</h2>')
         rows = "".join(
-            f'<tr><td>{esc(p["name"])}</td><td class="{esc(p["team"])}">{esc(p["team"])}</td>'
-            f'<td>{"alive" if p.get("alive") else "dead"}</td><td>{kd(p["kills"], p["deaths"])}</td>'
-            f'<td>{esc(p["transport"])}</td><td>{address(p)}</td>'
+            f'<tr><td>{esc(p.get("name"))}</td><td class="{esc(p.get("team"))}">{esc(p.get("team"))}</td>'
+            f'<td>{"alive" if p.get("alive") else "dead"}</td><td>{kd(p.get("kills"), p.get("deaths"))}</td>'
+            f'<td>{esc(p.get("transport"))}</td><td>{address(p)}</td>{quality(p)}'
             f'<td>{duration(time.time() - float(p.get("connected") or time.time()))}</td><td>{short_tag(p.get("tag", ""))}</td></tr>'
             for p in live.get("players", []))
         body.append('<table><tr><th>Name</th><th>Team</th><th>State</th><th>K/D</th><th>Via</th><th>Address</th>'
-                    f'<th>Online</th><th>Player</th></tr>{rows or "<tr><td colspan=8 class=dim>No humans online</td></tr>"}</table>')
+                    '<th>Ping</th><th>Loss</th><th>kbit/s in / out</th><th>Reconnects 1h</th>'
+                    f'<th>Online</th><th>Player</th></tr>{rows or "<tr><td colspan=12 class=dim>No humans online</td></tr>"}</table>')
     else:
         body.append('<h2>Live</h2><p class="dim">Game server status is not updating.</p>')
     body.append(render_sessions(store.sessions(60), "Recent sessions"))
@@ -550,6 +728,8 @@ def make_handler(store):
                 self._send(200, json.dumps(store.live()), "application/json")
             elif path == "/api/sessions":
                 self._send(200, json.dumps(store.sessions(500)), "application/json")
+            elif path == "/api/health":
+                self._send(200, json.dumps(store.health()), "application/json")
             elif path == "/api/players":
                 self._send(200, json.dumps(store.players()), "application/json")
             else:

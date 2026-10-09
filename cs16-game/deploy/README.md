@@ -94,4 +94,11 @@ echo "Environment=PROTOCOL47_ADMIN_HASH=$(caddy hash-password --plaintext "$(cat
 systemctl daemon-reload && systemctl restart caddy && systemctl enable --now protocol47-admin
 ```
 
-Tests: `cd deploy/admin && python3 -m unittest test_protocol47_admin`.
+The **Server health** section shows the game service's state, uptime, restarts
+and crashes (from its journal), errors grouped with their GDScript backtraces,
+current tick rate / physics time / CPU / memory / droplet load, disk and
+network, and 24-hour charts (samples every 5 s, kept 7 days). The live table
+adds each player's ping (application-level, every 2 s), packet loss (desktop
+UDP only), bandwidth and reconnects in the last hour. JSON: `/admin/api/health`.
+
+Tests: `cd deploy/admin && python3 -m unittest test_protocol47_admin test_protocol47_health`.

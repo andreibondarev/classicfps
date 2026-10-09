@@ -15,6 +15,9 @@ var _target_peer := 0
 var _transfer_mode := TRANSFER_MODE_RELIABLE
 var _transfer_channel := 0
 var _refusing := false
+## Payload bytes per peer since connect, for the admin dashboard.
+var _bytes_in: Dictionary = {}
+var _bytes_out: Dictionary = {}
 
 
 func _init(max_peers: int) -> void:
@@ -39,10 +42,14 @@ func _on_transport_peer_connected(peer_id: int, transport: MultiplayerPeer) -> v
 		transport.disconnect_peer(peer_id, true)
 		return
 	_owners[peer_id] = transport
+	_bytes_in[peer_id] = 0
+	_bytes_out[peer_id] = 0
 	peer_connected.emit(peer_id)
 
 
 func _on_transport_peer_disconnected(peer_id: int) -> void:
+	_bytes_in.erase(peer_id)
+	_bytes_out.erase(peer_id)
 	if _owners.erase(peer_id):
 		peer_disconnected.emit(peer_id)
 
@@ -93,7 +100,11 @@ func _get_packet_script() -> PackedByteArray:
 	var source := _next_source()
 	if source == null:
 		return PackedByteArray()
-	return source.get_packet()
+	var sender := source.get_packet_peer()
+	var packet := source.get_packet()
+	if _bytes_in.has(sender):
+		_bytes_in[sender] = int(_bytes_in[sender]) + packet.size()
+	return packet
 
 
 func _put_packet_script(buffer: PackedByteArray) -> Error:
@@ -113,7 +124,22 @@ func _put_packet_script(buffer: PackedByteArray) -> Error:
 	return result
 
 
+## {peer_id: {"in": bytes, "out": bytes}} since each peer connected.
+func traffic() -> Dictionary:
+	var result := {}
+	for peer_id: int in _owners:
+		result[peer_id] = {"in": int(_bytes_in.get(peer_id, 0)), "out": int(_bytes_out.get(peer_id, 0))}
+	return result
+
+
+func _count_sent(transport: MultiplayerPeer, target: int, size: int) -> void:
+	for peer_id: int in _owners:
+		if _owners[peer_id] == transport and (target == 0 or target == peer_id or (target < 0 and -target != peer_id)):
+			_bytes_out[peer_id] = int(_bytes_out.get(peer_id, 0)) + size
+
+
 func _send(transport: MultiplayerPeer, target: int, buffer: PackedByteArray) -> Error:
+	_count_sent(transport, target, buffer.size())
 	transport.set_target_peer(target)
 	transport.transfer_mode = _transfer_mode
 	transport.transfer_channel = _transfer_channel

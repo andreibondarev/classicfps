@@ -16,6 +16,9 @@ var _peers: Dictionary = {}
 var _elapsed := 0.0
 var _last_scores := Vector2i(-1, -1)
 var _last_phase := ""
+var _last_status_usec := 0
+var _last_physics_frames := 0
+var _last_bytes: Dictionary = {}
 
 
 static func requested_path() -> String:
@@ -147,8 +150,34 @@ func _write_status() -> void:
 			"kills": _session_kills(record), "deaths": _session_deaths(record),
 			"transport": record.transport, "address": record.address,
 			"connected": record.connected})
+	var now_usec := Time.get_ticks_usec()
+	var seconds := float(now_usec - _last_status_usec) / 1000000.0 if _last_status_usec > 0 else 0.0
+	var physics_frames := Engine.get_physics_frames()
+	var tick_rate := float(physics_frames - _last_physics_frames) / seconds if seconds > 0.0 else 0.0
+	_last_status_usec = now_usec
+	_last_physics_frames = physics_frames
+	for player: Dictionary in players:
+		var quality: Dictionary = network.peer_quality(int(player.peer))
+		var previous: Dictionary = _last_bytes.get(player.peer, {})
+		player["rtt_ms"] = quality.rtt_ms
+		player["loss"] = quality.loss
+		player["kbps_in"] = _kbps(int(quality.bytes_in) - int(previous.get("in", quality.bytes_in)), seconds)
+		player["kbps_out"] = _kbps(int(quality.bytes_out) - int(previous.get("out", quality.bytes_out)), seconds)
+		_last_bytes[player.peer] = {"in": quality.bytes_in, "out": quality.bytes_out}
+	for peer_id: int in _last_bytes.keys():
+		if not _peers.has(peer_id):
+			_last_bytes.erase(peer_id)
+	var server := {"tick_rate": snappedf(tick_rate, 0.1),
+		"target_tick_rate": Engine.physics_ticks_per_second,
+		"fps": Performance.get_monitor(Performance.TIME_FPS),
+		"process_ms": snappedf(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, 0.01),
+		"physics_ms": snappedf(Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0, 0.01),
+		"static_memory": Performance.get_monitor(Performance.MEMORY_STATIC),
+		"objects": Performance.get_monitor(Performance.OBJECT_COUNT),
+		"nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT)}
 	var state = game.round_state
 	var status := {"ts": Time.get_unix_time_from_system(), "map": str(game.map_name), "players": players,
+		"server": server,
 		"bots": game._all_bots().size(),
 		"round": int(state.round_number) if state != null else 0,
 		"phase": str(state.phase) if state != null else "",
@@ -161,6 +190,10 @@ func _write_status() -> void:
 	file.store_string(JSON.stringify(status))
 	file.close()
 	DirAccess.rename_absolute(temporary, _status_path)
+
+
+static func _kbps(byte_delta: int, seconds: float) -> float:
+	return snappedf(maxf(0.0, float(byte_delta)) * 8.0 / 1000.0 / seconds, 0.1) if seconds > 0.0 else 0.0
 
 
 func _append(event: Dictionary) -> void:
