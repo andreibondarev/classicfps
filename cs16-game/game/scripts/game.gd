@@ -9,6 +9,7 @@ const AudioRouterScript = preload("res://scripts/cs16_audio_event_router.gd")
 const AudioPlaybackScript = preload("res://scripts/cs16_audio_playback_adapter.gd")
 const RoundStateScript = preload("res://scripts/cs16_round_state.gd")
 const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
+const AdminLogScript := preload("res://scripts/admin_log.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const C4WorldScript = preload("res://scripts/cs16_c4_world.gd")
 const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
@@ -331,6 +332,11 @@ func _build_network_roster() -> void:
 		push_error("Game could not bind authoritative network chat")
 	if not _network_client_mode and not network.bind_voice(_handle_network_voice):
 		push_error("Game could not bind authoritative network voice")
+	if _dedicated_server_mode and not AdminLogScript.requested_path().is_empty():
+		var admin_log := AdminLogScript.new()
+		admin_log.name = "AdminLog"
+		add_child(admin_log)
+		admin_log.start(self, network, AdminLogScript.requested_path())
 
 
 func _on_network_role_changed(_status: String) -> void:

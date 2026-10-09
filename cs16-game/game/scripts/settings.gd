@@ -32,8 +32,20 @@ var voice_enabled := true
 var voice_transmit_volume := 75.0
 var voice_receive_volume := 75.0
 var voice_mic_boost := false
+## Random per-install ID sent to servers so their admins can follow a player
+## across sessions and renames. Not an account: clearing settings resets it.
+var client_tag := ""
 var high_contrast := false
 var reduced_motion := false
+
+
+static func is_valid_client_tag(value: Variant) -> bool:
+	if typeof(value) != TYPE_STRING or (value as String).length() != 32:
+		return false
+	for character: String in value:
+		if not character in "0123456789abcdef":
+			return false
+	return true
 
 
 static func sanitize_player_name(value: String) -> String:
@@ -63,6 +75,9 @@ func _ready() -> void:
 		settings_path = requested
 	var fresh_profile := not FileAccess.file_exists(settings_path)
 	load_settings()
+	if not is_valid_client_tag(client_tag):
+		client_tag = Crypto.new().generate_random_bytes(16).hex_encode()
+		save()
 	apply()
 	if "--verify-settings-storage" in OS.get_cmdline_user_args():
 		print("GAME_SETTINGS_STORAGE_READY ", JSON.stringify({"path": settings_path, "fresh": fresh_profile}))
@@ -89,6 +104,7 @@ func load_settings() -> void:
 	voice_transmit_volume = clampf(float(config.get_value("voice", "transmit_volume", voice_transmit_volume)), 0.0, 100.0)
 	voice_receive_volume = clampf(float(config.get_value("voice", "receive_volume", voice_receive_volume)), 0.0, 100.0)
 	voice_mic_boost = bool(config.get_value("voice", "mic_boost", voice_mic_boost))
+	client_tag = str(config.get_value("identity", "client_tag", client_tag))
 	key_bindings = {}
 	if config.has_section("bindings"):
 		for command: String in config.get_section_keys("bindings"):
@@ -115,6 +131,7 @@ func save() -> void:
 	config.set_value("crosshair", "translucent", crosshair_translucent)
 	for command: String in key_bindings:
 		config.set_value("bindings", command, key_bindings[command])
+	config.set_value("identity", "client_tag", client_tag)
 	config.set_value("voice", "enabled", voice_enabled)
 	config.set_value("voice", "transmit_volume", voice_transmit_volume)
 	config.set_value("voice", "receive_volume", voice_receive_volume)

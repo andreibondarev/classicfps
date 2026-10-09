@@ -1,0 +1,24 @@
+[Unit]
+Description=Protocol 47 admin dashboard (read-only, behind Caddy at /admin)
+After=network-online.target protocol47.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=p47admin
+Group=p47admin
+# Reads the game's admin log (group protocol47) and Caddy's access log (journal).
+SupplementaryGroups=protocol47 systemd-journal
+ExecStart=/usr/bin/python3 /opt/protocol47-admin/protocol47_admin.py --events /var/lib/protocol47/events.jsonl --db /var/lib/protocol47-admin/admin.db --listen 127.0.0.1:8090
+StateDirectory=protocol47-admin
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/protocol47-admin
+
+[Install]
+WantedBy=multi-user.target

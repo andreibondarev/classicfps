@@ -11,6 +11,23 @@
 }
 
 {$PROTOCOL47_DOMAIN} {
+	# JSON access log to the journal: the admin service reads /ws entries to
+	# recover browser players' IPs (the game only sees this proxy).
+	log {
+		output stderr
+		format json
+	}
+
+	# Admin dashboard (deploy/admin), password-protected. The bcrypt hash is
+	# set in the systemd drop-in as PROTOCOL47_ADMIN_HASH.
+	redir /admin /admin/
+	handle_path /admin/* {
+		basicauth {
+			admin {$PROTOCOL47_ADMIN_HASH}
+		}
+		reverse_proxy 127.0.0.1:8090
+	}
+
 	# The game joins wss://<this host>/ws by default.
 	handle /ws {
 		reverse_proxy 127.0.0.1:27448

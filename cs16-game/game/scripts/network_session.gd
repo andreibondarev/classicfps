@@ -33,6 +33,8 @@ var _game_chat_handler := Callable()
 var _voice_peers: Dictionary = {}
 var _game_voice_handler := Callable()
 var _voice_sequence := 0
+## Host: each peer's self-reported install tag (settings.client_tag).
+var _client_tags: Dictionary = {}
 
 const DEFAULT_PORT := 27447
 ## Path a browser build joins on the server it was loaded from; the reverse
@@ -335,6 +337,7 @@ func disconnect_session() -> void:
 	_chat_peers.clear()
 	_voice_peers.clear()
 	_voice_sequence = 0
+	_client_tags.clear()
 	_sent_player_name = ""
 	_next_name_send_ms = 0
 	_input_sequence = 0
@@ -365,6 +368,35 @@ func _on_connected() -> void:
 	_connection_deadline_ms = 0
 	_set_status("CONNECTED  #%d" % multiplayer.get_unique_id())
 	_publish_player_name()
+	_submit_client_tag.rpc_id(1, str(get_node("/root/GameSettings").client_tag))
+
+
+@rpc("any_peer", "call_remote", "reliable", 2)
+func _submit_client_tag(tag: Variant) -> void:
+	var peer_id := multiplayer.get_remote_sender_id()
+	if is_host and multiplayer.is_server() and has_input_peer(peer_id) \
+			and not _client_tags.has(peer_id) and SettingsScript.is_valid_client_tag(tag):
+		_client_tags[peer_id] = str(tag)
+
+
+func client_tag(peer_id: int) -> String:
+	return str(_client_tags.get(peer_id, ""))
+
+
+## Host: how a peer is connected. Browser peers arrive through the reverse
+## proxy, so their address is the proxy's (127.0.0.1).
+func peer_endpoint(peer_id: int) -> Dictionary:
+	var transport: MultiplayerPeer = multiplayer.multiplayer_peer
+	if transport is MultiTransportPeer:
+		transport = (transport as MultiTransportPeer).transport_for_peer(peer_id)
+	if transport is ENetMultiplayerPeer:
+		var packet_peer := (transport as ENetMultiplayerPeer).get_peer(peer_id)
+		if packet_peer != null:
+			return {"transport": "udp", "address": packet_peer.get_remote_address(), "port": packet_peer.get_remote_port()}
+	elif transport is WebSocketMultiplayerPeer:
+		return {"transport": "ws", "address": (transport as WebSocketMultiplayerPeer).get_peer_address(peer_id),
+			"port": (transport as WebSocketMultiplayerPeer).get_peer_port(peer_id)}
+	return {"transport": "", "address": "", "port": 0}
 
 
 func _publish_player_name() -> void:
@@ -779,6 +811,7 @@ func _remove_input_peer(peer_id: int) -> void:
 	_name_peers.erase(peer_id)
 	_chat_peers.erase(peer_id)
 	_voice_peers.erase(peer_id)
+	_client_tags.erase(peer_id)
 
 
 func has_input_peer(peer_id: int) -> bool:
