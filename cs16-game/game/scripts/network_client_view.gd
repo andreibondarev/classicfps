@@ -114,6 +114,7 @@ func _on_status(_status: String) -> void:
 	game.hud.set_buy_menu_visible(false)
 	game.hud.set_buy_zone(false)
 	game.hud.update_defuse_kit("", false, false)
+	game.hud.update_bomb_carrier(false, false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
@@ -128,6 +129,7 @@ func apply_snapshot(state: Dictionary) -> void:
 		game.player.alive = false
 		game.hud.update_defuse_progress(false, 0.0, 0.0)
 		game.hud.update_defuse_kit("", false, false)
+		game.hud.update_bomb_carrier(false, false)
 		game.player.look_enabled = false
 		game.player.weapon_anchor.visible = false
 		game.hud.show_banner("HOST MAP: " + str(state.map), Color("#ffca66"), 10.0)
@@ -509,6 +511,9 @@ func _apply_owner(row: Dictionary) -> void:
 	game.selected_class_id = int(row.class_id)
 	game.hud.update_health(player.health, player.armor, player.has_helmet)
 	game.hud.update_defuse_kit(player.team, player.alive, bool(player.equipment.get("defuser", false)))
+	# The host's feedback says when the carrier stands where planting works.
+	var carrying_c4: bool = player.alive and player.owns_weapon("c4")
+	game.hud.update_bomb_carrier(carrying_c4, carrying_c4 and bool((snapshot.feedback as Dictionary).get("can_plant", false)))
 	game.hud.update_ammo(player.clip, player.reserve, player.reloading)
 	var definition: Dictionary = player.WEAPONS[player.active_weapon]
 	var mode: Variant = player.weapon_modes.get(player.active_weapon, false)

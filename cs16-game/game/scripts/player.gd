@@ -7,6 +7,8 @@ signal weapon_changed(weapon_name: String, fire_mode: String)
 signal hit_confirmed(headshot: bool)
 signal flash_blinded(seconds: float)
 signal weapon_drop_requested(weapon_name: String, dropped_clip: int, dropped_reserve: int)
+## Raised by `drop` while the C4 is active; the game owns the bomb's drop.
+signal c4_drop_requested
 signal died
 var spawn_serial := 0
 
@@ -1709,8 +1711,13 @@ func _is_droppable_gun(weapon: String) -> bool:
 func _try_drop_active_weapon() -> void:
 	if network_read_only:
 		return
-	# CS 1.6 `drop`: only guns leave the inventory; knife/grenades/C4 keep the
-	# key inert (the carried C4 has its own drop contract in game.gd).
+	# CS 1.6 `drop`: guns and the carried C4 leave the inventory; knife and
+	# grenades keep the key inert. The C4's drop contract lives in game.gd, and
+	# this is its only trigger: dropping it switches to the best weapon, so a
+	# second handler for the same press would then throw that weapon too.
+	if active_weapon == "c4":
+		c4_drop_requested.emit()
+		return
 	if not _is_droppable_gun(active_weapon):
 		return
 	_store_active_ammunition()

@@ -24,6 +24,13 @@
       "source_sha256": "cf8ee32657eddad86b23dd1ef3c71221fc7901f0e3cb3c2a5a52ce845e18c092",
       "width": 32
     },
+    "c4": {
+      "file": "c4.png",
+      "height": 32,
+      "sheet": "640hud7.spr",
+      "source_sha256": "cf8ee32657eddad86b23dd1ef3c71221fc7901f0e3cb3c2a5a52ce845e18c092",
+      "width": 32
+    },
     "cross": {
       "file": "cross.png",
       "height": 24,

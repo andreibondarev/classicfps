@@ -2301,6 +2301,9 @@ func _update_tactical_hud() -> void:
 			and is_instance_valid(spectator_camera.target):
 		observer = spectator_camera.target
 	hud.update_defuse_kit(player.team, player.alive, bool(player.equipment.get("defuser", false)))
+	var carrying_c4: bool = player.alive and round_state.bomb_owner == _round_id_for_actor(player)
+	hud.update_bomb_carrier(carrying_c4,
+		carrying_c4 and not _bomb_region_at(player.global_position, _human_hull_size(player)).is_empty())
 	# CS 1.6 shows the cart glyph while the player stands in their team's buy
 	# zone and buying is still possible; nothing drove it before.
 	hud.set_buy_zone(
@@ -2837,12 +2840,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		_c4_equipped = _equip_player_c4()
 		if _c4_equipped:
 			hud.update_objective("C4 EQUIPPED  •  HOLD FIRE IN A BOMB SITE")
-	elif (
-		key_event.pressed
-		and not key_event.echo
-		and key_event.keycode == KEY_G
-	):
-		_request_drop_active_weapon()
 	elif (
 		key_event.pressed
 		and not key_event.echo
@@ -3624,6 +3621,7 @@ func _build_hud() -> void:
 	player.flash_blinded.connect(func(seconds: float) -> void: hud.show_flash_blind(seconds))
 	player.combatant_eliminated.connect(_on_human_eliminated)
 	player.weapon_drop_requested.connect(_on_player_weapon_drop)
+	player.c4_drop_requested.connect(_request_drop_active_weapon)
 	hud.update_health(player.health, player.armor, player.has_helmet)
 	hud.update_weapon(PlayerController.WEAPONS[player.active_weapon].name, PlayerController.WEAPONS[player.active_weapon].mode)
 	hud.update_ammo(player.clip, player.reserve, player.reloading)

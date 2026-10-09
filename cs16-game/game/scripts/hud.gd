@@ -267,6 +267,10 @@ var _armor_icon: TextureRect
 var _ammo_icon: TextureRect
 var _buyzone_icon: TextureRect
 var _defuse_kit_icon: TextureRect
+var _c4_icon: TextureRect
+var _c4_flash: Tween
+var _carrying_c4 := false
+var _c4_in_bomb_zone := false
 var defuse_progress_bar: Control
 var _defuse_progress_fill: ColorRect
 var _has_defuse_kit := false
@@ -596,6 +600,15 @@ func _build_hud() -> void:
 	_defuse_kit_icon.size = Vector2(32, 32)
 	_defuse_kit_icon.visible = false
 	root.add_child(_defuse_kit_icon)
+	# The bomb carrier's status icon (640hud7 "c4"), drawn in the kit's slot:
+	# a Terrorist never holds a defusal kit. It flashes inside a bomb site.
+	_c4_icon = _classic_sprite("c4", Color("#00a000"))
+	_c4_icon.name = "ClassicC4"
+	_c4_icon.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	_c4_icon.position = Vector2(2, -16)
+	_c4_icon.size = Vector2(32, 32)
+	_c4_icon.visible = false
+	root.add_child(_c4_icon)
 
 	status_label = _classic_label("", 17, CLASSIC_ORANGE)
 	status_label.name = "ObjectiveStatus"
@@ -3278,6 +3291,24 @@ func update_defuse_kit(team: String, alive: bool, owns_kit: bool) -> void:
 	_refresh_gameplay_visibility()
 
 
+func update_bomb_carrier(carrying: bool, in_bomb_zone: bool) -> void:
+	var flashing := carrying and in_bomb_zone
+	if carrying == _carrying_c4 and flashing == _c4_in_bomb_zone:
+		return
+	_carrying_c4 = carrying
+	_c4_in_bomb_zone = flashing
+	if is_instance_valid(_c4_flash):
+		_c4_flash.kill()
+		_c4_flash = null
+	if is_instance_valid(_c4_icon):
+		_c4_icon.modulate.a = 1.0
+		if flashing:
+			_c4_flash = _c4_icon.create_tween().set_loops()
+			_c4_flash.tween_property(_c4_icon, "modulate:a", 0.15, 0.25)
+			_c4_flash.tween_property(_c4_icon, "modulate:a", 1.0, 0.25)
+	_refresh_gameplay_visibility()
+
+
 func update_defuse_progress(active: bool, elapsed: float, total: float) -> void:
 	_defuse_progress_active = active and total > 0.0
 	var ratio := clampf(elapsed / total, 0.0, 1.0) if _defuse_progress_active else 0.0
@@ -3752,6 +3783,11 @@ func _refresh_gameplay_visibility() -> void:
 		# Stack the kit above the cart while both status icons are present.
 		_defuse_kit_icon.offset_top = -50 if _in_buy_zone else -16
 		_defuse_kit_icon.offset_bottom = _defuse_kit_icon.offset_top + 32
+	if is_instance_valid(_c4_icon):
+		_c4_icon.visible = _carrying_c4 and not modal_visible and not _spectating
+		# Stack above the cart while both status icons are present.
+		_c4_icon.offset_top = -50 if _in_buy_zone else -16
+		_c4_icon.offset_bottom = _c4_icon.offset_top + 32
 	if is_instance_valid(defuse_progress_bar):
 		defuse_progress_bar.visible = (
 			_defuse_progress_active and not modal_visible

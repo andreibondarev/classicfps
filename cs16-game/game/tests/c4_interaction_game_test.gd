@@ -25,6 +25,20 @@ func _run() -> void:
 	game.start_match()
 	game._begin_live()
 
+	# One `drop` press while holding the C4 (the player's G path) drops only
+	# the bomb: the weapon it switches to must not be thrown by the same press.
+	_force_owner(game, "player")
+	game.player.grant_item("ak47")
+	_check(game._equip_player_c4(), "carrier with a rifle equips the C4")
+	game.player._try_drop_active_weapon()
+	_check(
+		game.round_state.bomb_state == RoundStateScript.BOMB_DROPPED
+		and game.player.owns_weapon("ak47")
+		and game.player.active_weapon == "ak47",
+		"G with the C4 drops the bomb and keeps the rifle (state=%s owns_ak47=%s active=%s)"
+		% [game.round_state.bomb_state, game.player.owns_weapon("ak47"), game.player.active_weapon],
+	)
+	game._clear_dropped_c4()
 	_force_owner(game, "player")
 	_check(game._equip_player_c4(), "production player equips carried C4")
 	_check(

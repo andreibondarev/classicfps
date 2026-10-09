@@ -32,6 +32,7 @@ CORE_NAMES = (
     "smallvip",
     "buyzone",
     "defuser",
+    "c4",
     "rescue",
     "escape",
     "vipsafety",
