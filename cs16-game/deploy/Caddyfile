@@ -2,8 +2,12 @@
 # dedicated server. Caddy obtains and renews the TLS certificate itself; the
 # page is https, so the game must be reached as wss:// on the same host.
 #
-# Set the domain via the environment (e.g. in /etc/default/caddy):
-#   PROTOCOL47_DOMAIN=play.example.com
+# Set the domain in a systemd drop-in (deploy/caddy-protocol47.conf):
+#   Environment=PROTOCOL47_DOMAIN=play.example.com
+www.{$PROTOCOL47_DOMAIN} {
+	redir https://{$PROTOCOL47_DOMAIN}{uri} permanent
+}
+
 {$PROTOCOL47_DOMAIN} {
 	# The game joins wss://<this host>/ws by default.
 	handle /ws {
@@ -11,7 +15,7 @@
 	}
 
 	handle {
-		root * /opt/protocol47/web
+		root * /var/www/protocol47
 		# game:build:web writes .br/.gz copies of the large files, so they are
 		# never compressed on the fly.
 		file_server {

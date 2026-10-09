@@ -33,8 +33,10 @@ the service only needs write access to `/var/lib/protocol47`.
 
 ## Browser play
 
-Requires a domain whose DNS A record points at the droplet; Caddy obtains the
-TLS certificate automatically.
+Requires a domain whose DNS A record points at the droplet (production:
+`cs16.site` and `www.cs16.site` → 167.71.173.156); Caddy obtains the TLS
+certificate automatically. Start Caddy only after the domain resolves, so the
+certificate request does not burn Let's Encrypt's failed-validation limit.
 
 Build locally (from `cs16-game/`), which also writes `.br`/`.gz` copies of the
 large files (the Brotli package is roughly 43 MB instead of 218 MB):
@@ -47,11 +49,13 @@ On the droplet:
 
 ```bash
 sudo apt install caddy
-sudo mkdir -p /opt/protocol47/web
-# copy game/builds/web/* to /opt/protocol47/web/
+sudo mkdir -p /var/www/protocol47
+# copy game/builds/web/* to /var/www/protocol47/
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
-echo 'PROTOCOL47_DOMAIN=play.example.com' | sudo tee /etc/default/caddy
-sudo systemctl restart caddy
+# Ubuntu's caddy.service reads no environment file; set the domain in a drop-in.
+sudo mkdir -p /etc/systemd/system/caddy.service.d
+sudo cp deploy/caddy-protocol47.conf /etc/systemd/system/caddy.service.d/protocol47.conf
+sudo systemctl daemon-reload && sudo systemctl restart caddy
 ```
 
 The firewall must also admit TCP 80 (certificate issuance and redirect) and
