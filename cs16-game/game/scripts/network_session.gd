@@ -14,6 +14,7 @@ const WorldState = preload("res://scripts/network_world_state.gd")
 const CombatEvents = preload("res://scripts/network_combat_events.gd")
 const AudioCatalog = preload("res://scripts/cs16_audio_catalog.gd")
 const SettingsScript = preload("res://scripts/settings.gd")
+const MultiTransportPeer = preload("res://scripts/network_multi_peer.gd")
 const NAME_SEND_INTERVAL_MS := 250
 var _name_peers: Dictionary = {}
 var _sent_player_name := ""
@@ -29,6 +30,16 @@ var _last_chat_sequence := 0
 var _game_chat_handler := Callable()
 
 const DEFAULT_PORT := 27447
+## Path a browser build joins on the server it was loaded from; the reverse
+## proxy forwards it to the dedicated server's WebSocket listener.
+const WEB_SOCKET_PATH := "/ws"
+const MAX_WEB_SOCKET_URL_LENGTH := 512
+## WebSocket peers buffer whole messages and drop data once a buffer fills,
+## which breaks reliable delivery. Browsers stall for seconds while loading
+## models, and the server keeps streaming world snapshots meanwhile, so both
+## ends hold far more than Godot's 64 KiB default.
+const WEB_SOCKET_BUFFER_BYTES := 1 << 22
+const WEB_SOCKET_MAX_QUEUED_PACKETS := 1 << 14
 const MAX_CLIENTS := 10
 const SNAPSHOT_HZ := 20.0
 const MAX_INPUT_DISTANCE := 12.0
@@ -91,6 +102,10 @@ var _resolver_id := IP.RESOLVER_INVALID_ID
 var _resolver_port := 0
 var dedicated_server := false
 var listen_port := DEFAULT_PORT
+## WebSocket listener for browser clients; 0 disables it. The dedicated server
+## defaults to the UDP port + 1.
+var listen_web_socket_port := 0
+var web_socket_bind_address := "*"
 
 
 func _ready() -> void:
@@ -131,6 +146,7 @@ func _start_from_command_line() -> void:
 	var arguments := OS.get_cmdline_user_args()
 	dedicated_server = OS.has_feature("dedicated_server") or arguments.has("--dedicated")
 	var should_host := dedicated_server or arguments.has("--host")
+	var requested_web_socket_port := ""
 	for argument in arguments:
 		if argument.begins_with("--port="):
 			var requested_port := argument.trim_prefix("--port=")
@@ -141,30 +157,93 @@ func _start_from_command_line() -> void:
 				if dedicated_server:
 					get_tree().quit(2)
 				return
+		elif argument.begins_with("--ws-port="):
+			requested_web_socket_port = argument.trim_prefix("--ws-port=")
+		elif argument.begins_with("--ws-bind="):
+			web_socket_bind_address = argument.trim_prefix("--ws-bind=")
+	if not requested_web_socket_port.is_empty():
+		if requested_web_socket_port.is_valid_int() and int(requested_web_socket_port) in range(0, 65536):
+			listen_web_socket_port = int(requested_web_socket_port)
+		else:
+			push_error("Invalid WebSocket port: %s" % requested_web_socket_port)
+			if dedicated_server:
+				get_tree().quit(2)
+			return
+	elif dedicated_server and listen_port < 65535:
+		listen_web_socket_port = listen_port + 1
 	if should_host:
-		var result := host_game(listen_port)
+		var result := host_game(listen_port, "*", listen_web_socket_port)
 		if dedicated_server:
 			if result == OK:
-				print("Protocol 47 dedicated server listening on UDP %d (de_dust2, 10 slots)" % listen_port)
+				var web_socket := (", WebSocket %d" % listen_web_socket_port) if listen_web_socket_port > 0 else ""
+				print("Protocol 47 dedicated server listening on UDP %d%s (de_dust2, 10 slots)" % [listen_port, web_socket])
 			else:
-				push_error("Dedicated server could not bind UDP %d: %s" % [listen_port, error_string(result)])
+				push_error("Dedicated server could not bind UDP %d / WebSocket %d: %s" % [listen_port, listen_web_socket_port, error_string(result)])
 				get_tree().quit(1)
 		return
 	for argument in arguments:
 		if argument.begins_with("--join="):
 			join_game(argument.trim_prefix("--join="), listen_port)
 			return
+	if OS.has_feature("web"):
+		_join_from_web_page()
 
 
-func host_game(port := DEFAULT_PORT, bind_address := "*") -> Error:
+## Browser builds join the server named by ?server=<ws(s) URL>, or by default
+## the server that served the page (its WebSocket path). ?offline plays
+## locally against bots instead.
+func _join_from_web_page() -> void:
+	if web_page_query("offline") != null:
+		return
+	var requested = web_page_query("server")
+	join_game(str(requested) if requested != null else default_web_server_url())
+
+
+static func web_page_query(name: String) -> Variant:
+	if not OS.has_feature("web"):
+		return null
+	var value: Variant = JavaScriptBridge.eval(
+		"(new URLSearchParams(window.location.search)).get(%s)" % JSON.stringify(name), true)
+	return value if value is String else null
+
+
+static func default_web_server_url() -> String:
+	if not OS.has_feature("web"):
+		return ""
+	var secure := str(JavaScriptBridge.eval("window.location.protocol", true)) == "https:"
+	var host := str(JavaScriptBridge.eval("window.location.host", true))
+	return "%s://%s%s" % ["wss" if secure else "ws", host, WEB_SOCKET_PATH]
+
+
+static func is_web_socket_url(address: String) -> bool:
+	return address.begins_with("ws://") or address.begins_with("wss://")
+
+
+func host_game(port := DEFAULT_PORT, bind_address := "*", web_socket_port := 0) -> Error:
 	disconnect_session()
+	if OS.has_feature("web"):
+		# Browsers cannot listen for UDP or WebSocket connections.
+		_set_status("HOSTING IS NOT AVAILABLE IN THE BROWSER")
+		return ERR_UNAVAILABLE
 	var peer := ENetMultiplayerPeer.new()
 	peer.set_bind_ip(bind_address)
 	var result := peer.create_server(port, MAX_CLIENTS, 3)
 	if result != OK:
 		_set_status("HOST FAILED")
 		return result
-	multiplayer.multiplayer_peer = peer
+	var session_peer: MultiplayerPeer = peer
+	if web_socket_port > 0:
+		var web_socket := _new_web_socket_peer()
+		result = web_socket.create_server(web_socket_port, web_socket_bind_address)
+		if result != OK:
+			peer.close()
+			_set_status("HOST FAILED")
+			return result
+		var combined := MultiTransportPeer.new(MAX_CLIENTS)
+		combined.add_transport(peer)
+		combined.add_transport(web_socket)
+		session_peer = combined
+	multiplayer.multiplayer_peer = session_peer
 	is_host = true
 	_world_epoch += 1
 	_register_input_peer(1, Time.get_ticks_msec())
@@ -175,6 +254,12 @@ func host_game(port := DEFAULT_PORT, bind_address := "*") -> Error:
 func join_game(address := "127.0.0.1", port := DEFAULT_PORT) -> Error:
 	disconnect_session()
 	_connection_deadline_ms = Time.get_ticks_msec() + CONNECTION_TIMEOUT_MS
+	if is_web_socket_url(address):
+		return _connect_web_socket(address)
+	if OS.has_feature("web"):
+		# Browsers cannot send UDP; reach the host's WebSocket listener.
+		var secure := str(JavaScriptBridge.eval("window.location.protocol", true)) == "https:"
+		return _connect_web_socket("%s://%s:%d" % ["wss" if secure else "ws", address, port])
 	if not address.is_valid_ip_address():
 		# ENet resolves hostnames synchronously. Queue DNS first so a failed
 		# lookup cannot freeze the menu or prevent cancellation and timeout.
@@ -199,6 +284,27 @@ func _connect_address(address: String, port: int) -> Error:
 	multiplayer.multiplayer_peer = peer
 	is_host = false
 	_set_status("CONNECTING  %s:%d" % [address, port])
+	return OK
+
+
+static func _new_web_socket_peer() -> WebSocketMultiplayerPeer:
+	var peer := WebSocketMultiplayerPeer.new()
+	peer.inbound_buffer_size = WEB_SOCKET_BUFFER_BYTES
+	peer.outbound_buffer_size = WEB_SOCKET_BUFFER_BYTES
+	peer.max_queued_packets = WEB_SOCKET_MAX_QUEUED_PACKETS
+	return peer
+
+
+func _connect_web_socket(url: String) -> Error:
+	var peer := _new_web_socket_peer()
+	var result := peer.create_client(url)
+	if result != OK:
+		_connection_deadline_ms = 0
+		_set_status("JOIN FAILED")
+		return result
+	multiplayer.multiplayer_peer = peer
+	is_host = false
+	_set_status("CONNECTING  %s" % url)
 	return OK
 
 
@@ -474,7 +580,18 @@ func is_connecting() -> bool:
 
 
 static func connection_endpoint(address: String, port_text: String) -> Dictionary:
-	var endpoint := {"valid": false, "reason": "Use a UDP port from 1024 to 65535.", "address": address.strip_edges(), "port": 0}
+	var trimmed := address.strip_edges()
+	if is_web_socket_url(trimmed):
+		# A WebSocket URL carries its own port and path; the port field is unused.
+		var url_endpoint := {"valid": false, "reason": "Enter a ws:// or wss:// URL with a host.", "address": trimmed, "port": 0}
+		var rest := trimmed.substr(trimmed.find("://") + 3)
+		var host := rest.split("/", true, 1)[0]
+		if trimmed.length() <= MAX_WEB_SOCKET_URL_LENGTH and not host.is_empty() and not host.begins_with(":") \
+				and not " " in trimmed and not "@" in host:
+			url_endpoint.valid = true
+			url_endpoint.reason = ""
+		return url_endpoint
+	var endpoint := {"valid": false, "reason": "Use a UDP port from 1024 to 65535.", "address": trimmed, "port": 0}
 	if port_text.is_empty() or port_text.length() > 5:
 		return endpoint
 	for character: String in port_text:
@@ -501,6 +618,9 @@ static func connection_endpoint(address: String, port_text: String) -> Dictionar
 
 func _set_status(value: String) -> void:
 	status = value
+	if OS.has_feature("web"):
+		# The browser console is the only log a web player can share.
+		print("PROTOCOL47_NET %s" % status)
 	status_changed.emit(status)
 
 

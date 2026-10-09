@@ -63,14 +63,20 @@ func _validate_model(weapon: String, family: String) -> void:
 	if manifest.is_empty():
 		return
 	_check(manifest.get("format") == "protocol47-mdl", "%s uses the MDL format" % root)
-	# The animated exporter emits version 3 for every animated model.json;
-	# version 2 was the pre-seq-label format and no generated asset ships it
-	# anymore (assets and converter are re-synced in the same commit).
-	var expected_version := 3
+	# The animated exporter emits version 4 (rigid bone tapes) for every
+	# animated model.json; versions 2-3 baked per-vertex frames and no generated
+	# asset ships them anymore (assets and converter are re-synced together).
+	var expected_version := 4
 	_check(
 		int(manifest.get("version", 0)) == expected_version,
 		"%s uses supported version %d" % [root, expected_version],
 	)
+	_check(manifest.get("frame_format") == "rigid_bones", "%s stores rigid bone tapes" % root)
+	var bone_count := int(manifest.get("bone_count", 0))
+	_check(bone_count > 0, "%s declares its bone count" % root)
+	var vertex_bones: Array = manifest.get("vertex_bones", [])
+	var skin_path := "%s/%s" % [root, str(manifest.get("skin_file", ""))]
+	_check(FileAccess.file_exists(skin_path), "%s rigid skin exists" % skin_path)
 	var positions: Array = manifest.get("positions", [])
 	var groups: Array = manifest.get("groups", [])
 	var sequences: Array = manifest.get("sequences", [])
@@ -79,6 +85,13 @@ func _validate_model(weapon: String, family: String) -> void:
 	_check(not groups.is_empty(), "%s contains render groups" % root)
 	_check(not sequences.is_empty(), "%s contains named sequences" % root)
 	_check(not animations.is_empty(), "%s contains animation sequences" % root)
+	_check(vertex_bones.size() * 3 == positions.size(), "%s assigns every vertex a bone" % root)
+	if FileAccess.file_exists(skin_path):
+		var skin_file := FileAccess.open(skin_path, FileAccess.READ)
+		_check(
+			skin_file != null and skin_file.get_length() == positions.size() * 4,
+			"%s stores one local position per vertex" % skin_path,
+		)
 	for group_variant: Variant in groups:
 		_check(group_variant is Dictionary, "%s group metadata is valid" % root)
 		if not group_variant is Dictionary:
@@ -102,7 +115,7 @@ func _validate_model(weapon: String, family: String) -> void:
 			var animation_file := FileAccess.open(animation_path, FileAccess.READ)
 			_check(animation_file != null, "%s animation opens" % animation_path)
 			if animation_file != null:
-				var expected_bytes := positions.size() * frame_count * blend_count * 4
+				var expected_bytes := bone_count * 12 * frame_count * blend_count * 4
 				_check(
 					animation_file.get_length() == expected_bytes,
 					"%s stores every frame and authored blend (%d bytes)"

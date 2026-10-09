@@ -19,6 +19,7 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 
 GameSettings="*res://scripts/settings.gd"
 NetworkSession="*res://scripts/network_session.gd"
+WebPerfLog="*res://scripts/web_perf_log.gd"
 
 [display]
 

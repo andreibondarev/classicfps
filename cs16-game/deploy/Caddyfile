@@ -1,0 +1,23 @@
+# Serves the browser build and forwards browser players' WebSocket to the
+# dedicated server. Caddy obtains and renews the TLS certificate itself; the
+# page is https, so the game must be reached as wss:// on the same host.
+#
+# Set the domain via the environment (e.g. in /etc/default/caddy):
+#   PROTOCOL47_DOMAIN=play.example.com
+{$PROTOCOL47_DOMAIN} {
+	# The game joins wss://<this host>/ws by default.
+	handle /ws {
+		reverse_proxy 127.0.0.1:27448
+	}
+
+	handle {
+		root * /opt/protocol47/web
+		# game:build:web writes .br/.gz copies of the large files, so they are
+		# never compressed on the fly.
+		file_server {
+			precompressed br gzip
+		}
+		@engine path /index.pck /index.wasm /index.js
+		header @engine Cache-Control "no-cache"
+	}
+}

@@ -34,6 +34,7 @@ const CLASSIC_SHADOW := Color(0.0, 0.0, 0.0, 0.92)
 const CLASSIC_SPRITE_INTENSITY := 0.45
 const CLASSIC_HUD_ROOT := "res://assets/hud/classic/"
 const RadarDisplayScript := preload("res://scripts/cs16_radar_display.gd")
+const NetworkSessionScript := preload("res://scripts/network_session.gd")
 const VGUI_AMBER_FALLBACK := Color(1.0, 176.0 / 255.0, 0.0, 1.0)
 const VGUI_AMBER_DIM_FALLBACK := Color(188.0 / 255.0, 112.0 / 255.0, 0.0, 1.0)
 const VGUI_BLUE_FALLBACK := Color(153.0 / 255.0, 204.0 / 255.0, 1.0, 1.0)
@@ -1991,6 +1992,16 @@ func _build_network_menu() -> void:
 	_vgui_button(network_menu, "Back", "Back", Vector2(404, 266), Vector2(96, 28), _show_pause_main)
 	network_address.text_submitted.connect(func(_text: String) -> void: _request_network_connection())
 	network_port.text_submitted.connect(func(_text: String) -> void: _request_network_connection())
+	if OS.has_feature("web"):
+		# Browsers reach servers over WebSocket, so the form takes a ws(s) URL
+		# (defaulting to the server that served this page) and no UDP port.
+		var help := network_menu.get_node("Help") as Label
+		help.text = "Browser play connects over WebSocket.\nJoin the server this page came from, or paste another ws:// or wss:// URL."
+		(network_menu.get_node("AddressLabel") as Label).text = "Server URL"
+		network_address.max_length = NetworkSessionScript.MAX_WEB_SOCKET_URL_LENGTH
+		network_address.text = NetworkSessionScript.default_web_server_url()
+		network_port.visible = false
+		(network_menu.get_node("PortLabel") as Label).visible = false
 
 
 func _network_entry(entry_name: String, text: String, position: Vector2, size: Vector2, limit: int) -> LineEdit:

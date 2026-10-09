@@ -3994,6 +3994,13 @@ func _pause_menu_open() -> bool:
 	return is_instance_valid(hud) and is_instance_valid(hud.pause_overlay) and hud.pause_overlay.visible
 
 
+## True while live play should hold the mouse captured: no pause menu and
+## no HUD menu that needs a visible cursor.
+func wants_mouse_capture() -> bool:
+	return (match_started or _network_client_mode) and not _pause_menu_open() \
+		and not hud.current_input_contract().mouse_visible
+
+
 func _set_paused(paused: bool) -> void:
 	# Online menus are local input overlays, not authority to stop the server
 	# or client presentation. Offline games retain their normal full pause.

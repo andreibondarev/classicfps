@@ -103,6 +103,11 @@ pub struct ParsedMdl {
     pub seq_labels: Vec<String>,
     /// One bit per emitted vertex: pelvis/leg ownership from the source bones.
     pub lower_body_mask: Vec<u8>,
+    /// Source bone of each emitted vertex (GoldSrc skinning is rigid).
+    pub vertex_bones: Vec<u8>,
+    /// Each emitted vertex before its bone transform, in output space.
+    /// `MdlAnim::bone_poses` maps these to every baked pose.
+    pub skin_local: Vec<f32>,
 }
 
 /// All sequence labels, in sequence order
@@ -657,6 +662,38 @@ pub struct MdlAnim {
     /// Concatenated blend-major, per-frame positions. Each pose keeps the same
     /// vertex order as ParsedMdl.positions.
     pub data: Vec<f32>,
+    /// Bones per pose in `bone_poses`.
+    pub bone_count: u32,
+    /// The same poses as `data`, as one output-space 3x4 row-major transform
+    /// per bone: vertex `v` of a pose is `pose[vertex_bones[v]] * skin_local[v]`.
+    pub bone_poses: Vec<f32>,
+}
+
+/// Collects the bone transforms behind each baked pose.
+#[derive(Default)]
+struct BoneTape {
+    bone_count: u32,
+    poses: Vec<f32>,
+}
+
+impl BoneTape {
+    fn push(&mut self, mats: &[Mat34]) {
+        self.bone_count = mats.len() as u32;
+        for m in mats {
+            self.poses.extend_from_slice(&output_space_transform(m));
+        }
+    }
+}
+
+/// walk_geometry emits `S(M p)` with `S(x, y, z) = 0.01 (x, z, -y)`. Writing
+/// `R` for that axis swap, the equivalent transform applied to `S(p)` is
+/// `R L Rᵀ` with translation `0.01 R t`.
+fn output_space_transform(m: &Mat34) -> [f32; 12] {
+    [
+        m[0][0], m[0][2], -m[0][1], m[0][3] * 0.01,
+        m[2][0], m[2][2], -m[2][1], m[2][3] * 0.01,
+        -m[1][0], -m[1][2], m[1][1], -m[1][3] * 0.01,
+    ]
 }
 
 #[derive(Clone, Debug)]
@@ -904,6 +941,18 @@ fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
         body_value,
     );
 
+    let identity = vec![mat_identity(); bone_mats.len()];
+    let mut local_buckets = walk_geometry(
+        d,
+        &identity,
+        &tex_meta,
+        numbodyparts,
+        bodypartindex,
+        numskinref,
+        skinindex,
+        body_value,
+    );
+
     let mut out = ParsedMdl {
         groups: Vec::new(),
         positions: Vec::new(),
@@ -911,6 +960,8 @@ fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
         pixels,
         seq_labels: sequence_labels(d),
         lower_body_mask: Vec::new(),
+        vertex_bones: Vec::new(),
+        skin_local: Vec::new(),
     };
     let gait_mask = gait_bone_mask(d);
     for (tex, (pos, uv, bones)) in buckets {
@@ -950,6 +1001,9 @@ fn parse_mdl_body(d: &[u8], body_value: usize) -> Result<ParsedMdl, String> {
         });
         out.positions.extend_from_slice(&pos);
         out.uvs.extend_from_slice(&uv);
+        out.skin_local
+            .extend_from_slice(&local_buckets.remove(&tex).unwrap_or_default().0);
+        out.vertex_bones.extend_from_slice(&bones);
         if let Some(mask) = &gait_mask {
             out.lower_body_mask.extend(bones.iter().map(|bone| {
                 u8::from(mask.get(*bone as usize).copied().unwrap_or(false))
@@ -1069,6 +1123,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
             let frames = i32_at(d, o + 56).max(1) as usize;
             let blends = i32_at(d, o + 120).max(1) as usize;
             let mut data = Vec::new();
+            let mut tape = BoneTape::default();
             let mut ok = true;
             for blend in 0..blends {
                 for frame in 0..frames {
@@ -1083,6 +1138,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                         blend,
                     ) {
                         Ok(mats) => {
+                            tape.push(&mats);
                             let buckets = walk_geometry(
                                 d,
                                 &mats,
@@ -1120,6 +1176,8 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                     blend_start: [f32_at(d, o + 136), f32_at(d, o + 140)],
                     blend_end: [f32_at(d, o + 144), f32_at(d, o + 148)],
                     data,
+                    bone_count: tape.bone_count,
+                    bone_poses: tape.poses,
                 });
             } else {
                 // Keep indices aligned even if one malformed sequence cannot
@@ -1136,6 +1194,8 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                     blend_start: [0.0, 0.0],
                     blend_end: [1.0, 0.0],
                     data: Vec::new(),
+                    bone_count: 0,
+                    bone_poses: Vec::new(),
                 });
             }
         }
@@ -1147,6 +1207,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
     if let Some(plan) = player_pose_plan(d, family) {
         for entry in plan {
             let mut data = Vec::new();
+            let mut tape = BoneTape::default();
             let mut ok = true;
             for sample in &entry.poses {
                 match plan_pose_matrices(
@@ -1158,6 +1219,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                     sample,
                 ) {
                     Ok(mats) => {
+                        tape.push(&mats);
                         let buckets = walk_geometry(
                             d,
                             &mats,
@@ -1191,6 +1253,8 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                     blend_start: entry.blend_start,
                     blend_end: entry.blend_end,
                     data,
+                    bone_count: tape.bone_count,
+                    bone_poses: tape.poses,
                 });
             }
         }
@@ -1244,6 +1308,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
             continue;
         };
         let mut data = Vec::new();
+            let mut tape = BoneTape::default();
         let mut ok = true;
         for blend in 0..sequence.blends {
             for frame in 0..sequence.frames {
@@ -1258,6 +1323,7 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                     blend,
                 ) {
                     Ok(mats) => {
+                        tape.push(&mats);
                         let buckets = walk_geometry(
                             d,
                             &mats,
@@ -1295,6 +1361,8 @@ pub fn parse_mdl_animated_family_with_sequence_groups(
                 blend_start: sequence.blend_start,
                 blend_end: sequence.blend_end,
                 data,
+                bone_count: tape.bone_count,
+                bone_poses: tape.poses,
             });
         }
     }
@@ -1453,6 +1521,7 @@ pub fn parse_mdl_attached(
         // for this family, so the gun stays in the animated hands.
         for entry in plan {
             let mut data = Vec::new();
+            let mut tape = BoneTape::default();
             let mut ok = true;
             for sample in &entry.poses {
                 match plan_pose_matrices(
@@ -1464,9 +1533,11 @@ pub fn parse_mdl_attached(
                     sample,
                 ) {
                     Ok(mats) => {
+                        let mats = remap(&mats);
+                        tape.push(&mats);
                         for (_, (pos, _, _)) in walk_geometry(
                             weapon,
-                            &remap(&mats),
+                            &mats,
                             &w_texmeta,
                             w_numbodyparts,
                             w_bodypartindex,
@@ -1496,6 +1567,8 @@ pub fn parse_mdl_attached(
                     blend_start: entry.blend_start,
                     blend_end: entry.blend_end,
                     data,
+                    bone_count: tape.bone_count,
+                    bone_poses: tape.poses,
                 });
             }
         }
@@ -1520,6 +1593,7 @@ pub fn parse_mdl_attached(
                 continue;
             };
             let mut data = Vec::new();
+            let mut tape = BoneTape::default();
             let mut ok = true;
             for blend in 0..sequence.blends {
                 for frame in 0..sequence.frames {
@@ -1534,9 +1608,11 @@ pub fn parse_mdl_attached(
                         blend,
                     ) {
                         Ok(mats) => {
+                            let mats = remap(&mats);
+                            tape.push(&mats);
                             for (_, (pos, _, _)) in walk_geometry(
                                 weapon,
-                                &remap(&mats),
+                                &mats,
                                 &w_texmeta,
                                 w_numbodyparts,
                                 w_bodypartindex,
@@ -1570,6 +1646,8 @@ pub fn parse_mdl_attached(
                     blend_start: sequence.blend_start,
                     blend_end: sequence.blend_end,
                     data,
+                    bone_count: tape.bone_count,
+                    bone_poses: tape.poses,
                 });
             }
         }
@@ -1585,6 +1663,9 @@ pub fn parse_mdl_attached(
         seq_labels: sequence_labels(player),
         // Attached weapons never receive a lower-body overlay at runtime.
         lower_body_mask: Vec::new(),
+        // The weapon's own bones index the merged (remapped) skeleton.
+        vertex_bones: base.vertex_bones,
+        skin_local: base.skin_local,
     };
     Ok((out, anims))
 }

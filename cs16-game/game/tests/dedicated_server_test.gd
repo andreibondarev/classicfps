@@ -74,7 +74,7 @@ func _run() -> void:
 	await process_frame
 	network.disconnect_session()
 	if failures.is_empty():
-		print("DEDICATED SERVER TEST PASSED")
+		print("DEDICATED_SERVER_TEST_PASS")
 		quit(0)
 	else:
 		push_error("DEDICATED SERVER TEST FAILED: %d assertion(s)" % failures.size())

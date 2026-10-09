@@ -2,6 +2,7 @@ class_name MdlCharacterModel
 extends Node3D
 
 const PoseSampler := preload("res://scripts/mdl_pose_sampler.gd")
+const RigidSkin := preload("res://scripts/mdl_rigid_skin.gd")
 
 # BSP geometry and converted MDL vertices both use 0.01 Godot units for one
 # GoldSrc unit. Keeping this at 1.0 preserves the original player-to-map ratio.
@@ -1357,6 +1358,9 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 	for index in range(source_uvs.size()):
 		uvs[index] = float(source_uvs[index])
 
+	var rigid_skin := RigidSkin.load_skin(path, parsed, positions.size() / 3)
+	if rigid_skin.has("error"):
+		return {}
 	var animation_map := {}
 	for animation_data in parsed.get("animations", []):
 		var animation_file := path.get_base_dir().path_join(str(animation_data.get("file", "")))
@@ -1367,6 +1371,8 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		var animation_positions := source.get_buffer(source.get_length()).to_float32_array()
 		var frame_count := int(animation_data.get("frames", 0))
 		var blend_count := maxi(1, int(animation_data.get("blends", 1)))
+		if not rigid_skin.is_empty():
+			animation_positions = RigidSkin.rebuild(rigid_skin, animation_positions, frame_count * blend_count)
 		if animation_positions.size() != frame_count * blend_count * positions.size():
 			push_error("Invalid character animation frame data: %s" % animation_file)
 			return {}

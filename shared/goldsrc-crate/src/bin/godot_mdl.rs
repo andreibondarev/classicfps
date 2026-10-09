@@ -30,6 +30,78 @@ struct ModelExport<'a> {
     uvs: &'a [f32],
     sequences: &'a [String],
     animations: Vec<AnimationExport>,
+    /// Animated models store rigid bone transforms per pose instead of baked
+    /// vertex frames; the runtime rebuilds frames from these on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_format: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bone_count: Option<u32>,
+    #[serde(skip_serializing_if = "<[u8]>::is_empty")]
+    vertex_bones: &'a [u8],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skin_file: Option<&'static str>,
+}
+
+/// Largest allowed difference between a baked vertex and the same vertex
+/// rebuilt from its bone transform, in output units (0.01 GoldSrc units).
+const BONE_REBUILD_TOLERANCE: f32 = 2e-4;
+
+/// Rebuild every pose from `bone_poses` and compare with the baked frames, so
+/// the exported bone format is proven equivalent to the vertex data it replaces.
+fn verify_bone_rebuild(parsed: &ParsedMdl, animation: &MdlAnim) -> Result<f32, String> {
+    let vertex_count = parsed.positions.len() / 3;
+    let bone_count = animation.bone_count as usize;
+    let pose_stride = bone_count * 12;
+    if parsed.vertex_bones.len() != vertex_count || parsed.skin_local.len() != vertex_count * 3 {
+        return Err(format!("animation {} has no rigid skin", animation.name));
+    }
+    let poses = animation.frames as usize * animation.blends as usize;
+    if bone_count == 0 || animation.bone_poses.len() != poses * pose_stride {
+        return Err(format!(
+            "animation {} has {} bone floats for {} poses of {} bones",
+            animation.name,
+            animation.bone_poses.len(),
+            poses,
+            bone_count
+        ));
+    }
+    let mut max_error = 0f32;
+    for pose in 0..poses {
+        let transforms = &animation.bone_poses[pose * pose_stride..(pose + 1) * pose_stride];
+        for vertex in 0..vertex_count {
+            let local = &parsed.skin_local[vertex * 3..vertex * 3 + 3];
+            let bone = parsed.vertex_bones[vertex] as usize;
+            let rebuilt = if bone < bone_count {
+                let m = &transforms[bone * 12..bone * 12 + 12];
+                [
+                    m[0] * local[0] + m[1] * local[1] + m[2] * local[2] + m[3],
+                    m[4] * local[0] + m[5] * local[1] + m[6] * local[2] + m[7],
+                    m[8] * local[0] + m[9] * local[1] + m[10] * local[2] + m[11],
+                ]
+            } else {
+                [local[0], local[1], local[2]]
+            };
+            let baked = &animation.data[(pose * vertex_count + vertex) * 3..][..3];
+            for axis in 0..3 {
+                max_error = max_error.max((rebuilt[axis] - baked[axis]).abs());
+            }
+        }
+    }
+    if max_error > BONE_REBUILD_TOLERANCE {
+        return Err(format!(
+            "animation {} rebuilds from bones with error {max_error}",
+            animation.name
+        ));
+    }
+    Ok(max_error)
+}
+
+fn write_f32(path: &Path, values: &[f32]) -> Result<(), String> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, bytes).map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
 #[derive(Serialize)]
@@ -118,6 +190,11 @@ fn export_model(
     let texture_path = output_path.join("textures");
     fs::create_dir_all(&texture_path).map_err(|error| error.to_string())?;
     let animation_path = output_path.join("animations");
+    if animation_path.is_dir() {
+        // Drop tapes from earlier exports (including the old baked-vertex
+        // .f32 frames) so renamed or removed animations cannot linger.
+        fs::remove_dir_all(&animation_path).map_err(|error| error.to_string())?;
+    }
     if !anims.is_empty() {
         fs::create_dir_all(&animation_path).map_err(|error| error.to_string())?;
     }
@@ -186,6 +263,8 @@ fn export_model(
     }
 
     let mut animations = Vec::new();
+    let mut bone_count = None;
+    let mut max_rebuild_error = 0f32;
     for (index, animation) in anims.iter().enumerate() {
         if animation.frames == 0 || animation.data.is_empty() {
             continue;
@@ -200,12 +279,14 @@ fn export_model(
                 expected
             ));
         }
-        let filename = format!("{index:02}_{}.f32", safe_name(&animation.name));
-        let mut bytes = Vec::with_capacity(animation.data.len() * 4);
-        for value in &animation.data {
-            bytes.extend_from_slice(&value.to_le_bytes());
+        let error = verify_bone_rebuild(parsed, animation)?;
+        max_rebuild_error = max_rebuild_error.max(error);
+        if bone_count.is_some_and(|count| count != animation.bone_count) {
+            return Err(format!("animation {} changes the bone count", animation.name));
         }
-        fs::write(animation_path.join(&filename), bytes).map_err(|error| error.to_string())?;
+        bone_count = Some(animation.bone_count);
+        let filename = format!("{index:02}_{}.bones.f32", safe_name(&animation.name));
+        write_f32(&animation_path.join(&filename), &animation.bone_poses)?;
         animations.push(AnimationExport {
             name: animation.name.clone(),
             source_label: animation.source_label.clone(),
@@ -221,9 +302,20 @@ fn export_model(
         });
     }
 
+    let animated = !animations.is_empty();
+    let skin_path = output_path.join("skin.f32");
+    if animated {
+        write_f32(&skin_path, &parsed.skin_local)?;
+    } else if skin_path.is_file() {
+        fs::remove_file(&skin_path).map_err(|error| error.to_string())?;
+    }
     let export = ModelExport {
         format: "protocol47-mdl",
-        version: if animations.is_empty() { 1 } else { 3 },
+        version: if animated { 4 } else { 1 },
+        frame_format: animated.then_some("rigid_bones"),
+        bone_count,
+        vertex_bones: if animated { &parsed.vertex_bones } else { &[] },
+        skin_file: animated.then_some("skin.f32"),
         groups,
         positions: &parsed.positions,
         lower_body_mask: &parsed.lower_body_mask,
@@ -234,10 +326,11 @@ fn export_model(
     let json = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
     fs::write(output_path.join("model.json"), json).map_err(|error| error.to_string())?;
     println!(
-        "Exported {}: {} vertices, {} surfaces",
+        "Exported {}: {} vertices, {} surfaces, max bone rebuild error {:.2e}",
         model_path.display(),
         parsed.positions.len() / 3,
-        parsed.groups.len()
+        parsed.groups.len(),
+        max_rebuild_error
     );
     Ok(())
 }

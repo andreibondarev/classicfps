@@ -337,6 +337,9 @@ func _build_viewmodel() -> void:
 func _input(event: InputEvent) -> void:
 	if not is_local_human() or not alive:
 		return
+	if _recapture_browser_pointer(event):
+		get_viewport().set_input_as_handled()
+		return
 	if radio_menu_open and event is InputEventKey:
 		return
 	if controls_enabled or look_enabled:
@@ -344,6 +347,22 @@ func _input(event: InputEvent) -> void:
 		# firing there, but looking, switching weapons, and reloading all
 		# work. The physics tick decides which command fields are honored.
 		combat_controller.ingest_input(event)
+
+
+## Browsers grant pointer lock only in response to a click, and release it
+## on Esc. Gameplay captures the mouse from timers and network replies, which
+## a browser refuses, so on the web the next gameplay click requests capture
+## and is consumed instead of firing.
+func _recapture_browser_pointer(event: InputEvent) -> bool:
+	if not OS.has_feature("web") or Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		return false
+	if not (event is InputEventMouseButton and (event as InputEventMouseButton).pressed):
+		return false
+	var scene := get_tree().current_scene
+	if scene == null or not scene.has_method("wants_mouse_capture") or not scene.wants_mouse_capture():
+		return false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	return true
 
 
 func _apply_mouse_look(relative: Vector2) -> void:

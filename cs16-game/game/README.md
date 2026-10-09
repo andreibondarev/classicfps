@@ -608,6 +608,26 @@ bounded to 10 and 15 seconds respectively.
 Hostname resolution runs in the background within the connection deadline;
 canceling or returning offline discards the pending lookup.
 
+### Browser play
+
+`npm run game:build:web` exports `game/builds/web` (Godot Web, single-threaded,
+WebGL 2). A browser build joins the server that served the page at
+`wss://<host>/ws`; `?server=<ws or wss URL>` joins another server, `?offline`
+plays locally against bots, and `?perf` logs the frame rate to the browser
+console. The dedicated server accepts browser clients over WebSocket on its UDP
+port + 1 (`--ws-port=`, `--ws-bind=`) alongside desktop ENet clients, through
+one combined multiplayer peer (`scripts/network_multi_peer.gd`).
+`npm run game:test:dedicated` includes a probe that joins one UDP and one
+WebSocket client to the same match. Deployment is in
+[`../deploy/README.md`](../deploy/README.md).
+
+Animated models ship as rigid bone tapes (manifest version 4): every GoldSrc
+vertex follows one bone, so each pose stores one 3x4 transform per bone and
+`scripts/mdl_rigid_skin.gd` rebuilds the vertex frames when a model loads. The
+exporter (`godot_mdl`) refuses to write a model unless rebuilding reproduces
+its baked frames within 2e-4 units (observed 6e-8). This cut the converted
+assets from 1.8 GB to 315 MB.
+
 The command-line hooks also remain available:
 
 ```bash
