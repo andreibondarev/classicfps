@@ -34,7 +34,7 @@ def lifecycle_kind(message):
     """systemd's own lines about the unit -> (kind, detail) or None."""
     if message.startswith("Started "):
         return "start", ""
-    if message.startswith("Stopping ") or message.startswith("Stopped "):
+    if message.startswith("Stopped "):  # "Stopping ..." precedes it; count each stop once
         return "stop", ""
     if "Main process exited" in message and ("code=dumped" in message or "code=killed" in message):
         return "crash", message.split("Main process exited, ", 1)[-1]

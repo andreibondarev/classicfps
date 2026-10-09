@@ -32,6 +32,8 @@ JOURNAL = [
     entry(NOW + 5, "protocol47.service: Main process exited, code=dumped, status=11/SEGV", "systemd"),
     entry(NOW + 5, "protocol47.service: Failed with result 'core-dump'.", "systemd"),
     entry(NOW + 8, "protocol47.service: Scheduled restart job, restart counter is at 1.", "systemd"),
+    entry(NOW + 8.5, "Stopping protocol47.service - Protocol 47 dedicated Dust2 server...", "systemd"),
+    entry(NOW + 8.6, "Stopped protocol47.service - Protocol 47 dedicated Dust2 server.", "systemd"),
     {"__REALTIME_TIMESTAMP": str(int((NOW + 9) * 1_000_000)), "MESSAGE": list(b"SCRIPT ERROR: bytes \xff message"),
      "SYSLOG_IDENTIFIER": "protocol47-server.x86_64", "__CURSOR": "last"},
 ]
@@ -42,7 +44,7 @@ class JournalParsingTest(unittest.TestCase):
         records = list(health.parse_game_journal(JOURNAL))
         lifecycle = [r for kind, r in records if kind == "lifecycle"]
         errors = [r for kind, r in records if kind == "error"]
-        self.assertEqual([r["kind"] for r in lifecycle], ["start", "crash", "restart"])
+        self.assertEqual([r["kind"] for r in lifecycle], ["start", "crash", "restart", "stop"])
         self.assertEqual(lifecycle[1]["detail"], "code=dumped, status=11/SEGV")
         freed = [e for e in errors if "freed object" in e["message"]]
         self.assertEqual(len(freed), 2)

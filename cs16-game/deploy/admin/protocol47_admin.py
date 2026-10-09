@@ -592,10 +592,14 @@ def sparkline(values, color, label, unit="", digits=0, floor=None):
         path.append(f"{pen}{index * step:.1f},{y:.1f}")
         pen = "L"
     current = points[-1]
+    if len(points) == 1:  # a lone bucket draws no line; show it as a dot
+        index = next(i for i, v in enumerate(values) if v is not None)
+        y = height - 2 - (points[0] - low) / span * (height - 4)
+        path.append(f"M{index * step:.1f},{y:.1f} l0.1,0")
     return (f'<div class="chart"><div>{esc(label)} <b>{number(current, digits, unit)}</b> '
             f'<span class="dim">max {number(high, digits, unit)}</span></div>'
             f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
-            f'<path d="{" ".join(path)}" fill="none" stroke="{color}" stroke-width="1.5"/></svg></div>')
+            f'<path d="{" ".join(path)}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/></svg></div>')
 
 
 def render_health(store):
