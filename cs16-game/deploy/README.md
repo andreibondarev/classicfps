@@ -63,3 +63,35 @@ The firewall must also admit TCP 80 (certificate issuance and redirect) and
 TCP 443. Keep 27448 closed: the service binds it to 127.0.0.1. Players open
 `https://<domain>/` and join automatically; `?offline` plays against bots
 locally and `?server=wss://...` joins a different server.
+
+## Admin dashboard
+
+`https://<domain>/admin/` (user `admin`, password-protected by Caddy) shows who
+is online, recent sessions (name, team, length, K/D, transport, IP, browser)
+and per-player totals. It is read-only.
+
+- The game server writes `/var/lib/protocol47/events.jsonl` and `status.json`
+  when started with `--admin-log=` (see `protocol47.service`).
+- `deploy/admin/protocol47_admin.py` (Python standard library) runs as the
+  `p47admin` user (`protocol47-admin.service`), stores data in
+  `/var/lib/protocol47-admin/admin.db` and listens on 127.0.0.1:8090.
+- Browser players reach the game through Caddy, so the game only sees
+  127.0.0.1; the service recovers their IP from Caddy's JSON access log (in the
+  journal) once a session ends. IPs and user agents are erased after 30 days.
+- Players are grouped by a random per-install tag the client sends; it is not
+  an account and resets if the player clears site data.
+
+Setup on the droplet (as root):
+
+```bash
+useradd --system --no-create-home --shell /usr/sbin/nologin p47admin
+usermod -aG protocol47,systemd-journal p47admin
+install -D -m 644 deploy/admin/protocol47_admin.py /opt/protocol47-admin/protocol47_admin.py
+install -m 644 deploy/protocol47-admin.service /etc/systemd/system/
+umask 077; head -c 18 /dev/urandom | base64 | tr -d "/+=" | head -c 20 > /root/protocol47-admin-password
+echo "Environment=PROTOCOL47_ADMIN_HASH=$(caddy hash-password --plaintext "$(cat /root/protocol47-admin-password)")" \
+  >> /etc/systemd/system/caddy.service.d/protocol47.conf
+systemctl daemon-reload && systemctl restart caddy && systemctl enable --now protocol47-admin
+```
+
+Tests: `cd deploy/admin && python3 -m unittest test_protocol47_admin`.
