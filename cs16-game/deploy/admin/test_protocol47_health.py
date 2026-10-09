@@ -18,7 +18,7 @@ def entry(seconds, message, source="protocol47-server.x86_64", cursor=None):
 
 # Taken from the Oct 9 production crash and its debug-build diagnosis.
 JOURNAL = [
-    entry(NOW, "Started protocol47.service - Protocol 47 dedicated Dust2 server.", "systemd"),
+    entry(NOW, "Started protocol47.service - Classic FPS dedicated Dust2 server.", "systemd"),
     entry(NOW + 1, "SCRIPT ERROR: Trying to cast a freed object."),
     entry(NOW + 1, "          at: BotCombatController._advance_tactics_from_perception (res://scripts/bot_controller.gd:237)"),
     entry(NOW + 1, "          GDScript backtrace (most recent call first):"),
@@ -28,12 +28,12 @@ JOURNAL = [
     entry(NOW + 2, "          at: BotCombatController._advance_tactics_from_perception (res://scripts/bot_controller.gd:237)"),
     entry(NOW + 3, 'ERROR: Condition "ready_state != STATE_OPEN" is true. Returning: FAILED'),
     entry(NOW + 3, "   at: _send (modules/websocket/wsl_peer.cpp:788)"),
-    entry(NOW + 4, "Protocol 47 dedicated server listening on UDP 27447"),
+    entry(NOW + 4, "Classic FPS dedicated server listening on UDP 27447"),
     entry(NOW + 5, "protocol47.service: Main process exited, code=dumped, status=11/SEGV", "systemd"),
     entry(NOW + 5, "protocol47.service: Failed with result 'core-dump'.", "systemd"),
     entry(NOW + 8, "protocol47.service: Scheduled restart job, restart counter is at 1.", "systemd"),
-    entry(NOW + 8.5, "Stopping protocol47.service - Protocol 47 dedicated Dust2 server...", "systemd"),
-    entry(NOW + 8.6, "Stopped protocol47.service - Protocol 47 dedicated Dust2 server.", "systemd"),
+    entry(NOW + 8.5, "Stopping protocol47.service - Classic FPS dedicated Dust2 server...", "systemd"),
+    entry(NOW + 8.6, "Stopped protocol47.service - Classic FPS dedicated Dust2 server.", "systemd"),
     {"__REALTIME_TIMESTAMP": str(int((NOW + 9) * 1_000_000)), "MESSAGE": list(b"SCRIPT ERROR: bytes \xff message"),
      "SYSLOG_IDENTIFIER": "protocol47-server.x86_64", "__CURSOR": "last"},
 ]

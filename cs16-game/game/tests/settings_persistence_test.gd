@@ -22,7 +22,8 @@ func _run() -> void:
 		quit(1)
 		return
 	if "--write" in OS.get_cmdline_user_args():
-		_check(not FileAccess.file_exists(expected_path), "fresh profile has no file")
+		# A fresh profile is saved at once so its generated client tag stays stable.
+		_check(settings.is_valid_client_tag(settings.client_tag), "fresh profile generates a client tag")
 		_check(settings.player_name == "Player", "fresh profile uses the default player name")
 		_check(is_equal_approx(settings.mouse_sensitivity, 0.10) and not settings.invert_y,
 			"fresh profile uses default input settings")

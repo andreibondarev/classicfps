@@ -332,7 +332,7 @@ func _run() -> void:
 		{"name": "HLTV", "team": 0, "score": 0, "deaths": 0, "latency": 12, "alive": true},
 	]
 	hud.set_buy_menu_visible(false)
-	hud.show_scoreboard(players, "Protocol 47 Test", "de_dust2", 4, 3)
+	hud.show_scoreboard(players, "Classic FPS Test", "de_dust2", 4, 3)
 	_check(hud.scoreboard_overlay.visible, "TAB scoreboard API controls visibility")
 	_check(
 		hud.scoreboard_rows.get_node_or_null("Player_Alpha") != null,
@@ -377,7 +377,7 @@ func _run() -> void:
 	players[0]["voice_active"] = true
 	players[0]["alive"] = false
 	players[1]["voice_muted"] = true
-	hud.update_scoreboard(players, "Protocol 47 Test", "de_dust2", 4, 3)
+	hud.update_scoreboard(players, "Classic FPS Test", "de_dust2", 4, 3)
 	_check(hud.scoreboard_rows.get_node("Player_Alpha").get_meta("is_local"),
 		"local highlight survives death and scoreboard rebuild")
 	var active_voice := hud.scoreboard_rows.get_node("Player_Alpha").find_child(
@@ -420,7 +420,7 @@ func _run() -> void:
 			"deaths": 31 - index,
 			"latency": 20 + index,
 		})
-	hud.update_scoreboard(full_server, "Protocol 47 Test", "de_dust2", 4, 3)
+	hud.update_scoreboard(full_server, "Classic FPS Test", "de_dust2", 4, 3)
 	var full_row_count := 0
 	for child in hud.scoreboard_rows.get_children():
 		if child.name.begins_with("Player_Full"):
@@ -437,14 +437,14 @@ func _run() -> void:
 	var scroll := hud.scoreboard_rows.get_parent() as ScrollContainer
 	scroll.scroll_vertical = 200
 	var old_scroll := scroll.scroll_vertical
-	hud.update_scoreboard(full_server, "Protocol 47 Test", "de_dust2", 4, 3)
+	hud.update_scoreboard(full_server, "Classic FPS Test", "de_dust2", 4, 3)
 	await process_frame
 	await process_frame
 	_check(scroll.scroll_vertical == old_scroll and old_scroll > 0, "live refresh preserves scoreboard scroll position")
 	var server_label := hud.scoreboard_canvas.get_node(
 		"ClientScoreBoard/ScoreboardContent/ColumnHeader/ServerName"
 	) as Label
-	_check(server_label.text == "Protocol 47 Test  |  de_dust2", "scoreboard API updates server/map")
+	_check(server_label.text == "Classic FPS Test  |  de_dust2", "scoreboard API updates server/map")
 
 	hud.set_paused_visible(true)
 	_check(hud.pause_main_menu.visible, "ESC opens the classic game menu list")
@@ -634,8 +634,8 @@ func _run() -> void:
 			tree_text += (node as Label).text
 		elif node is Button:
 			tree_text += (node as Button).text
-	tree_text = tree_text.replace("PROTOCOL 47 ACCESSIBILITY EXTENSION", "")
-	_check(not tree_text.contains("PROTOCOL 47"), "normal parity UI flows contain no project-brand card")
+	tree_text = tree_text.replace("CLASSIC FPS ACCESSIBILITY EXTENSION", "")
+	_check(not tree_text.contains("CLASSIC FPS"), "normal parity UI flows contain no project-brand card")
 	_check(not tree_text.contains("TACTICAL TRAINING"), "modern deploy copy is removed")
 	_check(not tree_text.contains("PAUSED"), "modern centered pause title is removed")
 	var capture_source := FileAccess.get_file_as_string(

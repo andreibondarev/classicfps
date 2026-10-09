@@ -1,4 +1,4 @@
-"""HTML pages for the Protocol 47 admin dashboard (no external assets).
+"""HTML pages for the Classic FPS admin dashboard (no external assets).
 
 Tabs: Overview (status, live match, key charts, latest sessions), Players,
 Sessions, Health (uptime, crashes, charts, events, errors), plus a player
@@ -202,9 +202,9 @@ def page(active, title, body, store, refresh=False):
                  if health["crashes_24h"] else ""))
     tabs = "".join(f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>' for key, label, href in TABS)
     meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{esc(title)} · Protocol 47 admin</title>'
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{esc(title)} · Classic FPS admin</title>'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">{meta}<style>{STYLE}</style></head><body>'
-            f'<header><div class="bar"><div class="brand">Protocol 47 <span>admin</span></div>'
+            f'<header><div class="bar"><div class="brand">Classic FPS <span>admin</span></div>'
             f'<div class="status">{status}</div></div><nav>{tabs}</nav></header>'
             f'<main>{body}</main><footer>Updated {when(time.time())}{" · refreshes every 15 s" if refresh else ""} · '
             f'IP geolocation by <a href="https://db-ip.com">DB-IP</a> (CC BY 4.0), approximate.</footer>'

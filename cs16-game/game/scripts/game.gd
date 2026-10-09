@@ -5739,7 +5739,7 @@ func _update_scoreboard() -> void:
 		rows.append(row)
 	hud.update_scoreboard(
 		rows,
-		"Protocol 47",
+		"Classic FPS",
 		map_name if using_imported_map else "training",
 		ct_score,
 		terrorist_score,

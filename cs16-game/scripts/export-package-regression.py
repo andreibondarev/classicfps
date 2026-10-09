@@ -92,8 +92,8 @@ def main() -> int:
         temp_dir = Path(temp_name)
         with zipfile.ZipFile(archive) as package:
             names = set(package.namelist())
-            executable_name = "Protocol 47.app/Contents/MacOS/Protocol 47"
-            pck_name = "Protocol 47.app/Contents/Resources/Protocol 47.pck"
+            executable_name = "Classic FPS.app/Contents/MacOS/Classic FPS"
+            pck_name = "Classic FPS.app/Contents/Resources/Classic FPS.pck"
             missing = sorted({executable_name, pck_name} - names)
             if missing:
                 print(f"incomplete export archive; missing: {', '.join(missing)}", file=sys.stderr)

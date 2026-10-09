@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protocol 47 admin service.
+"""Classic FPS admin service.
 
 Ingests the dedicated server's admin log (events.jsonl + status.json, written
 by game/scripts/admin_log.gd) and Caddy's JSON access log into SQLite, and

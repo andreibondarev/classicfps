@@ -76,7 +76,7 @@ func _run() -> void:
 	hud.update_scoreboard([
 		{"id": "player", "name": "Duplicate", "team": 1, "is_local": true},
 		{"id": "remote_human_1", "name": "Duplicate", "team": 1, "is_local": false},
-	], "Protocol 47", "de_dust2", 0, 0)
+	], "Classic FPS", "de_dust2", 0, 0)
 	_check(hud.scoreboard_rows.get_node("Player_player").get_meta("is_local") and not hud.scoreboard_rows.get_node("Player_remote_human_1").get_meta("is_local"), "duplicate display names keep separate rows and local identity")
 	game.queue_free()
 	await process_frame

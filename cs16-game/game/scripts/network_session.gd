@@ -194,7 +194,7 @@ func _start_from_command_line() -> void:
 		if dedicated_server:
 			if result == OK:
 				var web_socket := (", WebSocket %d" % listen_web_socket_port) if listen_web_socket_port > 0 else ""
-				print("Protocol 47 dedicated server listening on UDP %d%s (de_dust2, 10 slots)" % [listen_port, web_socket])
+				print("Classic FPS dedicated server listening on UDP %d%s (de_dust2, 10 slots)" % [listen_port, web_socket])
 			else:
 				push_error("Dedicated server could not bind UDP %d / WebSocket %d: %s" % [listen_port, listen_web_socket_port, error_string(result)])
 				get_tree().quit(1)

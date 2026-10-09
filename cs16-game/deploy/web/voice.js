@@ -1,4 +1,4 @@
-// Protocol 47 browser voice: push-to-talk capture, Opus encode/decode via
+// Classic FPS browser voice: push-to-talk capture, Opus encode/decode via
 // WebCodecs, and per-speaker playback. The game (Godot, through
 // JavaScriptBridge) moves frames over its own WebSocket; the host decides who
 // hears whom. Frames cross the bridge as base64 strings.

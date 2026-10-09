@@ -1,4 +1,4 @@
-"""Server health for the Protocol 47 admin dashboard (standard library only).
+"""Server health for the Classic FPS admin dashboard (standard library only).
 
 - parse_game_journal(): turns the game service's journal (journalctl -o json)
   into lifecycle events (start/stop/crash/restart) and grouped script/engine

@@ -1,5 +1,5 @@
 [Unit]
-Description=Protocol 47 admin dashboard (read-only, behind Caddy at /admin)
+Description=Classic FPS admin dashboard (read-only, behind Caddy at /admin)
 After=network-online.target protocol47.service
 Wants=network-online.target
 

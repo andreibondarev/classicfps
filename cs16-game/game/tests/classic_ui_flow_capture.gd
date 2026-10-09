@@ -149,7 +149,7 @@ func _configure_state(state: String) -> void:
 		"scoreboard_reference":
 			var players := _scoreboard_fixture(16)
 			players.append({"id": "observer", "name": "Observer", "team": 0, "score": 0, "deaths": 0, "latency": 12})
-			hud.show_scoreboard(players, "Protocol 47 | Dust2", "de_dust2", 2, 5)
+			hud.show_scoreboard(players, "Classic FPS | Dust2", "de_dust2", 2, 5)
 		"scoreboard_1":
 			hud.show_scoreboard(_scoreboard_fixture(1), "Counter-Strike 1.6", "de_dust2", 1, 0)
 		"scoreboard_10":

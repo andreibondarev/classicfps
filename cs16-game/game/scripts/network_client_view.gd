@@ -828,7 +828,7 @@ func update_scoreboard() -> void:
 			# or the owner's replicated inventory. Do not infer other inventories.
 			"bomb": row.get("weapon", "") == "c4" or (row.id == owner_id and game.player.owns_weapon("c4")),
 			"score": row.kills, "deaths": row.deaths, "alive": row.alive, "latency": 0})
-	game.hud.update_scoreboard(rows, "Protocol 47", game.map_name, game.ct_score, game.terrorist_score)
+	game.hud.update_scoreboard(rows, "Classic FPS", game.map_name, game.ct_score, game.terrorist_score)
 
 
 func spectate_teammates() -> Array[Combatant]:

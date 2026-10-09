@@ -1,6 +1,6 @@
-# Protocol 47
+# Classic FPS
 
-Protocol 47 is the playable native game built alongside the CS 1.6 replay
+Classic FPS is the playable native game built alongside the CS 1.6 replay
 viewer. Godot owns the client, classic 100 Hz simulation, UI, audio, and rendering. The
 shared Rust crate (`../shared/goldsrc-crate`) converts GoldSrc BSP, WAD and MDL
 data into portable game content, reading the source assets from
@@ -741,7 +741,7 @@ joins the server's public IPv4 address through **Play Online → Join**. The
 host firewall must allow inbound UDP 27447; TCP 27447 is not used.
 
 The universal Apple Silicon/Intel release is written to
-`game/builds/Protocol47.zip`. The build command also extracts that archive,
+`game/builds/ClassicFPS.zip`. The build command also extracts that archive,
 launches the packaged main scene headlessly with the Dummy audio driver, and
 rejects missing release-only resources, script/load errors, generic engine
 errors, failure markers and leak warnings. Six offline checks for this guard

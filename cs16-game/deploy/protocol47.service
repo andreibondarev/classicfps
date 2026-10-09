@@ -1,5 +1,5 @@
 [Unit]
-Description=Protocol 47 dedicated Dust2 server
+Description=Classic FPS dedicated Dust2 server
 Wants=network-online.target
 After=network-online.target
 

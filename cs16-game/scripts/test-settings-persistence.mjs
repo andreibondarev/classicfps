@@ -8,7 +8,7 @@ const directory = mkdtempSync(join(tmpdir(), "protocol47-settings-"));
 const path = join(directory, "protocol47.cfg");
 // The macOS release check must not modify the installed player's profile.
 const normalPath = process.platform === "darwin"
-  ? join(homedir(), "Library/Application Support/Godot/app_userdata/Protocol 47/protocol47.cfg") : null;
+  ? join(homedir(), "Library/Application Support/Godot/app_userdata/Classic FPS/protocol47.cfg") : null;
 const normalBefore = normalPath && existsSync(normalPath) ? readFileSync(normalPath) : null;
 const args = ["--headless", "--audio-driver", "Dummy", "--path", resolve("game"),
   "--script", "res://tests/settings_persistence_test.gd"];

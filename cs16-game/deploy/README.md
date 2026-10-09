@@ -1,4 +1,4 @@
-# Protocol 47 dedicated server
+# Classic FPS dedicated server
 
 The production service runs the Dust2-only Linux export as the unprivileged
 `protocol47` user. Desktop clients connect on UDP 27447. Browser clients cannot

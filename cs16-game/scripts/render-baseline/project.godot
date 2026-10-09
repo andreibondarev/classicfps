@@ -2,7 +2,7 @@
 config_version=5
 
 [application]
-config/name="Protocol 47 render environment diagnostic"
+config/name="Classic FPS render environment diagnostic"
 
 [display]
 window/size/viewport_width=1280
