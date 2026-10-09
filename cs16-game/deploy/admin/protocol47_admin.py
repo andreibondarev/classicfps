@@ -520,192 +520,10 @@ class Store:
         return {**dict(row), "rounds": rounds, "matches": matches}
 
 
-# -- HTML ----------------------------------------------------------------
-def esc(value):
-    return html.escape("" if value is None else str(value))
-
-
-def when(ts):
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else ""
-
-
-def duration(seconds):
-    seconds = int(seconds or 0)
-    return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m" if seconds >= 3600 else f"{seconds // 60}m {seconds % 60:02d}s"
-
-
-def kd(kills, deaths):
-    return f"{kills or 0}/{deaths or 0}"
-
-
-def short_tag(tag):
-    return f'<a href="player?tag={esc(tag)}"><code>{esc(tag[:8])}</code></a>' if tag else "&mdash;"
-
-
-def address(session):
-    value = session.get("address") or ""
-    if session.get("transport") == "ws" and value in LOCAL_ADDRESSES:
-        return '<span class="dim">after disconnect</span>' if not session.get("left") else '<span class="dim">unmatched</span>'
-    return esc(value) + place(session.get("location"))
-
-
-def place(label):
-    return f'<br><span class="dim">{esc(label)}</span>' if label else ""
-
-
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Protocol 47 admin</title>
-<meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15">
-<style>
-footer {{ margin-top: 32px; font-size: 12px; color: #7d786e; }}
-.ok {{ color: #7fd18b; }} .bad {{ color: #ff7a6b; font-weight: 600; }}
-.charts {{ display: flex; flex-wrap: wrap; gap: 18px; }} .chart {{ font-size: 12px; }}
-pre {{ font-size: 11px; white-space: pre-wrap; color: #c8c2b6; margin: 6px 0; }} summary {{ cursor: pointer; }}
-body {{ font: 14px/1.45 system-ui, sans-serif; margin: 24px; background: #15171a; color: #e6e1d6; }}
-h1 {{ font-size: 20px; margin: 0 0 4px; }} h2 {{ font-size: 16px; margin: 28px 0 8px; color: #f0b54a; }}
-table {{ border-collapse: collapse; width: 100%; }} th, td {{ text-align: left; padding: 5px 10px; border-bottom: 1px solid #2c3036; }}
-th {{ color: #a8a296; font-weight: 600; }} code {{ color: #9fd3ff; }} a {{ color: #9fd3ff; }}
-.dim {{ color: #7d786e; }} .T {{ color: #ff8f70; }} .CT {{ color: #8fb6ff; }} .tiles span {{ margin-right: 22px; }}
-</style></head><body><h1>Protocol 47 admin</h1><div class="dim">{subtitle}</div>{body}
-<footer>IP geolocation by <a href="https://db-ip.com">DB-IP</a> (CC BY 4.0); approximate, city level.</footer></body></html>"""
-
-
-def number(value, digits=0, suffix=""):
-    return "&mdash;" if value is None else f"{value:.{digits}f}{suffix}"
-
-
-def sparkline(values, color, label, unit="", digits=0, floor=None):
-    """Inline SVG line chart for the last 24 h (one value per 5 minutes)."""
-    width, height = 240, 48
-    points = [v for v in values if v is not None]
-    if not points:
-        return f'<div class="chart"><div class="dim">{esc(label)}: no data yet</div></div>'
-    low = min(points) if floor is None else min(floor, min(points))
-    high = max(points)
-    span = (high - low) or 1.0
-    step = width / max(1, len(values) - 1)
-    path, pen = [], "M"
-    for index, value in enumerate(values):
-        if value is None:
-            pen = "M"
-            continue
-        y = height - 2 - (value - low) / span * (height - 4)
-        path.append(f"{pen}{index * step:.1f},{y:.1f}")
-        pen = "L"
-    current = points[-1]
-    if len(points) == 1:  # a lone bucket draws no line; show it as a dot
-        index = next(i for i, v in enumerate(values) if v is not None)
-        y = height - 2 - (points[0] - low) / span * (height - 4)
-        path.append(f"M{index * step:.1f},{y:.1f} l0.1,0")
-    return (f'<div class="chart"><div>{esc(label)} <b>{number(current, digits, unit)}</b> '
-            f'<span class="dim">max {number(high, digits, unit)}</span></div>'
-            f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
-            f'<path d="{" ".join(path)}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/></svg></div>')
-
-
-def render_health(store):
-    data = store.health()
-    state, latest = data["state"], data["latest"]
-    active = state.get("ActiveState") == "active"
-    status = (f'<span class="{"ok" if active else "bad"}">{esc(state.get("ActiveState") or "unknown")}</span>'
-              f' &middot; up {duration(data["uptime"]) if data["uptime"] is not None else "&mdash;"}'
-              f' &middot; restarts {state.get("NRestarts", 0)}'
-              f' &middot; <span class="{"bad" if data["crashes_24h"] else ""}">crashes 24h: {data["crashes_24h"]}</span>'
-              f' &middot; 7d: {data["crashes_7d"]}')
-    tick = latest.get("tick_rate")
-    target = latest.get("target_tick_rate") or 100
-    tiles = (f'<p class="tiles">'
-             f'<span>Tick rate <b class="{"bad" if tick is not None and tick < 0.95 * target else ""}">{number(tick, 1)}</b>/{number(target)}</span>'
-             f'<span>Physics <b>{number(latest.get("physics_ms"), 2, " ms")}</b> of {number(1000 / target, 0, " ms")}</span>'
-             f'<span>CPU <b>{number(latest.get("cpu_pct"), 0, "%")}</b></span>'
-             f'<span>Memory <b>{number(latest.get("rss_mb"), 0, " MB")}</b></span>'
-             f'<span>Load <b>{number(latest.get("load1"), 2)}</b></span>'
-             f'<span>Droplet RAM <b>{number(latest.get("mem_used_pct"), 0, "%")}</b></span>'
-             f'<span>Disk <b>{number(latest.get("disk_used_pct"), 0, "%")}</b></span>'
-             f'<span>Net <b>{number(latest.get("net_in_kbps"), 0)}</b> in / <b>{number(latest.get("net_out_kbps"), 0)}</b> out kbit/s</span></p>')
-    series = data["series"]
-    column = lambda key: [row[key] for row in series]  # noqa: E731
-    charts = ('<div class="charts">'
-              + sparkline(column("players"), "#f0b54a", "Players", floor=0)
-              + sparkline(column("tick_rate"), "#7fd18b", "Tick rate", digits=1)
-              + sparkline(column("physics_ms"), "#ff8f70", "Physics (max)", " ms", 2, floor=0)
-              + sparkline(column("cpu_pct"), "#9fd3ff", "CPU", "%", floor=0)
-              + sparkline(column("rss_mb"), "#c9a0ff", "Memory", " MB")
-              + sparkline(column("net_out_kbps"), "#8fb6ff", "Net out", " kbit/s", floor=0)
-              + '</div><p class="dim">Last 24 hours, 5-minute buckets.</p>')
-    events = "".join(
-        f'<tr><td>{when(e["ts"])}</td><td class="{"bad" if e["kind"] == "crash" else ""}">{esc(e["kind"])}</td>'
-        f'<td class="dim">{esc(e["detail"])}</td></tr>' for e in data["events"])
-    errors = "".join(
-        f'<tr><td>{esc(e["kind"])}</td><td>{e["count"]}</td><td>{when(e["last_seen"])}</td>'
-        f'<td><details><summary>{esc(e["message"][:140])}</summary><div class="dim">{esc(e["location"])}</div>'
-        f'<pre>{esc(e["backtrace"])}</pre></details></td></tr>' for e in data["errors"])
-    return (f'<h2>Server health</h2><p>{status}</p>{tiles}{charts}'
-            '<h2>Server events</h2><table><tr><th>When</th><th>Event</th><th>Detail</th></tr>'
-            f'{events or "<tr><td colspan=3 class=dim>None recorded</td></tr>"}</table>'
-            '<h2>Errors</h2><table><tr><th>Kind</th><th>Count</th><th>Last seen</th><th>Message</th></tr>'
-            f'{errors or "<tr><td colspan=4 class=dim>No errors logged</td></tr>"}</table>')
-
-
-def quality(player):
-    rtt = player.get("rtt_ms")
-    loss = player.get("loss")
-    rtt_text = "&mdash;" if rtt is None or rtt < 0 else f'<span class="{"bad" if rtt > 150 else ""}">{rtt:.0f} ms</span>'
-    loss_text = "n/a" if loss is None or loss < 0 else f"{loss * 100:.1f}%"
-    return (f'<td>{rtt_text}</td><td>{loss_text}</td>'
-            f'<td>{number(player.get("kbps_in"), 0)} / {number(player.get("kbps_out"), 0)}</td>'
-            f'<td class="{"bad" if player.get("reconnects_1h", 0) >= 3 else ""}">{player.get("reconnects_1h", 0)}</td>')
-
-
-def render_dashboard(store):
-    live = store.live()
-    totals = store.totals()
-    body = [render_health(store), '<p class="tiles">'
-            f'<span>Players seen: <b>{totals["players"] or 0}</b></span>'
-            f'<span>Sessions: <b>{totals["sessions"] or 0}</b></span>'
-            f'<span>Play time: <b>{duration(totals["seconds"])}</b></span>'
-            f'<span>Rounds: <b>{totals["rounds"]}</b></span><span>Matches: <b>{totals["matches"]}</b></span></p>']
-    if live.get("online"):
-        body.append(f'<h2>Live &middot; {esc(live.get("map"))} &middot; round {esc(live.get("round"))} '
-                    f'({esc(live.get("phase"))}) &middot; <span class="T">T {esc(live.get("t_score"))}</span> : '
-                    f'<span class="CT">{esc(live.get("ct_score"))} CT</span> &middot; {esc(live.get("bots"))} bots</h2>')
-        rows = "".join(
-            f'<tr><td>{esc(p.get("name"))}</td><td class="{esc(p.get("team"))}">{esc(p.get("team"))}</td>'
-            f'<td>{"alive" if p.get("alive") else "dead"}</td><td>{kd(p.get("kills"), p.get("deaths"))}</td>'
-            f'<td>{esc(p.get("transport"))}</td><td>{address(p)}</td>{quality(p)}'
-            f'<td>{duration(time.time() - float(p.get("connected") or time.time()))}</td><td>{short_tag(p.get("tag", ""))}</td></tr>'
-            for p in live.get("players", []))
-        body.append('<table><tr><th>Name</th><th>Team</th><th>State</th><th>K/D</th><th>Via</th><th>Address</th>'
-                    '<th>Ping</th><th>Loss</th><th>kbit/s in / out</th><th>Reconnects 1h</th>'
-                    f'<th>Online</th><th>Player</th></tr>{rows or "<tr><td colspan=12 class=dim>No humans online</td></tr>"}</table>')
-    else:
-        body.append('<h2>Live</h2><p class="dim">Game server status is not updating.</p>')
-    body.append(render_sessions(store.sessions(60), "Recent sessions"))
-    players = store.players()
-    rows = "".join(
-        f'<tr><td>{short_tag(p["tag"])}</td><td>{esc(", ".join(p["names"][:4]))}</td><td>{p["sessions"]}</td>'
-        f'<td>{duration(p["seconds"])}</td><td>{kd(p["kills"], p["deaths"])}</td><td>{esc(p["last_address"])}{place(p.get("location"))}</td>'
-        f'<td>{when(p["last_seen"])}</td></tr>' for p in players)
-    body.append('<h2>Players</h2><table><tr><th>Player</th><th>Names</th><th>Sessions</th><th>Time</th><th>K/D</th>'
-                f'<th>Last address</th><th>Last seen</th></tr>{rows}</table>')
-    return PAGE.format(subtitle=f"Updated {when(time.time())} &middot; refreshes every 15s", body="".join(body))
-
-
-def render_sessions(sessions, title):
-    rows = "".join(
-        f'<tr><td>{when(s["connected"])}</td><td>{esc(s["name"])}</td><td class="{esc(s["team"])}">{esc(s["team"] or "")}</td>'
-        f'<td>{duration(s["seconds"]) if s["left"] else "online"}</td><td>{kd(s["kills"], s["deaths"])}</td>'
-        f'<td>{esc(s["transport"])}</td><td>{address(s)}</td><td>{short_tag(s["tag"] or "")}</td>'
-        f'<td class="dim">{esc((s["user_agent"] or "")[:60])}</td></tr>' for s in sessions)
-    return (f'<h2>{esc(title)}</h2><table><tr><th>Joined</th><th>Name</th><th>Team</th><th>Length</th><th>K/D</th>'
-            f'<th>Via</th><th>Address</th><th>Player</th><th>Browser</th></tr>{rows}</table>')
-
-
-def render_player(store, tag):
-    sessions = store.sessions(500, tag=tag)
-    names = sorted({s["name"] for s in sessions if s["name"]})
-    body = (f'<p><a href="./">&larr; Dashboard</a></p><h2>Player <code>{esc(tag)}</code></h2>'
-            f'<p>Names: {esc(", ".join(names)) or "&mdash;"}</p>' + render_sessions(sessions, "Sessions"))
-    return PAGE.format(subtitle="", body=body)
+# -- HTML lives in protocol47_pages.py ------------------------------------
+from protocol47_pages import (  # noqa: E402
+    render_dashboard, render_health, render_overview, render_player, render_players, render_sessions, sparkline,
+)
 
 
 def make_handler(store):
@@ -724,8 +542,10 @@ def make_handler(store):
             url = urlparse(self.path)
             query = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
-            if path == "/":
-                self._send(200, render_dashboard(store), "text/html; charset=utf-8")
+            pages = {"/": render_overview, "/players": render_players, "/sessions": render_sessions,
+                     "/health": render_health}
+            if path in pages:
+                self._send(200, pages[path](store), "text/html; charset=utf-8")
             elif path == "/player":
                 self._send(200, render_player(store, (query.get("tag") or [""])[0]), "text/html; charset=utf-8")
             elif path == "/api/live":

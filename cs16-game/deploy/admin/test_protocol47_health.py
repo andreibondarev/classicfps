@@ -110,11 +110,14 @@ class HealthDashboardTest(unittest.TestCase):
         self.assertEqual(freed["count"], 2)
         self.assertEqual(data["latest"]["tick_rate"], 99.7)
         self.assertEqual(data["uptime"], 3725.0)
-        page = admin.render_dashboard(store)
-        self.assertIn("Server health", page)
+        page = admin.render_health(store)
+        self.assertIn('class="active">Health', page, "the Health tab is selected")
         self.assertIn("Trying to cast a freed object", page)
         self.assertIn("up 1h 02m", page)
         self.assertIn("99.7", page)
+        overview = admin.render_overview(store)
+        self.assertIn("Live match", overview)
+        self.assertIn("Server online", overview)
 
 
 if __name__ == "__main__":

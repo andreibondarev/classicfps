@@ -94,6 +94,9 @@ class AdminStoreTest(unittest.TestCase):
             self.assertIn("Alice", page)
             player = urllib.request.urlopen(base + "/player?tag=" + "a" * 32).read().decode()
             self.assertIn("Alice", player)
+            for tab in ("players", "sessions", "health"):
+                html_page = urllib.request.urlopen(f"{base}/{tab}").read().decode()
+                self.assertIn(f'href="{tab}" class="active"', html_page, f"{tab} tab renders and is selected")
             live = json.loads(urllib.request.urlopen(base + "/api/live").read())
             self.assertTrue(live["online"])
             self.assertEqual(len(json.loads(urllib.request.urlopen(base + "/api/sessions").read())), 2)
