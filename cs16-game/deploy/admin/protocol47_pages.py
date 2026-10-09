@@ -274,7 +274,7 @@ def charts(series, keys):
     specs = {
         "players": ("#f0b54a", "Players online", "", 0, 0),
         "tick_rate": ("#6fd58a", "Tick rate", "", 1, None),
-        "physics_ms": ("#ff8a68", "Physics time (max)", " ms", 1, 0),
+        "physics_ms": ("#ff8a68", "Slowest tick", " ms", 1, 0),
         "cpu_pct": ("#9fd3ff", "Game CPU (one core)", "%", 0, 0),
         "rss_mb": ("#c9a0ff", "Game memory", " MB", 0, None),
         "net_out_kbps": ("#7fb0ff", "Droplet upload", " kbit/s", 0, 0),
@@ -338,9 +338,13 @@ def render_health(store):
              + tile("Uptime", duration(health["uptime"]), f'restarts {state.get("NRestarts", 0)}')
              + tile("Crashes", health["crashes_24h"], f'{health["crashes_7d"]} in 7 days', "bad" if health["crashes_24h"] else "")
              + tile("Tick rate", number(tick, 1), f"target {number(target)} / s", "bad" if tick is not None and tick < 0.95 * target else "")
-             + tile("Physics", number(latest.get("physics_ms"), 1, " ms"), f"budget {number(1000 / target, 0, ' ms')} per tick",
-                    "bad" if (latest.get("physics_ms") or 0) > 1000 / target else "")
-             + tile("Game CPU", number(latest.get("cpu_pct"), 0, "%"), "of one core")
+             # Godot reports the slowest physics frame of each second, not an average;
+             # the game's load shows in Game CPU, and lost ticks in Tick rate.
+             + tile("Slowest tick", number(latest.get("physics_ms"), 1, " ms"),
+                    f"worst each second · budget {number(1000 / target, 0, ' ms')}",
+                    "bad" if (latest.get("physics_ms") or 0) > 3000 / target else "")
+             + tile("Game CPU", number(latest.get("cpu_pct"), 0, "%"), "of one core; the game loop uses one",
+                    "bad" if (latest.get("cpu_pct") or 0) > 85 else "")
              + tile("Game memory", number(latest.get("rss_mb"), 0, " MB"), "resident")
              + tile("Droplet", f'{number(latest.get("load1"), 2)}', f'load · RAM {number(latest.get("mem_used_pct"), 0, "%")} · disk {number(latest.get("disk_used_pct"), 0, "%")}')
              + tile("Network", number(latest.get("net_out_kbps"), 0), f'kbit/s out · {number(latest.get("net_in_kbps"), 0)} in')

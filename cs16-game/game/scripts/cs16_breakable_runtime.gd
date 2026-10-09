@@ -211,6 +211,19 @@ func has_entity(entity_id: int) -> bool:
 	return _breakables.has(entity_id)
 
 
+## Alive breakables' entity ids and model indices in ascending entity order,
+## without copying their records (the touch scan runs this every tick).
+func alive_models() -> Array[Vector2i]:
+	var ids := _breakables.keys()
+	ids.sort()
+	var result: Array[Vector2i] = []
+	for entity_id: int in ids:
+		var record: Dictionary = _breakables[entity_id]
+		if bool(record.get("alive", false)):
+			result.append(Vector2i(entity_id, int(record.model_index)))
+	return result
+
+
 func get_breakable(entity_id: int) -> Dictionary:
 	if not _breakables.has(entity_id):
 		return {}

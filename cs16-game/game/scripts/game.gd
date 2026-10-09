@@ -1409,23 +1409,24 @@ func _queue_brush_touches() -> void:
 func _process_breakable_touches() -> void:
 	if breakable_runtime == null:
 		return
-	for entity_id in entity_world.entity_count():
-		if not breakable_runtime.has_entity(entity_id):
-			continue
-		var record := breakable_runtime.get_breakable(entity_id)
-		if not bool(record.get("alive", false)):
-			continue
-		var bounds := _model_world_aabb(int(record.model_index))
-		for actor: Combatant in _live_combatants_stable():
-			var actor_size := (
-				_human_hull_size(actor as PlayerController)
-				if actor is PlayerController
-				else TargetActor.STANDING_HULL_SIZE
-			)
-			var actor_bounds := _feet_hull_aabb(
-				actor.global_position,
-				actor_size,
-			)
+	# Gather the actors and their hulls once per tick, not once per breakable.
+	var actors := _live_combatants_stable()
+	var actor_hulls: Array[AABB] = []
+	for actor: Combatant in actors:
+		var actor_size := (
+			_human_hull_size(actor as PlayerController)
+			if actor is PlayerController
+			else TargetActor.STANDING_HULL_SIZE
+		)
+		actor_hulls.append(_feet_hull_aabb(actor.global_position, actor_size))
+	for breakable: Vector2i in breakable_runtime.alive_models():
+		var entity_id := breakable.x
+		var bounds := _model_world_aabb(breakable.y)
+		for actor_index in actors.size():
+			var actor: Combatant = actors[actor_index]
+			if not is_instance_valid(actor) or not actor.alive:
+				continue  # a break earlier this tick can kill (explosive breakables)
+			var actor_bounds := actor_hulls[actor_index]
 			if not _aabb_touches(actor_bounds, bounds):
 				continue
 			var standing_on_top := (
