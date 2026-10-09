@@ -174,7 +174,7 @@ func gather_command(delta: float) -> Dictionary:
 	)
 	command = _apply_tactics_clock(command, tactics_output)
 	command = _apply_grenade_intent(command, tactics_output)
-	current_enemy = perception_output.get("target") as Combatant
+	current_enemy = _live_combatant(perception_output.get("target"))
 	if not is_instance_valid(current_enemy):
 		objective = _apply_plant_patience(objective, false)
 		if not objective.is_empty():
@@ -227,6 +227,13 @@ func gather_command(delta: float) -> Dictionary:
 	return _apply_unwedge(command, delta)
 
 
+## Perception samples can outlive the actors they name (a disconnecting
+## player is freed mid-round). Casting a freed object errors in debug builds and
+## crashes release servers, so check before casting.
+static func _live_combatant(value: Variant) -> Combatant:
+	return value as Combatant if is_instance_valid(value) else null
+
+
 func _advance_tactics_from_perception(samples: Array) -> Dictionary:
 	var fire_ticks: Array[int] = []
 	var fire_events: Array[Dictionary] = []
@@ -234,7 +241,7 @@ func _advance_tactics_from_perception(samples: Array) -> Dictionary:
 	var output: Dictionary = tactics.snapshot()
 	for raw_sample: Variant in samples:
 		var sample: Dictionary = raw_sample
-		var sample_target := sample.get("target") as Combatant
+		var sample_target := _live_combatant(sample.get("target"))
 		var sample_position: Vector3 = sample.get("position", Vector3.ZERO)
 		var distance_hu := (
 			actor.global_position.distance_to(sample_position)
@@ -1409,7 +1416,7 @@ func _perception_probe_visible(
 	probe: Vector3,
 	_tick: int,
 ) -> bool:
-	var target := candidate.get("target") as Combatant
+	var target := _live_combatant(candidate.get("target"))
 	if not is_instance_valid(target):
 		return false
 	var query := PhysicsRayQueryParameters3D.create(

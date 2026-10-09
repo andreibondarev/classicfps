@@ -334,6 +334,10 @@ func _build_network_roster() -> void:
 
 
 func _on_network_role_changed(_status: String) -> void:
+	# A dedicated server rebuilds its scene when the last player leaves; the old
+	# game may still hear this signal while it is outside the tree.
+	if not is_inside_tree():
+		return
 	var network := get_node("/root/NetworkSession")
 	if _pause_menu_open():
 		# Starting/joining while an offline menu is open must release the

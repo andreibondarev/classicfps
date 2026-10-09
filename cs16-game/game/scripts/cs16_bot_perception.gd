@@ -163,6 +163,15 @@ func snapshot() -> Dictionary:
 
 func _advance_tick(observer_origin: Vector3, observer_forward: Vector3) -> void:
 	tick += 1
+	# A tracked actor can be freed mid-round (a player disconnects). Forget it
+	# before anything reads the stale reference: release builds crash on it.
+	if not is_instance_valid(current_target):
+		if not current_target_id.is_empty() or visible:
+			_clear_target("target_freed")
+		else:
+			current_target = null
+	if not is_instance_valid(_damage_source):
+		_damage_source = null
 	if tick >= _next_scan_tick:
 		_next_scan_tick += SCAN_INTERVAL_TICKS
 		_scan(observer_origin, observer_forward)

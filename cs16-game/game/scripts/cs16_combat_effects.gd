@@ -1613,7 +1613,10 @@ func _update_lights() -> void:
 			float(tick - int(effect.start_tick))
 			/ float(int(effect.expire_tick) - int(effect.start_tick))
 		)
-		var owner := effect.get("owner") as Node3D
+		# The shooter may have been freed (disconnected) while the light fades;
+		# never cast a freed reference.
+		var owner_value: Variant = effect.get("owner")
+		var owner: Node3D = owner_value as Node3D if is_instance_valid(owner_value) else null
 		if is_instance_valid(owner):
 			light.global_position = owner.global_position
 		light.light_energy = float(effect.energy) * (1.0 - fraction)
