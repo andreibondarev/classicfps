@@ -63,7 +63,11 @@ input.search { width: 100%; max-width: 360px; background: var(--panel-2); color:
   border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font: inherit; }
 details summary { cursor: pointer; } pre { white-space: pre-wrap; font-size: 12px; color: #c8c2b6; margin: 8px 0 0; }
 footer { max-width: 1240px; margin: 0 auto; padding: 0 20px 30px; color: var(--muted); font-size: 12px; }
-@media (max-width: 700px) { .scoreboard { grid-template-columns: 1fr; } .status { margin-left: 0; } }
+@media (max-width: 700px) {
+  .scoreboard { grid-template-columns: 1fr; } .status { margin-left: 0; flex-wrap: wrap; }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .tile .value { font-size: 20px; } .card h2 { flex-wrap: wrap; } main { padding: 16px 14px 32px; }
+}
 """
 
 SEARCH_SCRIPT = """<script>

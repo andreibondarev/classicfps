@@ -443,10 +443,16 @@ class Store:
                 "select count(*) n from server_events where kind='crash' and ts >= ?", (now - seconds,)).fetchone()["n"]
             latest = self.db.execute("select * from perf order by ts desc limit 1").fetchone()
             # 24 h in 5-minute buckets, averaged (maxima for the stress metrics).
-            series = [dict(row) for row in self.db.execute(
+            rows = [dict(row) for row in self.db.execute(
                 "select cast(ts / 300 as integer) * 300 bucket, avg(players) players, avg(tick_rate) tick_rate, "
                 "max(physics_ms) physics_ms, avg(cpu_pct) cpu_pct, max(rss_mb) rss_mb, avg(net_in_kbps) net_in_kbps, "
                 "avg(net_out_kbps) net_out_kbps from perf where ts >= ? group by bucket order by bucket", (now - 86400,))]
+            # A fixed 24-hour axis: one slot per 5 minutes, None where nothing was sampled.
+            by_bucket = {row["bucket"]: row for row in rows}
+            last = int(now // 300) * 300
+            series = [by_bucket.get(bucket, {"bucket": bucket, "players": None, "tick_rate": None, "physics_ms": None,
+                                             "cpu_pct": None, "rss_mb": None, "net_in_kbps": None, "net_out_kbps": None})
+                      for bucket in range(last - 287 * 300, last + 300, 300)]
             events = [dict(row) for row in self.db.execute(
                 "select * from server_events order by ts desc limit 20")]
             errors = [dict(row) for row in self.db.execute(
