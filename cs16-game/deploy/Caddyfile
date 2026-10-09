@@ -2,9 +2,11 @@
 # dedicated server. Caddy obtains and renews the TLS certificate itself; the
 # page is https, so the game must be reached as wss:// on the same host.
 #
-# Set the domain in a systemd drop-in (deploy/caddy-protocol47.conf):
+# Set the domains in a systemd drop-in (deploy/caddy-protocol47.conf):
 #   Environment=PROTOCOL47_DOMAIN=play.example.com
-www.{$PROTOCOL47_DOMAIN} {
+#   Environment="PROTOCOL47_REDIRECT_DOMAINS=www.play.example.com old.example"
+# Every redirect domain needs its own DNS record so Caddy can certify it.
+{$PROTOCOL47_REDIRECT_DOMAINS} {
 	redir https://{$PROTOCOL47_DOMAIN}{uri} permanent
 }
 
