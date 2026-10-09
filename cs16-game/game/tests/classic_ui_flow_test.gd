@@ -527,15 +527,18 @@ func _run() -> void:
 		"source Defaults command and tab semantics are retained",
 	)
 	var keyboard_bindings := hud.options_pages.get_node(
-		"Page_keyboard/Source_listpanel_keybindlist/Bindings"
+		"Page_keyboard/Source_listpanel_keybindlist/Scroll/Bindings"
 	) as VBoxContainer
-	var forward_binding: Label
+	var forward_binding: Control
 	var visible_binding_text := ""
 	for binding_row in keyboard_bindings.get_children():
 		if binding_row is Label:
 			visible_binding_text += (binding_row as Label).text + "\n"
+		elif binding_row.has_node("Action"):
+			visible_binding_text += "%s %s\n" % [
+				(binding_row.get_node("Action") as Label).text, (binding_row.get_node("Key") as Label).text]
 			if str(binding_row.get_meta("source_command", "")) == "+forward":
-				forward_binding = binding_row as Label
+				forward_binding = binding_row as Control
 	_check(
 		keyboard_bindings.get_child_count() > 60
 		and int(keyboard_bindings.get_parent().get_meta("source_row_count")) > 60,
@@ -543,8 +546,8 @@ func _run() -> void:
 	)
 	_check(
 		forward_binding != null
-		and forward_binding.text.contains("Move forward")
-		and forward_binding.text.ends_with("W")
+		and (forward_binding.get_node("Action") as Label).text == "Move forward"
+		and (forward_binding.get_node("Key") as Label).text == "W"
 		and visible_binding_text.contains("Walk")
 		and visible_binding_text.contains("SHIFT"),
 		"keyboard list pixels include localized movement actions and classic bindings",

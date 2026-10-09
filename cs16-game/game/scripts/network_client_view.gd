@@ -3,6 +3,7 @@ extends Node3D
 ## Client-only presentation/input adapter. Reuses the existing map, HUD,
 ## local camera and character models; never runs a second match simulation.
 const CharacterModel = preload("res://scripts/mdl_character_model.gd")
+const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
 const C4World = preload("res://scripts/cs16_c4_world.gd")
 const MovementPrediction = preload("res://scripts/network_movement_prediction.gd")
 const CombatEvents = preload("res://scripts/network_combat_events.gd")
@@ -703,22 +704,24 @@ func buy_item(item_id: String) -> void:
 func handle_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
-	if event.keycode == KEY_TAB:
+	# Options > Keyboard rebinds: a bound key reads as its command's default.
+	var key := KeyBindings.canonical_keycode(event, get_node("/root/GameSettings").bindings())
+	if key == KEY_TAB:
 		game.hud.set_scoreboard_held(event.pressed)
 	elif event.pressed and not event.echo:
-		if event.keycode in [KEY_Y, KEY_U] and game.match_started \
+		if key in [KEY_Y, KEY_U] and game.match_started \
 				and not game._pause_menu_open() \
 				and game.hud.current_input_contract().state in ["none", "scoreboard"]:
 			game.hud.set_scoreboard_held(false)
-			game.hud.open_chat(event.keycode == KEY_U)
+			game.hud.open_chat(key == KEY_U)
 			get_viewport().set_input_as_handled()
-		elif game._handle_radio_key(event.keycode):
+		elif game._handle_radio_key(key):
 			get_viewport().set_input_as_handled()
 		elif game.hud.handle_menu_key(event.keycode):
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_ESCAPE:
 			game._set_paused(not game._pause_menu_open())
-		elif event.keycode == KEY_M and game.match_started and not game._pause_menu_open() and not get_tree().paused \
+		elif key == KEY_M and game.match_started and not game._pause_menu_open() and not get_tree().paused \
 				and game.player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
 			# Change team, as offline: the host validates the switch.
 			game._close_radio_menu()
@@ -726,10 +729,10 @@ func handle_input(event: InputEvent) -> void:
 			game.hud.set_deploy_visible(true)
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			get_viewport().set_input_as_handled()
-		elif event.keycode == KEY_T and not game._pause_menu_open() and not get_tree().paused and game.player.alive and game.match_started:
+		elif key == KEY_T and not game._pause_menu_open() and not get_tree().paused and game.player.alive and game.match_started:
 			session.submit_action("spray", "")
 			get_viewport().set_input_as_handled()
-		elif event.keycode == KEY_B and not game._pause_menu_open() and not get_tree().paused:
+		elif key == KEY_B and not game._pause_menu_open() and not get_tree().paused:
 			if can_buy():
 				game.hud.show_buy_menu(game._hud_team_id(), game.money, game._buy_menu_context())
 			else:

@@ -29,6 +29,11 @@ try {
     timeoutMs: 60_000, env: { ...process.env, PROTOCOL47_SETTINGS_PATH: join(directory, "crosshair-test.cfg") },
   });
   assert.ok(crosshairTest.ok, JSON.stringify(crosshairTest));
+  const keyBindingsTest = await runCheckedCommand("godot", ["--headless", "--audio-driver", "Dummy", "--path", resolve("game"),
+    "--script", "res://tests/key_bindings_test.gd"], {
+    timeoutMs: 60_000, env: { ...process.env, PROTOCOL47_SETTINGS_PATH: join(directory, "key-bindings-test.cfg") },
+  });
+  assert.ok(keyBindingsTest.ok, JSON.stringify(keyBindingsTest));
   for (const [index, invalidPath] of ["relative/profile.cfg", "res://profile.cfg", "user://profile.cfg",
     join(directory, "absent", "profile.cfg"), directory].entries()) {
     const invalid = await runCheckedCommand("godot", [...args, "--log-file", join(directory, `invalid-${index}.log`)], {

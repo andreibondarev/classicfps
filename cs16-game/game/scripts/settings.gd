@@ -2,6 +2,8 @@ extends Node
 
 signal changed
 
+const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
+
 const SETTINGS_PATH := "user://protocol47.cfg"
 const MAX_PLAYER_NAME_LENGTH := 32
 var settings_path := SETTINGS_PATH
@@ -23,6 +25,8 @@ const CROSSHAIR_COLORS: Array[Color] = [
 var crosshair_size := 0
 var crosshair_color := 0
 var crosshair_translucent := true
+## Options > Keyboard overrides (command -> key name); defaults are implied.
+var key_bindings := {}
 var high_contrast := false
 var reduced_motion := false
 
@@ -76,6 +80,11 @@ func load_settings() -> void:
 	crosshair_size = clampi(int(config.get_value("crosshair", "size", crosshair_size)), 0, CROSSHAIR_SIZES.size() - 1)
 	crosshair_color = clampi(int(config.get_value("crosshair", "color", crosshair_color)), 0, CROSSHAIR_COLORS.size() - 1)
 	crosshair_translucent = bool(config.get_value("crosshair", "translucent", crosshair_translucent))
+	key_bindings = {}
+	if config.has_section("bindings"):
+		for command: String in config.get_section_keys("bindings"):
+			if KeyBindings.is_bindable(command):
+				key_bindings[command] = KeyBindings.normalize(str(config.get_value("bindings", command, "")))
 	high_contrast = bool(config.get_value("accessibility", "high_contrast", high_contrast))
 	reduced_motion = bool(config.get_value("accessibility", "reduced_motion", reduced_motion))
 
@@ -95,6 +104,8 @@ func save() -> void:
 	config.set_value("crosshair", "size", crosshair_size)
 	config.set_value("crosshair", "color", crosshair_color)
 	config.set_value("crosshair", "translucent", crosshair_translucent)
+	for command: String in key_bindings:
+		config.set_value("bindings", command, key_bindings[command])
 	config.set_value("accessibility", "high_contrast", high_contrast)
 	config.set_value("accessibility", "reduced_motion", reduced_motion)
 	var error := config.save(settings_path)
@@ -103,6 +114,7 @@ func save() -> void:
 
 
 func apply() -> void:
+	KeyBindings.apply_actions(bindings())
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), master_volume_db)
 	DisplayServer.window_set_vsync_mode(
 		DisplayServer.VSYNC_ENABLED if vsync_enabled else DisplayServer.VSYNC_DISABLED,
@@ -137,6 +149,23 @@ func update_crosshair(size_index: int, color_index: int, translucent: bool) -> v
 	crosshair_size = clampi(size_index, 0, CROSSHAIR_SIZES.size() - 1)
 	crosshair_color = clampi(color_index, 0, CROSSHAIR_COLORS.size() - 1)
 	crosshair_translucent = translucent
+	_commit()
+
+
+## Every rebindable command's current key.
+func bindings() -> Dictionary:
+	return KeyBindings.effective(key_bindings)
+
+
+## Stores only commands that differ from their default key.
+func update_key_bindings(values: Dictionary) -> void:
+	var defaults := KeyBindings.default_bindings()
+	key_bindings = {}
+	var requested := KeyBindings.effective(values)
+	for command: String in requested:
+		var key := str(requested[command])
+		if key != str(defaults[command]):
+			key_bindings[command] = key
 	_commit()
 
 

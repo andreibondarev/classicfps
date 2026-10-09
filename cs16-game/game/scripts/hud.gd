@@ -34,6 +34,11 @@ const CLASSIC_SHADOW := Color(0.0, 0.0, 0.0, 0.92)
 const CLASSIC_SPRITE_INTENSITY := 0.45
 const CLASSIC_HUD_ROOT := "res://assets/hud/classic/"
 const RadarDisplayScript := preload("res://scripts/cs16_radar_display.gd")
+const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
+const WEB_VGUI_FONT := preload("res://assets/fonts/DejaVuSans.ttf")
+const WEB_VGUI_FONT_BOLD := preload("res://assets/fonts/DejaVuSans-Bold.ttf")
+const KEY_LIST_ROW_HEIGHT := 18.0
+const KEY_LIST_HEADER_HEIGHT := 18.0
 const NetworkSessionScript := preload("res://scripts/network_session.gd")
 const VGUI_AMBER_FALLBACK := Color(1.0, 176.0 / 255.0, 0.0, 1.0)
 const VGUI_AMBER_DIM_FALLBACK := Color(188.0 / 255.0, 112.0 / 255.0, 0.0, 1.0)
@@ -256,7 +261,7 @@ var vgui_amber := VGUI_AMBER_FALLBACK
 var vgui_amber_dim := VGUI_AMBER_DIM_FALLBACK
 var vgui_blue := VGUI_BLUE_FALLBACK
 var vgui_red := VGUI_RED_FALLBACK
-var _vgui_font: SystemFont
+var _vgui_font: Font
 var _vgui_fonts: Dictionary = {}
 var _options_snapshot: Dictionary = {}
 var _options_pending: Dictionary = {}
@@ -269,6 +274,9 @@ var _buyzone_icon: TextureRect
 var _defuse_kit_icon: TextureRect
 var _c4_icon: TextureRect
 var _crosshair_preview: Control
+var _key_list: VBoxContainer
+var _key_selected_command := ""
+var _key_capture_command := ""
 var _c4_flash: Tween
 var _carrying_c4 := false
 var _c4_in_bomb_zone := false
@@ -1071,6 +1079,10 @@ func _build_class_menu() -> void:
 		Rect2(168, 116, 316, 286),
 		class_menu.position,
 	)
+	# The source ClassInfo is 400x380 at y=116, which runs past both its
+	# 448-tall frame and the 480-tall screen. Use the team menu's MapInfo
+	# geometry, which the portrait/label layout below is built for.
+	info_rect.size = Vector2(minf(info_rect.size.x, 316.0), minf(info_rect.size.y, 286.0))
 	var info_panel := _vgui_dialog_panel(
 		"ClassInfo", info_rect.position, info_rect.size
 	)
@@ -2068,7 +2080,9 @@ func _build_pause_options_menu() -> void:
 	pause_options_menu = PanelContainer.new()
 	pause_options_menu.name = "OptionsMenu"
 	pause_options_menu.position = Vector2(60, 34)
-	pause_options_menu.size = Vector2(520, 412)
+	# The source dialog is 520x412, but our command buttons render 31 units
+	# tall; the extra room keeps OK/Cancel/Apply inside the frame.
+	pause_options_menu.size = Vector2(528, 424)
 	var dialog_path := CS16VGuiSource.VALVE_RESOURCE + "DialogOptionsIngame.kv"
 	var dialog_source := vgui_source.control(dialog_path, "OptionsDialog")
 	pause_options_menu.set_meta(
@@ -2244,12 +2258,19 @@ func _build_source_options_page(tab_key: String) -> void:
 		var control: Control
 		match control_type:
 			"Label", "URLLabel":
-				control = _vgui_text(
+				var text_label := _vgui_text(
 					label_text,
 					_source_font_size("DefaultSmall", 12),
 					GAMEUI_MENU_TEXT_DIM if int(data.get("dulltext", 0)) != 0 else GAMEUI_MENU_TEXT,
 					"DefaultSmall" if int(data.get("dulltext", 0)) != 0 else "Default",
 				)
+				# Labels authored taller than one line are GameUI paragraphs:
+				# wrap them from the top instead of clipping one centered line.
+				if rect.size.y >= 30.0:
+					text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+					text_label.clip_text = false
+					text_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+				control = text_label
 			"Button":
 				var command := str(data.get("command", data.get("Command", source_name)))
 				control = _vgui_button(
@@ -2390,6 +2411,12 @@ func _bind_source_option_control(tab_key: String, source_name: String, control: 
 		preview.draw.connect(func() -> void: _draw_crosshair_preview(preview))
 		control.add_child(preview)
 		_crosshair_preview = preview
+	elif tab_key == "mouse" and source_name == "SensitivityLabel" and control is LineEdit:
+		# GameUI shows the slider's value beside it.
+		var value_entry := control as LineEdit
+		value_entry.editable = false
+		value_entry.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		value_entry.text = "%.2f" % settings.mouse_sensitivity
 	elif tab_key == "mouse" and source_name == "ReverseMouse" and control is CheckBox:
 		var reverse := control as CheckBox
 		reverse.button_pressed = settings.invert_y
@@ -2404,7 +2431,9 @@ func _bind_source_option_control(tab_key: String, source_name: String, control: 
 		sensitivity.step = 0.01
 		sensitivity.value = settings.mouse_sensitivity
 		sensitivity.value_changed.connect(
-			func(value: float) -> void: _options_pending["mouse_sensitivity"] = value
+			func(value: float) -> void:
+				_options_pending["mouse_sensitivity"] = value
+				_sync_sensitivity_value()
 		)
 	elif tab_key == "audio" and source_name == "SFX Slider" and control is HSlider:
 		var volume := control as HSlider
@@ -2448,77 +2477,173 @@ func _bind_source_option_control(tab_key: String, source_name: String, control: 
 		)
 
 
-func _build_source_key_list(rect: Rect2) -> ScrollContainer:
+func _build_source_key_list(rect: Rect2) -> Control:
+	# GameUI's key list: an inset two-column table (action, key) with a
+	# selectable row. Bindable rows edit through Edit/Clear/Defaults; rows the
+	# game has no command for are dimmed, and menu digits stay fixed.
+	var panel := Control.new()
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.clip_contents = true
+	var inset := ColorRect.new()
+	inset.name = "Inset"
+	inset.color = Color(0.0, 0.0, 0.0, 0.22)
+	inset.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inset.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.add_child(inset)
+	var key_x := roundf(rect.size.x * 0.58)
+	var header := Control.new()
+	header.name = "Header"
+	header.size = Vector2(rect.size.x, KEY_LIST_HEADER_HEIGHT)
+	header.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var header_fill := ColorRect.new()
+	header_fill.color = Color(0.0, 0.0, 0.0, 0.28)
+	header_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header_fill.set_anchors_preset(Control.PRESET_FULL_RECT)
+	header.add_child(header_fill)
+	for column: Array in [["Action", 6.0, key_x - 12.0], ["Key or button", key_x, rect.size.x - key_x - 20.0]]:
+		var title := _vgui_text(str(column[0]), _source_font_size("DefaultSmall", 12), GAMEUI_MENU_TEXT_BRIGHT, "DefaultSmall")
+		title.name = "Column_%s" % str(column[0]).validate_node_name()
+		title.position = Vector2(float(column[1]), 0)
+		title.size = Vector2(float(column[2]), KEY_LIST_HEADER_HEIGHT)
+		header.add_child(title)
+	panel.add_child(header)
 	var scroll := ScrollContainer.new()
-	scroll.position = rect.position
-	scroll.size = rect.size
+	scroll.name = "Scroll"
+	scroll.position = Vector2(0, KEY_LIST_HEADER_HEIGHT + 2)
+	scroll.size = Vector2(rect.size.x, rect.size.y - KEY_LIST_HEADER_HEIGHT - 2)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_style_vgui_scrollbar(scroll)
 	scroll.set_meta("app90_source", CS16VGuiSource.BINDING_LIST)
 	var rows := VBoxContainer.new()
 	rows.name = "Bindings"
 	rows.custom_minimum_size.x = rect.size.x - 16
+	rows.add_theme_constant_override("separation", 0)
 	scroll.add_child(rows)
-	var defaults := {
-		"+forward": "W",
-		"+back": "S",
-		"+moveleft": "A",
-		"+moveright": "D",
-		"+speed": "SHIFT",
-		"+jump": "SPACE",
-		"+duck": "CTRL",
-		"+voicerecord": "K",
-		"radio1": "Z",
-		"radio2": "X",
-		"radio3": "C",
-		"buy": "B",
-		"buyammo1": ",",
-		"buyammo2": ".",
-		"buyequip": "O",
-		"chooseteam": "M",
-		"+showscores": "TAB",
-		"+attack": "MOUSE1",
-		"+attack2": "MOUSE2",
-		"+reload": "R",
-		"lastinv": "Q",
-		"+use": "E",
-		"drop": "G",
-		"nightvision": "N",
-		"impulse 100": "F",
-		"impulse 201": "T",
-		"snapshot": "F5",
-	}
+	panel.add_child(scroll)
 	var source_rows := vgui_source.key_bindings()
 	for index in source_rows.size():
 		var item: Dictionary = source_rows[index]
 		if bool(item.is_separator):
 			continue
 		var command := str(item.command)
-		var label := str(item.label)
-		var row_text := (
-			label
-			if bool(item.is_heading)
-			else "%-36s %s" % [label, str(defaults.get(command, ""))]
-		)
-		var row := _vgui_text(
-			row_text,
-			_source_font_size("DefaultSmall", 12),
-			vgui_blue if bool(item.is_heading) else GAMEUI_MENU_TEXT,
-			"DefaultSmall",
-		)
-		row.name = (
-			"BindingHeading_%d" % index
-			if bool(item.is_heading)
-			else "Binding_%s" % command.validate_node_name()
-		)
-		row.custom_minimum_size.y = 18
-		row.set_meta("source_command", command)
-		row.set_meta("source_label_token", item.label_token)
-		row.set_meta("binding", str(defaults.get(command, "")))
-		rows.add_child(row)
+		if bool(item.is_heading):
+			var heading := _vgui_text(str(item.label), _source_font_size("DefaultSmall", 12), vgui_blue, "DefaultSmall")
+			heading.name = "BindingHeading_%d" % index
+			heading.custom_minimum_size.y = KEY_LIST_ROW_HEIGHT + 4
+			heading.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+			heading.set_meta("source_command", command)
+			rows.add_child(heading)
+			continue
+		rows.add_child(_key_list_row(command, str(item.label), str(item.label_token), key_x, rect.size.x - 16))
 	scroll.set_meta("source_row_count", rows.get_child_count())
-	return scroll
+	_key_list = rows
+	_refresh_key_list()
+	return panel
 
+
+func _key_list_row(command: String, label: String, label_token: String, key_x: float, width: float) -> Control:
+	var row := Control.new()
+	row.name = "Binding_%s" % command.validate_node_name()
+	row.custom_minimum_size = Vector2(width, KEY_LIST_ROW_HEIGHT)
+	row.mouse_filter = Control.MOUSE_FILTER_STOP
+	row.set_meta("source_command", command)
+	row.set_meta("source_label_token", label_token)
+	var highlight := ColorRect.new()
+	highlight.name = "Highlight"
+	highlight.color = Color(0.0, 0.0, 0.0, 0.45)
+	highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	highlight.set_anchors_preset(Control.PRESET_FULL_RECT)
+	highlight.visible = false
+	row.add_child(highlight)
+	var bindable := KeyBindings.is_bindable(command)
+	var color := GAMEUI_MENU_TEXT if bindable else GAMEUI_MENU_TEXT_DIM.darkened(0.3)
+	var action := _vgui_text(label, _source_font_size("DefaultSmall", 12), color, "DefaultSmall")
+	action.name = "Action"
+	action.position = Vector2(6, 0)
+	action.size = Vector2(key_x - 12, KEY_LIST_ROW_HEIGHT)
+	row.add_child(action)
+	var key := _vgui_text("", _source_font_size("DefaultSmall", 12), color, "DefaultSmall")
+	key.name = "Key"
+	key.position = Vector2(key_x, 0)
+	key.size = Vector2(width - key_x, KEY_LIST_ROW_HEIGHT)
+	row.add_child(key)
+	row.gui_input.connect(func(event: InputEvent) -> void: _on_key_row_input(command, event))
+	return row
+
+
+## Re-renders every row's key from the pending (unapplied) bindings.
+func _refresh_key_list() -> void:
+	if not is_instance_valid(_key_list):
+		return
+	var bindings: Dictionary = _options_pending.get("key_bindings", settings.bindings() if settings != null else {})
+	for row in _key_list.get_children():
+		var key_label := row.get_node_or_null("Key") as Label
+		if key_label == null:
+			continue
+		var command := str(row.get_meta("source_command", ""))
+		var text := str(bindings.get(command, KeyBindings.FIXED.get(command, "")))
+		if command == _key_capture_command:
+			text = "Press a key... (Esc cancels)"
+		key_label.text = text
+		row.set_meta("binding", text)
+		(row.get_node("Highlight") as ColorRect).visible = command == _key_selected_command
+
+
+func _on_key_row_input(command: String, event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click == null or not click.pressed or click.button_index != MOUSE_BUTTON_LEFT or not _key_capture_command.is_empty():
+		return
+	_key_selected_command = command
+	_refresh_key_list()
+	if click.double_click:
+		_begin_key_capture()
+
+
+func _begin_key_capture() -> void:
+	if not KeyBindings.is_bindable(_key_selected_command):
+		show_banner("SELECT AN ACTION THAT CAN BE REBOUND", Color("#ffca66"), 1.5)
+		return
+	_key_capture_command = _key_selected_command
+	_refresh_key_list()
+
+
+func _clear_selected_key() -> void:
+	if not KeyBindings.is_bindable(_key_selected_command):
+		return
+	var bindings: Dictionary = _options_pending.get("key_bindings", settings.bindings()).duplicate()
+	bindings[_key_selected_command] = ""
+	_options_pending["key_bindings"] = bindings
+	_refresh_key_list()
+
+
+## Assigns the captured key; a key another command used moves here (GameUI).
+func _assign_captured_key(key_text: String) -> void:
+	var bindings: Dictionary = _options_pending.get("key_bindings", settings.bindings()).duplicate()
+	for other: String in bindings:
+		if other != _key_capture_command and str(bindings[other]) == key_text:
+			bindings[other] = ""
+	bindings[_key_capture_command] = key_text
+	_options_pending["key_bindings"] = bindings
+	_key_capture_command = ""
+	_refresh_key_list()
+
+
+func _input(event: InputEvent) -> void:
+	# While capturing, the next key or mouse button belongs to the binding.
+	if _key_capture_command.is_empty() or not event.is_pressed() or event.is_echo():
+		return
+	if not (event is InputEventKey or event is InputEventMouseButton):
+		return
+	get_viewport().set_input_as_handled()
+	if event is InputEventKey and (event as InputEventKey).keycode == KEY_ESCAPE:
+		_key_capture_command = ""
+		_refresh_key_list()
+		return
+	var text := KeyBindings.event_text(event)
+	if text.is_empty():
+		return
+	_assign_captured_key(text)
 
 func _source_option_choices(source_name: String) -> Array[String]:
 	var lower := source_name.to_lower()
@@ -2539,6 +2664,17 @@ func _source_option_choices(source_name: String) -> Array[String]:
 
 func _on_source_option_command(tab_key: String, command: String) -> void:
 	menu_command_requested.emit("options:%s:%s" % [tab_key, command])
+	if tab_key == "keyboard":
+		match command.to_lower():
+			"defaults":
+				_options_pending["key_bindings"] = KeyBindings.default_bindings()
+				_key_capture_command = ""
+				_refresh_key_list()
+			"changekey":
+				_begin_key_capture()
+			"clearkey":
+				_clear_selected_key()
+		return
 	if command.to_lower() == "defaults":
 		_options_defaults()
 
@@ -2555,6 +2691,7 @@ func _settings_values() -> Dictionary:
 		"crosshair_size": settings.crosshair_size,
 		"crosshair_color": settings.crosshair_color,
 		"crosshair_translucent": settings.crosshair_translucent,
+		"key_bindings": settings.bindings(),
 		"voice_transmit_volume": 75.0,
 		"voice_receive_volume": 75.0,
 		"voice_enabled": true,
@@ -2571,6 +2708,7 @@ func _restore_settings(values: Dictionary) -> void:
 		bool(values.vsync_enabled),
 	)
 	settings.update_volume(float(values.master_volume_db))
+	settings.update_key_bindings(values.get("key_bindings", settings.bindings()))
 	settings.update_crosshair(
 		int(values.get("crosshair_size", settings.crosshair_size)),
 		int(values.get("crosshair_color", settings.crosshair_color)),
@@ -2638,6 +2776,7 @@ func _sync_source_option_controls() -> void:
 		reverse.button_pressed = bool(_options_pending.invert_y)
 	if sensitivity != null:
 		sensitivity.value = float(_options_pending.mouse_sensitivity)
+	_sync_sensitivity_value()
 	if volume != null:
 		volume.value = float(_options_pending.master_volume_db)
 	if vsync != null:
@@ -2660,6 +2799,14 @@ func _sync_source_option_controls() -> void:
 	if crosshair_translucent != null:
 		crosshair_translucent.set_pressed_no_signal(bool(_options_pending.get("crosshair_translucent", true)))
 	_refresh_crosshair_preview()
+	_key_capture_command = ""
+	_refresh_key_list()
+
+
+func _sync_sensitivity_value() -> void:
+	var value_entry := options_pages.get_node_or_null("Page_mouse/Source_SensitivityLabel") as LineEdit
+	if value_entry != null:
+		value_entry.text = "%.2f" % float(_options_pending.get("mouse_sensitivity", settings.mouse_sensitivity))
 
 
 func _show_options_tab(tab_key: String) -> void:
@@ -2814,14 +2961,22 @@ func _source_font_size(font_name: String, fallback: int) -> int:
 	return vgui_source.font_size(font_name, int(VGUI_BASE_SIZE.y), fallback)
 
 
-func _font_for_rule(font_name: String) -> SystemFont:
+func _font_for_rule(font_name: String) -> Font:
 	if _vgui_fonts.has(font_name):
-		return _vgui_fonts[font_name] as SystemFont
+		return _vgui_fonts[font_name] as Font
 	var spec := vgui_source.font_spec(font_name, int(VGUI_BASE_SIZE.y), {
 		"name": "Verdana",
 		"tall": 12,
 		"weight": 400,
 	})
+	if OS.has_feature("web") or "--web-fonts" in OS.get_cmdline_user_args():
+		# Browsers expose no system fonts, so a SystemFont silently becomes the
+		# engine's wider default face and overflows the VGUI layouts. Ship a
+		# Verdana-metric face (DejaVu Sans, Bitstream Vera license) instead.
+		# --web-fonts previews the browser layout on desktop.
+		var web_font: Font = WEB_VGUI_FONT_BOLD if int(spec.get("weight", 400)) >= 600 else WEB_VGUI_FONT
+		_vgui_fonts[font_name] = web_font
+		return web_font
 	var font := SystemFont.new()
 	var requested_name := str(spec.get("name", "Verdana")).replace(" Bold", "")
 	font.font_names = PackedStringArray([
@@ -2948,6 +3103,15 @@ func _vgui_text(text: String, font_size: int, color: Color, font_rule := "Defaul
 	return label
 
 
+static func _fitted_font_size(font: Font, text: String, font_size: int, available_width: float) -> int:
+	var fitted := font_size
+	if font == null or available_width <= 0.0:
+		return fitted
+	while fitted > 8 and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fitted).x > available_width:
+		fitted -= 1
+	return fitted
+
+
 func _vgui_button(
 	parent: Node,
 	button_name: String,
@@ -2969,6 +3133,11 @@ func _vgui_button(
 	button.custom_minimum_size = size
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	# Keep the source row width: a label wider than its slot (long class
+	# names, or a wider fallback face) shrinks to fit instead of growing the
+	# row into neighbouring panels.
+	button.clip_text = true
+	font_size = _fitted_font_size(_vgui_font, clean_text, font_size, size.x - 12.0)
 	button.focus_mode = Control.FOCUS_ALL
 	button.add_theme_font_override("font", _vgui_font)
 	button.add_theme_font_size_override("font_size", font_size)
@@ -3050,6 +3219,11 @@ func _vgui_button(
 		action.call()
 	)
 	parent.add_child(button)
+	# The first size assignment cached a minimum from the theme's default font
+	# before clip_text and the source font applied, and entering the tree grew
+	# the row to it. Refresh the minimum and settle on the source size.
+	button.update_minimum_size()
+	button.size = size
 	return button
 
 

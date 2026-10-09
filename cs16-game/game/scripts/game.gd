@@ -8,6 +8,7 @@ const AudioCatalogScript = preload("res://scripts/cs16_audio_catalog.gd")
 const AudioRouterScript = preload("res://scripts/cs16_audio_event_router.gd")
 const AudioPlaybackScript = preload("res://scripts/cs16_audio_playback_adapter.gd")
 const RoundStateScript = preload("res://scripts/cs16_round_state.gd")
+const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const C4WorldScript = preload("res://scripts/cs16_c4_world.gd")
 const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
@@ -2777,7 +2778,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
 	var key_event := event as InputEventKey
-	if key_event.keycode == KEY_TAB:
+	# Options > Keyboard rebinds: a bound key reads as its command's default.
+	var key := KeyBindings.canonical_keycode(key_event, get_node("/root/GameSettings").bindings())
+	if key == KEY_TAB:
 		if key_event.pressed and not key_event.echo:
 			_update_scoreboard()
 		hud.set_scoreboard_held(key_event.pressed)
@@ -2786,14 +2789,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if (
 		key_event.pressed
 		and not key_event.echo
-		and key_event.keycode in [KEY_Y, KEY_U]
+		and key in [KEY_Y, KEY_U]
 		and match_started
 		and not _pause_menu_open()
 		and hud.current_input_contract().state in ["none", "scoreboard"]
 	):
 		_close_radio_menu()
 		hud.set_scoreboard_held(false)
-		hud.open_chat(key_event.keycode == KEY_U)
+		hud.open_chat(key == KEY_U)
 		get_viewport().set_input_as_handled()
 		return
 	if (
@@ -2806,10 +2809,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_restart_match()
 		get_viewport().set_input_as_handled()
 		return
-	if key_event.pressed and not key_event.echo and _handle_radio_key(key_event.keycode):
+	if key_event.pressed and not key_event.echo and _handle_radio_key(key):
 		get_viewport().set_input_as_handled()
 		return
-	if key_event.pressed and not key_event.echo and key_event.keycode == KEY_M and match_started and not _pause_menu_open():
+	if key_event.pressed and not key_event.echo and key == KEY_M and match_started and not _pause_menu_open():
 		_close_radio_menu()
 		hud.set_buy_menu_visible(false)
 		hud.set_deploy_visible(true)
@@ -2835,7 +2838,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_set_paused(not _pause_menu_open())
 	elif _pause_menu_open():
 		return
-	elif key_event.pressed and not key_event.echo and key_event.keycode == KEY_T:
+	elif key_event.pressed and not key_event.echo and key == KEY_T:
 		if not _spray_for_human(player):
 			hud.show_banner("SPRAY: MOVE CLOSE TO A FLAT SURFACE • 10s COOLDOWN", Color("#ffca66"), 1.5)
 		get_viewport().set_input_as_handled()
@@ -2851,13 +2854,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif (
 		key_event.pressed
 		and not key_event.echo
-		and key_event.keycode == KEY_N
+		and key == KEY_N
 	):
 		_toggle_nightvision()
 	elif (
 		key_event.pressed
 		and not key_event.echo
-		and key_event.keycode == KEY_B
+		and key == KEY_B
 		and match_started
 	):
 		var eligibility := _buy_eligibility()
