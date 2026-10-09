@@ -9,6 +9,8 @@ signal action_result_received(result: Dictionary)
 signal world_snapshot_received(snapshot: Dictionary)
 signal combat_event_received(event: Dictionary)
 signal chat_received(message: Dictionary)
+## A relayed voice frame (one encoded Opus packet) from another player.
+signal voice_received(sender_id: String, sequence: int, frame: PackedByteArray)
 
 const WorldState = preload("res://scripts/network_world_state.gd")
 const CombatEvents = preload("res://scripts/network_combat_events.gd")
@@ -28,6 +30,9 @@ var _chat_event_sequence := 0
 var _last_chat_epoch := -1
 var _last_chat_sequence := 0
 var _game_chat_handler := Callable()
+var _voice_peers: Dictionary = {}
+var _game_voice_handler := Callable()
+var _voice_sequence := 0
 
 const DEFAULT_PORT := 27447
 ## Path a browser build joins on the server it was loaded from; the reverse
@@ -71,6 +76,11 @@ const CHAT_RATE := 1.0
 const CHAT_BURST := 4
 const CHAT_REQUEST_FIELDS := ["version", "sequence", "team_only", "text"]
 const CHAT_EVENT_FIELDS := ["version", "epoch", "sequence", "sender_id", "sender_name", "team", "team_only", "text"]
+## Voice: 20 ms Opus frames (about 60 bytes at 24 kbps). The host relays each
+## frame to the listeners the game allows, never trusting client routing.
+const VOICE_MAX_FRAME_BYTES := 512
+const VOICE_RATE := 60.0
+const VOICE_BURST := 30
 const WORLD_CHUNK_BYTES := 960
 const MAX_WORLD_CHUNKS := 35
 const WORLD_ASSEMBLY_TIMEOUT_MS := 1000
@@ -323,6 +333,8 @@ func disconnect_session() -> void:
 	_input_peers.clear()
 	_name_peers.clear()
 	_chat_peers.clear()
+	_voice_peers.clear()
+	_voice_sequence = 0
 	_sent_player_name = ""
 	_next_name_send_ms = 0
 	_input_sequence = 0
@@ -413,6 +425,75 @@ static func sanitize_chat_text(value: Variant) -> String:
 			continue
 		cleaned += character
 	return cleaned.strip_edges().left(CHAT_MAX_LENGTH).strip_edges()
+
+
+## The game decides who hears a speaker: handler(peer_id) returns
+## {"sender_id": String, "recipients": Array[int]} or {} to drop the frame.
+func bind_voice(handler: Callable) -> bool:
+	if not handler.is_valid():
+		return false
+	_game_voice_handler = handler
+	return true
+
+
+func unbind_voice(handler: Callable) -> void:
+	if _game_voice_handler == handler:
+		_game_voice_handler = Callable()
+
+
+## Client: send one encoded frame to the host for relay.
+func submit_voice_frame(frame: PackedByteArray) -> bool:
+	if is_host or not is_online() or frame.is_empty() or frame.size() > VOICE_MAX_FRAME_BYTES \
+			or multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	_voice_sequence = (_voice_sequence % MAX_COUNTER) + 1
+	_submit_voice.rpc_id(1, _voice_sequence, frame)
+	return true
+
+
+@rpc("any_peer", "call_remote", "unreliable_ordered", 0)
+func _submit_voice(sequence: Variant, frame: Variant) -> void:
+	if not is_host or not multiplayer.is_server():
+		return
+	accept_peer_voice(multiplayer.get_remote_sender_id(), sequence, frame, Time.get_ticks_msec())
+
+
+func accept_peer_voice(peer_id: int, sequence: Variant, frame: Variant, now_ms: int) -> bool:
+	if not has_input_peer(peer_id) or not _voice_peers.has(peer_id) or peer_id == 1:
+		return false
+	if not _valid_integer(sequence, 1, MAX_COUNTER) or typeof(frame) != TYPE_PACKED_BYTE_ARRAY \
+			or (frame as PackedByteArray).is_empty() or (frame as PackedByteArray).size() > VOICE_MAX_FRAME_BYTES:
+		return false
+	var state: Dictionary = _voice_peers[peer_id]
+	# A wrapped or restarted counter is accepted; only stale replays drop.
+	if int(sequence) <= int(state.sequence) and int(state.sequence) - int(sequence) < 1000:
+		return false
+	state.sequence = int(sequence)
+	state.tokens = minf(VOICE_BURST, float(state.tokens) + float(now_ms - int(state.token_ms)) * VOICE_RATE / 1000.0)
+	state.token_ms = now_ms
+	if float(state.tokens) < 1.0:
+		return false
+	state.tokens = float(state.tokens) - 1.0
+	if not _game_voice_handler.is_valid():
+		return false
+	var route: Dictionary = _game_voice_handler.call(peer_id)
+	if route.is_empty() or not WorldState.identifier(str(route.get("sender_id", ""))):
+		return false
+	var delivered := false
+	for recipient: int in route.get("recipients", []):
+		if recipient > 1 and recipient != peer_id and has_input_peer(recipient) and multiplayer.get_peers().has(recipient):
+			_receive_voice.rpc_id(recipient, str(route.sender_id), int(sequence), frame)
+			delivered = true
+	return delivered
+
+
+@rpc("authority", "call_remote", "unreliable_ordered", 0)
+func _receive_voice(sender_id: Variant, sequence: Variant, frame: Variant) -> void:
+	if is_host or typeof(sender_id) != TYPE_STRING or not WorldState.identifier(sender_id) \
+			or not _valid_integer(sequence, 1, MAX_COUNTER) or typeof(frame) != TYPE_PACKED_BYTE_ARRAY \
+			or (frame as PackedByteArray).is_empty() or (frame as PackedByteArray).size() > VOICE_MAX_FRAME_BYTES:
+		return
+	voice_received.emit(sender_id, int(sequence), frame)
 
 
 func bind_chat(handler: Callable) -> bool:
@@ -687,6 +768,7 @@ func _register_input_peer(peer_id: int, now_ms: int) -> bool:
 	_action_peers[peer_id] = {"sequence": 0, "token_ms": now_ms, "tokens": float(ACTION_BURST)}
 	_name_peers[peer_id] = {"token_ms": now_ms, "tokens": 8.0}
 	_chat_peers[peer_id] = {"sequence": 0, "token_ms": now_ms, "tokens": float(CHAT_BURST)}
+	_voice_peers[peer_id] = {"sequence": 0, "token_ms": now_ms, "tokens": float(VOICE_BURST)}
 	return true
 
 
@@ -696,6 +778,7 @@ func _remove_input_peer(peer_id: int) -> void:
 	_action_peers.erase(peer_id)
 	_name_peers.erase(peer_id)
 	_chat_peers.erase(peer_id)
+	_voice_peers.erase(peer_id)
 
 
 func has_input_peer(peer_id: int) -> bool:

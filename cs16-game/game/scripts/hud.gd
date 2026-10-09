@@ -3,6 +3,8 @@ extends CanvasLayer
 
 signal deploy_requested
 signal deploy_cancel_requested
+## Options > Voice > Test Microphone (handled by the browser voice client).
+signal voice_test_requested
 signal resume_requested
 signal team_selected(team_id: int)
 signal class_selected(class_id: int)
@@ -225,6 +227,9 @@ var radar_display: CS16RadarDisplay
 var kill_feed_box: VBoxContainer
 var _kill_feed_icons := {}
 var chat_feed_box: VBoxContainer
+## Players currently talking on voice (1.6 speaker list, right side).
+var voice_talkers_box: VBoxContainer
+var _voice_talker_signature := ""
 var chat_input_panel: Panel
 var chat_prompt_label: Label
 var chat_entry: LineEdit
@@ -467,6 +472,16 @@ func _build_hud() -> void:
 	kill_feed_box.alignment = BoxContainer.ALIGNMENT_BEGIN
 	kill_feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(kill_feed_box)
+	voice_talkers_box = VBoxContainer.new()
+	voice_talkers_box.name = "ClassicVoiceTalkers"
+	voice_talkers_box.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	voice_talkers_box.offset_left = -260.0
+	voice_talkers_box.offset_right = -14.0
+	voice_talkers_box.offset_top = 172.0
+	voice_talkers_box.offset_bottom = 340.0
+	voice_talkers_box.add_theme_constant_override("separation", 2)
+	voice_talkers_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(voice_talkers_box)
 	_build_chat(root)
 
 	hostage_status_group = HBoxContainer.new()
@@ -814,6 +829,40 @@ func _on_chat_entry_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
 		close_chat()
 		chat_entry.accept_event()
+
+
+## talkers: [{"id", "name", "team"}] for everyone currently speaking.
+func update_voice_talkers(talkers: Array) -> void:
+	if not is_instance_valid(voice_talkers_box):
+		return
+	var signature := JSON.stringify(talkers)
+	if signature == _voice_talker_signature:
+		return
+	_voice_talker_signature = signature
+	for child in voice_talkers_box.get_children():
+		child.queue_free()
+	var speaker: Texture2D = load("res://assets/ui/classic/voice/640_speaker3.tga") as Texture2D
+	for talker: Dictionary in talkers:
+		var row := HBoxContainer.new()
+		row.name = "Talker_%s" % str(talker.get("id", "")).validate_node_name()
+		row.alignment = BoxContainer.ALIGNMENT_END
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.set_meta("voice_id", str(talker.get("id", "")))
+		var name_label := Label.new()
+		name_label.text = str(talker.get("name", ""))
+		name_label.add_theme_font_size_override("font_size", 15)
+		name_label.add_theme_color_override("font_color", Color(_kill_feed_team_hex(str(talker.get("team", "")))))
+		name_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(name_label)
+		var icon := TextureRect.new()
+		icon.texture = speaker
+		icon.custom_minimum_size = Vector2(20, 20)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(icon)
+		voice_talkers_box.add_child(row)
 
 
 func add_chat_message(message: Dictionary) -> void:
@@ -2664,6 +2713,9 @@ func _source_option_choices(source_name: String) -> Array[String]:
 
 func _on_source_option_command(tab_key: String, command: String) -> void:
 	menu_command_requested.emit("options:%s:%s" % [tab_key, command])
+	if tab_key == "voice" and command.to_lower() == "testmicrophone":
+		voice_test_requested.emit()
+		return
 	if tab_key == "keyboard":
 		match command.to_lower():
 			"defaults":
@@ -2692,10 +2744,10 @@ func _settings_values() -> Dictionary:
 		"crosshair_color": settings.crosshair_color,
 		"crosshair_translucent": settings.crosshair_translucent,
 		"key_bindings": settings.bindings(),
-		"voice_transmit_volume": 75.0,
-		"voice_receive_volume": 75.0,
-		"voice_enabled": true,
-		"mic_boost": false,
+		"voice_transmit_volume": settings.voice_transmit_volume,
+		"voice_receive_volume": settings.voice_receive_volume,
+		"voice_enabled": settings.voice_enabled,
+		"mic_boost": settings.voice_mic_boost,
 	}
 
 
@@ -2709,6 +2761,12 @@ func _restore_settings(values: Dictionary) -> void:
 	)
 	settings.update_volume(float(values.master_volume_db))
 	settings.update_key_bindings(values.get("key_bindings", settings.bindings()))
+	settings.update_voice(
+		bool(values.get("voice_enabled", settings.voice_enabled)),
+		float(values.get("voice_transmit_volume", settings.voice_transmit_volume)),
+		float(values.get("voice_receive_volume", settings.voice_receive_volume)),
+		bool(values.get("mic_boost", settings.voice_mic_boost)),
+	)
 	settings.update_crosshair(
 		int(values.get("crosshair_size", settings.crosshair_size)),
 		int(values.get("crosshair_color", settings.crosshair_color)),
@@ -2801,6 +2859,29 @@ func _sync_source_option_controls() -> void:
 	_refresh_crosshair_preview()
 	_key_capture_command = ""
 	_refresh_key_list()
+
+
+## Lights the live microphone meter up to level (0..1) in the Voice tab.
+func set_mic_meter_level(level: float) -> void:
+	var live := options_pages.get_node_or_null("Page_voice/Source_MicMeter2") as TextureRect
+	if live == null:
+		return
+	var full := vgui_source.mic_meter_texture(true)
+	var width := roundf(float(full.get_width()) * clampf(level * 4.0, 0.0, 1.0))
+	live.visible = width >= 1.0
+	if not live.visible:
+		return
+	var lit := live.texture as AtlasTexture
+	if lit == null:
+		lit = AtlasTexture.new()
+		lit.atlas = full
+		live.texture = lit
+		live.stretch_mode = TextureRect.STRETCH_KEEP
+	lit.region = Rect2(0, 0, width, full.get_height())
+
+
+func voice_options_visible() -> bool:
+	return is_instance_valid(pause_options_menu) and pause_options_menu.visible and _options_page_key == "voice"
 
 
 func _sync_sensitivity_value() -> void:

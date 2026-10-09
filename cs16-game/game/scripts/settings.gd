@@ -27,6 +27,11 @@ var crosshair_color := 0
 var crosshair_translucent := true
 ## Options > Keyboard overrides (command -> key name); defaults are implied.
 var key_bindings := {}
+## Options > Voice. Volumes are GameUI slider values; 75 is unity gain.
+var voice_enabled := true
+var voice_transmit_volume := 75.0
+var voice_receive_volume := 75.0
+var voice_mic_boost := false
 var high_contrast := false
 var reduced_motion := false
 
@@ -80,6 +85,10 @@ func load_settings() -> void:
 	crosshair_size = clampi(int(config.get_value("crosshair", "size", crosshair_size)), 0, CROSSHAIR_SIZES.size() - 1)
 	crosshair_color = clampi(int(config.get_value("crosshair", "color", crosshair_color)), 0, CROSSHAIR_COLORS.size() - 1)
 	crosshair_translucent = bool(config.get_value("crosshair", "translucent", crosshair_translucent))
+	voice_enabled = bool(config.get_value("voice", "enabled", voice_enabled))
+	voice_transmit_volume = clampf(float(config.get_value("voice", "transmit_volume", voice_transmit_volume)), 0.0, 100.0)
+	voice_receive_volume = clampf(float(config.get_value("voice", "receive_volume", voice_receive_volume)), 0.0, 100.0)
+	voice_mic_boost = bool(config.get_value("voice", "mic_boost", voice_mic_boost))
 	key_bindings = {}
 	if config.has_section("bindings"):
 		for command: String in config.get_section_keys("bindings"):
@@ -106,6 +115,10 @@ func save() -> void:
 	config.set_value("crosshair", "translucent", crosshair_translucent)
 	for command: String in key_bindings:
 		config.set_value("bindings", command, key_bindings[command])
+	config.set_value("voice", "enabled", voice_enabled)
+	config.set_value("voice", "transmit_volume", voice_transmit_volume)
+	config.set_value("voice", "receive_volume", voice_receive_volume)
+	config.set_value("voice", "mic_boost", voice_mic_boost)
 	config.set_value("accessibility", "high_contrast", high_contrast)
 	config.set_value("accessibility", "reduced_motion", reduced_motion)
 	var error := config.save(settings_path)
@@ -150,6 +163,24 @@ func update_crosshair(size_index: int, color_index: int, translucent: bool) -> v
 	crosshair_color = clampi(color_index, 0, CROSSHAIR_COLORS.size() - 1)
 	crosshair_translucent = translucent
 	_commit()
+
+
+func update_voice(enabled: bool, transmit_volume: float, receive_volume: float, mic_boost: bool) -> void:
+	voice_enabled = enabled
+	voice_transmit_volume = clampf(transmit_volume, 0.0, 100.0)
+	voice_receive_volume = clampf(receive_volume, 0.0, 100.0)
+	voice_mic_boost = mic_boost
+	_commit()
+
+
+## Outgoing gain for the microphone (boost doubles it, like GameUI's).
+func voice_transmit_gain() -> float:
+	return voice_transmit_volume / 75.0 * (2.0 if voice_mic_boost else 1.0)
+
+
+## Playback gain for teammates' voices; 0 when voice is disabled.
+func voice_receive_gain() -> float:
+	return voice_receive_volume / 75.0 if voice_enabled else 0.0
 
 
 ## Every rebindable command's current key.

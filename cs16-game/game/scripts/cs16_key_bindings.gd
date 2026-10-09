@@ -19,6 +19,7 @@ const COMMANDS := {
 	"+use": ["E", "use"],
 	"drop": ["G", "drop"],
 	"lastinv": ["Q", "weapon_last"],
+	"+voicerecord": ["K", ""],
 	"radio1": ["Z", ""],
 	"radio2": ["X", ""],
 	"radio3": ["C", ""],

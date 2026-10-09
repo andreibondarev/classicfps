@@ -329,6 +329,8 @@ func _build_network_roster() -> void:
 		push_error("Game could not bind authoritative network actions")
 	if not _network_client_mode and not network.bind_chat(_handle_network_chat):
 		push_error("Game could not bind authoritative network chat")
+	if not _network_client_mode and not network.bind_voice(_handle_network_voice):
+		push_error("Game could not bind authoritative network voice")
 
 
 func _on_network_role_changed(_status: String) -> void:
@@ -341,6 +343,7 @@ func _on_network_role_changed(_status: String) -> void:
 		_network_client_mode = true
 		network.unbind_game_actions(_handle_network_action)
 		network.unbind_chat(_handle_network_chat)
+		network.unbind_voice(_handle_network_voice)
 		network_client_view = NetworkClientViewScript.new()
 		network_client_view.name = "NetworkClientView"
 		add_child(network_client_view)
@@ -357,6 +360,7 @@ func _exit_tree() -> void:
 	if is_instance_valid(session):
 		session.unbind_game_actions(_handle_network_action)
 		session.unbind_chat(_handle_network_chat)
+		session.unbind_voice(_handle_network_voice)
 		if session.chat_received.is_connected(_on_network_chat_received):
 			session.chat_received.disconnect(_on_network_chat_received)
 
@@ -380,6 +384,24 @@ func _chat_recipient_peers(sender_peer_id: int, sender_team: String, team_only: 
 				or (sender_team in ["T", "CT"] and actor.team == sender_team):
 			recipients.append(peer_id)
 	return recipients
+
+
+## Voice routing, as CS 1.6 without alltalk (ReGameDLL CanPlayerHearPlayer):
+## only the speaker's team hears them, and living players do not hear the dead.
+func _handle_network_voice(peer_id: int) -> Dictionary:
+	var sender := _remote_join_actor(peer_id)
+	if not is_instance_valid(sender) or sender.team not in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
+		return {}
+	var recipients: Array[int] = []
+	if is_instance_valid(remote_roster):
+		for listener_peer: int in remote_roster.peer_ids():
+			var listener := _remote_join_actor(listener_peer)
+			if listener_peer == peer_id or not is_instance_valid(listener) or listener.team != sender.team:
+				continue
+			if not sender.alive and listener.alive:
+				continue
+			recipients.append(listener_peer)
+	return {"sender_id": _round_id_for_actor(sender), "recipients": recipients}
 
 
 func _handle_network_chat(peer_id: int, team_only: bool, text: String) -> bool:
@@ -3607,6 +3629,11 @@ func _build_hud() -> void:
 	hud.deploy_requested.connect(_on_deploy_requested)
 	hud.paused_input_received.connect(_unhandled_input)
 	hud.deploy_cancel_requested.connect(_on_deploy_cancel_requested)
+	hud.voice_test_requested.connect(func() -> void:
+		# Online browser clients answer this themselves (network_client_view).
+		if not _network_client_mode:
+			hud.show_banner("VOICE IS AVAILABLE IN BROWSER MULTIPLAYER", Color("#ffca66"), 2.0)
+	)
 	hud.input_contract_changed.connect(func(state: String, _keyboard: bool, mouse_visible: bool) -> void:
 		if player.combat_controller is HumanCombatController:
 			player.combat_controller.set_menu_input_blocked(state == "chat" or mouse_visible or _pause_menu_open())

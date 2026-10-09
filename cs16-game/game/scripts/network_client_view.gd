@@ -9,6 +9,7 @@ const MovementPrediction = preload("res://scripts/network_movement_prediction.gd
 const CombatEvents = preload("res://scripts/network_combat_events.gd")
 const Grenade = preload("res://scripts/grenade.gd")
 const SmokeView = preload("res://scripts/network_smoke_view.gd")
+const WebVoiceScript = preload("res://scripts/web_voice.gd")
 var _feedback_action := ""
 var _feedback_result := ""
 var _plant_drop_played := false
@@ -20,6 +21,8 @@ var presented_combat_counts: Dictionary = {}
 var movement_prediction := MovementPrediction.new()
 var game: Node
 var session: Node
+## Browser push-to-talk voice (inert off the web).
+var voice: Node
 var actors: Dictionary = {}
 var items: Dictionary = {}
 var snapshot: Dictionary = {}
@@ -35,6 +38,18 @@ func bind_game(owner_game: Node, network: Node) -> void:
 	game = owner_game
 	session = network
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	voice = WebVoiceScript.new()
+	voice.name = "WebVoice"
+	voice.session = session
+	add_child(voice)
+	if not session.voice_received.is_connected(_on_voice_received):
+		session.voice_received.connect(_on_voice_received)
+	var settings := get_node("/root/GameSettings")
+	if not settings.changed.is_connected(_apply_voice_settings):
+		settings.changed.connect(_apply_voice_settings)
+	_apply_voice_settings()
+	if not game.hud.voice_test_requested.is_connected(_on_voice_test_requested):
+		game.hud.voice_test_requested.connect(_on_voice_test_requested)
 	game.player.network_read_only = true
 	game.player.set_physics_process(false)
 	game.player.collision_layer = 0
@@ -116,7 +131,47 @@ func _on_status(_status: String) -> void:
 	game.hud.set_buy_zone(false)
 	game.hud.update_defuse_kit("", false, false)
 	game.hud.update_bomb_carrier(false, false)
+	if is_instance_valid(voice):
+		voice.set_transmitting(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _apply_voice_settings() -> void:
+	if not is_instance_valid(voice):
+		return
+	var settings := get_node("/root/GameSettings")
+	voice.set_receive_volume(settings.voice_receive_gain())
+	voice.set_transmit_gain(settings.voice_transmit_gain())
+	if not bool(settings.voice_enabled):
+		voice.set_transmitting(false)
+
+
+func _on_voice_test_requested() -> void:
+	if is_instance_valid(voice) and voice.available():
+		voice.open_microphone()
+	else:
+		game.hud.show_banner("VOICE NEEDS A BROWSER WITH MICROPHONE SUPPORT", Color("#ffca66"), 2.0)
+
+
+## Talking list: relayed speakers heard recently, plus yourself while sending.
+func _update_voice_hud() -> void:
+	if not is_instance_valid(voice) or not voice.available() or not is_instance_valid(game):
+		return
+	if game.hud.voice_options_visible():
+		game.hud.set_mic_meter_level(voice.mic_level())
+	var talking: PackedStringArray = voice.talking()
+	var talkers: Array = []
+	var owner_id := str(snapshot.get("owner_id", ""))
+	for row: Dictionary in snapshot.get("actors", []):
+		var id := str(row.get("id", ""))
+		if talking.has(id) or (id == owner_id and voice.is_transmitting()):
+			talkers.append({"id": id, "name": str(row.get("name", "")), "team": str(row.get("team", ""))})
+	game.hud.update_voice_talkers(talkers)
+
+
+func _on_voice_received(sender_id: String, sequence: int, frame: PackedByteArray) -> void:
+	if is_instance_valid(voice):
+		voice.play(sender_id, sequence, frame)
 
 
 func apply_snapshot(state: Dictionary) -> void:
@@ -587,7 +642,14 @@ func _apply_actor(row: Dictionary) -> void:
 		model.reset_animation()
 
 
+var _voice_hud_elapsed := 0.0
+
+
 func _process(delta: float) -> void:
+	_voice_hud_elapsed += delta
+	if _voice_hud_elapsed >= 0.1:
+		_voice_hud_elapsed = 0.0
+		_update_voice_hud()
 	for record: Dictionary in actors.values():
 		record.elapsed = minf(float(record.elapsed) + delta, 0.05)
 		var fraction := float(record.elapsed) / 0.05
@@ -706,6 +768,14 @@ func handle_input(event: InputEvent) -> void:
 		return
 	# Options > Keyboard rebinds: a bound key reads as its command's default.
 	var key := KeyBindings.canonical_keycode(event, get_node("/root/GameSettings").bindings())
+	if key == KEY_K and not event.echo:
+		# +voicerecord: hold to talk to your team (released keys stop it).
+		if is_instance_valid(voice):
+			voice.set_transmitting(event.pressed and game.match_started and not game._pause_menu_open()
+				and bool(get_node("/root/GameSettings").voice_enabled)
+				and game.player.team in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST])
+		get_viewport().set_input_as_handled()
+		return
 	if key == KEY_TAB:
 		game.hud.set_scoreboard_held(event.pressed)
 	elif event.pressed and not event.echo:
