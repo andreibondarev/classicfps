@@ -40,15 +40,115 @@ struct ModelExport<'a> {
     vertex_bones: &'a [u8],
     #[serde(skip_serializing_if = "Option::is_none")]
     skin_file: Option<&'static str>,
+    /// Fixed-point translation units per output unit in "rigid_bones_q16" tapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tape_translation_scale: Option<f32>,
 }
 
 /// Largest allowed difference between a baked vertex and the same vertex
 /// rebuilt from its bone transform, in output units (0.01 GoldSrc units).
 const BONE_REBUILD_TOLERANCE: f32 = 2e-4;
 
+/// Translation fixed point for "rigid_bones_q16" tapes: 1/16384 output unit
+/// steps, so |translation| must stay under 2 output units.
+const TAPE_TRANSLATION_SCALE: f32 = 16384.0;
+/// The quantized tape (16-bit quaternions and translations) may move a vertex
+/// this far from its baked position (0.6 mm; observed worst case ~0.3 mm).
+const QUANTIZED_REBUILD_TOLERANCE: f32 = 6e-4;
+const TAPE_CHANNELS: usize = 7;
+
+/// Quaternion (x, y, z, w) of a row-major 3x4 bone matrix's rotation.
+fn rotation_quaternion(m: &[f32]) -> [f64; 4] {
+    let r = |row: usize, column: usize| m[row * 4 + column] as f64;
+    let trace = r(0, 0) + r(1, 1) + r(2, 2);
+    let q = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [(r(2, 1) - r(1, 2)) / s, (r(0, 2) - r(2, 0)) / s, (r(1, 0) - r(0, 1)) / s, 0.25 * s]
+    } else if r(0, 0) > r(1, 1) && r(0, 0) > r(2, 2) {
+        let s = (1.0 + r(0, 0) - r(1, 1) - r(2, 2)).sqrt() * 2.0;
+        [0.25 * s, (r(0, 1) + r(1, 0)) / s, (r(0, 2) + r(2, 0)) / s, (r(2, 1) - r(1, 2)) / s]
+    } else if r(1, 1) > r(2, 2) {
+        let s = (1.0 + r(1, 1) - r(0, 0) - r(2, 2)).sqrt() * 2.0;
+        [(r(0, 1) + r(1, 0)) / s, 0.25 * s, (r(1, 2) + r(2, 1)) / s, (r(0, 2) - r(2, 0)) / s]
+    } else {
+        let s = (1.0 + r(2, 2) - r(0, 0) - r(1, 1)).sqrt() * 2.0;
+        [(r(0, 2) + r(2, 0)) / s, (r(1, 2) + r(2, 1)) / s, 0.25 * s, (r(1, 0) - r(0, 1)) / s]
+    };
+    let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    [q[0] / length, q[1] / length, q[2] / length, q[3] / length]
+}
+
+/// Bone poses as 16-bit [qx, qy, qz, qw, tx, ty, tz] per pose and bone.
+/// Quaternion signs follow the previous pose of the same bone so consecutive
+/// values stay close, which compresses better.
+fn quantize_tape(poses: &[f32], bone_count: usize) -> Result<Vec<i16>, String> {
+    let pose_count = poses.len() / (bone_count * 12);
+    let mut values = Vec::with_capacity(pose_count * bone_count * TAPE_CHANNELS);
+    let mut previous: Vec<[f64; 4]> = vec![[0.0; 4]; bone_count];
+    for pose in 0..pose_count {
+        for bone in 0..bone_count {
+            let m = &poses[(pose * bone_count + bone) * 12..][..12];
+            let mut q = rotation_quaternion(m);
+            let dot: f64 = (0..4).map(|i| q[i] * previous[bone][i]).sum();
+            if pose > 0 && dot < 0.0 {
+                q = [-q[0], -q[1], -q[2], -q[3]];
+            }
+            previous[bone] = q;
+            for component in q {
+                values.push((component * 32767.0).round().clamp(-32767.0, 32767.0) as i16);
+            }
+            for row in 0..3 {
+                let units = (m[row * 4 + 3] * TAPE_TRANSLATION_SCALE).round();
+                if units.abs() > 32767.0 {
+                    return Err(format!("bone translation {} exceeds the q16 tape range", m[row * 4 + 3]));
+                }
+                values.push(units as i16);
+            }
+        }
+    }
+    Ok(values)
+}
+
+/// The row-major 3x4 matrices the runtime rebuilds from quantized values
+/// (Godot's Basis(Quaternion.normalized())).
+fn dequantize_tape(values: &[i16]) -> Vec<f32> {
+    let mut poses = Vec::with_capacity(values.len() / TAPE_CHANNELS * 12);
+    for entry in values.chunks_exact(TAPE_CHANNELS) {
+        let mut q = [entry[0] as f64, entry[1] as f64, entry[2] as f64, entry[3] as f64];
+        let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        for c in &mut q {
+            *c /= length;
+        }
+        let [x, y, z, w] = q;
+        let t = |i: usize| entry[4 + i] as f64 / TAPE_TRANSLATION_SCALE as f64;
+        let matrix = [
+            1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w), t(0),
+            2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w), t(1),
+            2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y), t(2),
+        ];
+        poses.extend(matrix.iter().map(|value| *value as f32));
+    }
+    poses
+}
+
+/// Absolute values, little-endian. (Pose-to-pose differences would compress
+/// ~20% better but force the runtime to decode every bone of every pose,
+/// including the many that move no vertices.)
+fn write_tape_q16(path: &Path, values: &[i16]) -> Result<(), String> {
+    let mut bytes = Vec::with_capacity(values.len() * 2);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, bytes).map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
 /// Rebuild every pose from `bone_poses` and compare with the baked frames, so
 /// the exported bone format is proven equivalent to the vertex data it replaces.
 fn verify_bone_rebuild(parsed: &ParsedMdl, animation: &MdlAnim) -> Result<f32, String> {
+    verify_poses(parsed, animation, &animation.bone_poses, BONE_REBUILD_TOLERANCE)
+}
+
+fn verify_poses(parsed: &ParsedMdl, animation: &MdlAnim, bone_poses: &[f32], tolerance: f32) -> Result<f32, String> {
     let vertex_count = parsed.positions.len() / 3;
     let bone_count = animation.bone_count as usize;
     let pose_stride = bone_count * 12;
@@ -56,18 +156,18 @@ fn verify_bone_rebuild(parsed: &ParsedMdl, animation: &MdlAnim) -> Result<f32, S
         return Err(format!("animation {} has no rigid skin", animation.name));
     }
     let poses = animation.frames as usize * animation.blends as usize;
-    if bone_count == 0 || animation.bone_poses.len() != poses * pose_stride {
+    if bone_count == 0 || bone_poses.len() != poses * pose_stride {
         return Err(format!(
             "animation {} has {} bone floats for {} poses of {} bones",
             animation.name,
-            animation.bone_poses.len(),
+            bone_poses.len(),
             poses,
             bone_count
         ));
     }
     let mut max_error = 0f32;
     for pose in 0..poses {
-        let transforms = &animation.bone_poses[pose * pose_stride..(pose + 1) * pose_stride];
+        let transforms = &bone_poses[pose * pose_stride..(pose + 1) * pose_stride];
         for vertex in 0..vertex_count {
             let local = &parsed.skin_local[vertex * 3..vertex * 3 + 3];
             let bone = parsed.vertex_bones[vertex] as usize;
@@ -87,7 +187,7 @@ fn verify_bone_rebuild(parsed: &ParsedMdl, animation: &MdlAnim) -> Result<f32, S
             }
         }
     }
-    if max_error > BONE_REBUILD_TOLERANCE {
+    if max_error > tolerance {
         return Err(format!(
             "animation {} rebuilds from bones with error {max_error}",
             animation.name
@@ -265,6 +365,7 @@ fn export_model(
     let mut animations = Vec::new();
     let mut bone_count = None;
     let mut max_rebuild_error = 0f32;
+    let mut max_quantized_error = 0f32;
     for (index, animation) in anims.iter().enumerate() {
         if animation.frames == 0 || animation.data.is_empty() {
             continue;
@@ -281,12 +382,25 @@ fn export_model(
         }
         let error = verify_bone_rebuild(parsed, animation)?;
         max_rebuild_error = max_rebuild_error.max(error);
+        let quantized = quantize_tape(&animation.bone_poses, animation.bone_count as usize)?;
+        let quantized_error = verify_poses(
+            parsed,
+            animation,
+            &dequantize_tape(&quantized),
+            QUANTIZED_REBUILD_TOLERANCE,
+        )
+        .map_err(|error| format!("q16 tape: {error}"))?;
+        max_quantized_error = max_quantized_error.max(quantized_error);
         if bone_count.is_some_and(|count| count != animation.bone_count) {
             return Err(format!("animation {} changes the bone count", animation.name));
         }
         bone_count = Some(animation.bone_count);
-        let filename = format!("{index:02}_{}.bones.f32", safe_name(&animation.name));
-        write_f32(&animation_path.join(&filename), &animation.bone_poses)?;
+        let filename = format!("{index:02}_{}.bones.q16", safe_name(&animation.name));
+        write_tape_q16(&animation_path.join(&filename), &quantized)?;
+        let stale = animation_path.join(format!("{index:02}_{}.bones.f32", safe_name(&animation.name)));
+        if stale.is_file() {
+            fs::remove_file(&stale).map_err(|error| error.to_string())?;
+        }
         animations.push(AnimationExport {
             name: animation.name.clone(),
             source_label: animation.source_label.clone(),
@@ -311,11 +425,12 @@ fn export_model(
     }
     let export = ModelExport {
         format: "protocol47-mdl",
-        version: if animated { 4 } else { 1 },
-        frame_format: animated.then_some("rigid_bones"),
+        version: if animated { 5 } else { 1 },
+        frame_format: animated.then_some("rigid_bones_q16"),
         bone_count,
         vertex_bones: if animated { &parsed.vertex_bones } else { &[] },
         skin_file: animated.then_some("skin.f32"),
+        tape_translation_scale: animated.then_some(TAPE_TRANSLATION_SCALE),
         groups,
         positions: &parsed.positions,
         lower_body_mask: &parsed.lower_body_mask,
@@ -326,11 +441,12 @@ fn export_model(
     let json = serde_json::to_vec(&export).map_err(|error| error.to_string())?;
     fs::write(output_path.join("model.json"), json).map_err(|error| error.to_string())?;
     println!(
-        "Exported {}: {} vertices, {} surfaces, max bone rebuild error {:.2e}",
+        "Exported {}: {} vertices, {} surfaces, max bone rebuild error {:.2e} (q16 {:.2e})",
         model_path.display(),
         parsed.positions.len() / 3,
         parsed.groups.len(),
-        max_rebuild_error
+        max_rebuild_error,
+        max_quantized_error
     );
     Ok(())
 }

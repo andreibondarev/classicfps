@@ -114,6 +114,9 @@ const DROP_RESTITUTION := 0.30
 const DROP_MIN_BOUNCE := 0.60
 
 static var _template_cache: Dictionary = {}
+## Microseconds spent building templates, and how many were built (for ?perf).
+static var template_build_usec := 0
+static var template_build_count := 0
 static var _shadow_light_tree_id := 0
 static var _shadow_lights: Dictionary = {}
 
@@ -1276,8 +1279,16 @@ static func _blended_minimum_y(
 			# An unblended source frame has an exact cached minimum. Interpolated
 			# poses still require the vertex-wise scan below: the lowest vertex
 			# can change between endpoints, so blending endpoint minima is wrong.
+			var pose_index := low_offset / int(template.vertex_float_count)
+			var min_cache: Array = animation.get("pose_min_y", [])
+			if pose_index < min_cache.size():
+				if min_cache[pose_index] == null:
+					for vertex_float in range(1, int(template.vertex_float_count), 3):
+						minimum_y = minf(minimum_y, positions[low_offset + vertex_float])
+					min_cache[pose_index] = minimum_y
+				return float(min_cache[pose_index])
 			if animation.has("pose_bounds"):
-				var source_bounds: AABB = animation.pose_bounds[low_offset / int(template.vertex_float_count)]
+				var source_bounds: AABB = animation.pose_bounds[pose_index]
 				return source_bounds.position.y
 			for vertex_float in range(1, int(template.vertex_float_count), 3):
 				minimum_y = minf(minimum_y, positions[low_offset + vertex_float])
@@ -1338,7 +1349,10 @@ static func _load_template(path: String) -> Dictionary:
 	):
 		push_error("Invalid animated character export: %s" % path)
 		return {}
+	var started := Time.get_ticks_usec()
 	var template := _build_template(path, parsed)
+	template_build_usec += Time.get_ticks_usec() - started
+	template_build_count += 1
 	if not template.is_empty():
 		_template_cache[path] = template
 	return template
@@ -1368,11 +1382,25 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		if source == null:
 			push_error("Missing character animation: %s" % animation_file)
 			return {}
-		var animation_positions := source.get_buffer(source.get_length()).to_float32_array()
+		var animation_bytes := source.get_buffer(source.get_length())
 		var frame_count := int(animation_data.get("frames", 0))
 		var blend_count := maxi(1, int(animation_data.get("blends", 1)))
+		var animation_positions := PackedFloat32Array()
+		var pose_bounds: Array[AABB] = []
+		if not rigid_skin.is_empty() and bool(rigid_skin.quantized):
+			animation_positions = RigidSkin.rebuild_q16(rigid_skin, animation_bytes, frame_count * blend_count, pose_bounds)
+		elif not rigid_skin.is_empty():
+			animation_positions = RigidSkin.rebuild(rigid_skin, animation_bytes.to_float32_array(),
+				frame_count * blend_count, pose_bounds)
+		else:
+			animation_positions = animation_bytes.to_float32_array()
+			pose_bounds = PoseSampler.source_bounds(animation_positions, positions.size() / 3)
+		# Rigid poses get bone-box culling bounds, which may exceed the vertices;
+		# grounding needs each pose's exact lowest point, computed when first
+		# asked for (null until then).
+		var pose_min_y: Array = []
 		if not rigid_skin.is_empty():
-			animation_positions = RigidSkin.rebuild(rigid_skin, animation_positions, frame_count * blend_count)
+			pose_min_y.resize(pose_bounds.size())
 		if animation_positions.size() != frame_count * blend_count * positions.size():
 			push_error("Invalid character animation frame data: %s" % animation_file)
 			return {}
@@ -1389,7 +1417,8 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 			"blend_start": animation_data.get("blend_start", [0.0, 0.0]),
 			"blend_end": animation_data.get("blend_end", [1.0, 0.0]),
 			"positions": animation_positions,
-			"pose_bounds": PoseSampler.source_bounds(animation_positions, positions.size() / 3),
+			"pose_bounds": pose_bounds,
+			"pose_min_y": pose_min_y,
 		}
 
 	var groups: Array[Dictionary] = []

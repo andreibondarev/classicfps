@@ -1,12 +1,18 @@
 extends RefCounted
 
-## Rebuilds baked vertex frames from rigid bone tapes (model.json version 4,
-## frame_format "rigid_bones"). GoldSrc skinning is rigid: every vertex follows
-## exactly one bone, so each pose is stored as one 3x4 transform per bone and
-## the exporter verifies that rebuilding reproduces its baked frames. Frames
-## are rebuilt once per template load; the runtime samples them unchanged.
+## Rebuilds baked vertex frames from rigid bone tapes. GoldSrc skinning is
+## rigid: every vertex follows exactly one bone, so each pose is stored as one
+## transform per bone and the exporter verifies that rebuilding reproduces its
+## baked frames. Frames are rebuilt once per template load; the runtime samples
+## them unchanged.
+##   version 4, "rigid_bones":     float32 row-major 3x4 matrices (*.bones.f32)
+##   version 5, "rigid_bones_q16": int16 [qx qy qz qw tx ty tz] per pose and
+##     bone (*.bones.q16); about a third of the download, within 0.6 mm of the
+##     baked frames (the exporter checks).
 
 const FRAME_FORMAT := "rigid_bones"
+const FRAME_FORMAT_Q16 := "rigid_bones_q16"
+const Q16_CHANNELS := 7
 
 ## Byte width of Vector3 in this build (12 with single-precision real_t).
 static var _vector3_byte_stride := PackedVector3Array([Vector3.ZERO]).to_byte_array().size()
@@ -14,7 +20,7 @@ static var _vector3_byte_stride := PackedVector3Array([Vector3.ZERO]).to_byte_ar
 
 ## Returns {} for manifests that still carry baked vertex frames.
 static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int) -> Dictionary:
-	if str(parsed.get("frame_format", "")) != FRAME_FORMAT:
+	if str(parsed.get("frame_format", "")) not in [FRAME_FORMAT, FRAME_FORMAT_Q16]:
 		return {}
 	var bone_count := int(parsed.get("bone_count", 0))
 	var vertex_bones: Array = parsed.get("vertex_bones", [])
@@ -43,7 +49,19 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 			bone = bone_count
 		bone_vertices[bone].append(Vector3(local[vertex * 3], local[vertex * 3 + 1], local[vertex * 3 + 2]))
 		bone_indices[bone].append(vertex)
+	# Each bone's local box: transformed with the bone, it encloses the bone's
+	# vertices in every pose, so culling bounds cost one AABB per bone.
+	var bone_bounds: Array[AABB] = []
+	for bone in bone_count + 1:
+		var points := bone_vertices[bone]
+		var box := AABB(points[0], Vector3.ZERO) if not points.is_empty() else AABB()
+		for point in points:
+			box = box.expand(point)
+		bone_bounds.append(box)
 	return {
+		"bone_bounds": bone_bounds,
+		"quantized": str(parsed.frame_format) == FRAME_FORMAT_Q16,
+		"translation_scale": float(parsed.get("tape_translation_scale", 16384.0)),
 		"bone_count": bone_count,
 		"vertex_count": vertex_count,
 		"bone_vertices": bone_vertices,
@@ -53,20 +71,21 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 
 ## Expands `pose_count` poses of bone transforms into the baked frame layout:
 ## pose-major, vertex-major xyz floats.
-static func rebuild(skin: Dictionary, tape: PackedFloat32Array, pose_count: int) -> PackedFloat32Array:
+## `bounds_out` receives one culling box per pose: it encloses every vertex
+## but may be slightly larger than the exact vertex bounds.
+static func rebuild(skin: Dictionary, tape: PackedFloat32Array, pose_count: int,
+		bounds_out: Array[AABB] = []) -> PackedFloat32Array:
 	var bone_count: int = skin.bone_count
-	var vertex_count: int = skin.vertex_count
 	if pose_count <= 0 or tape.size() != pose_count * bone_count * 12:
 		return PackedFloat32Array()
 	var bone_vertices: Array[PackedVector3Array] = skin.bone_vertices
 	var bone_indices: Array[PackedInt32Array] = skin.bone_indices
+	var bone_bounds: Array[AABB] = skin.bone_bounds
+	var unskinned_bounds := _unskinned_bounds(skin)
+	var frame := _first_frame(skin)
 	var result := PackedFloat32Array()
-	var frame := PackedVector3Array()
-	frame.resize(vertex_count)
-	var unskinned: PackedInt32Array = bone_indices[bone_count]
-	for index in unskinned.size():
-		frame[unskinned[index]] = bone_vertices[bone_count][index]
 	for pose in pose_count:
+		var pose_box := unskinned_bounds
 		for bone in bone_count:
 			var indices := bone_indices[bone]
 			if indices.is_empty():
@@ -80,11 +99,71 @@ static func rebuild(skin: Dictionary, tape: PackedFloat32Array, pose_count: int)
 				),
 				Vector3(tape[o + 3], tape[o + 7], tape[o + 11]),
 			)
+			pose_box = _merge(pose_box, transform * bone_bounds[bone])
 			var moved: PackedVector3Array = transform * bone_vertices[bone]
 			for index in indices.size():
 				frame[indices[index]] = moved[index]
+		bounds_out.append(pose_box)
 		result.append_array(_frame_floats(frame))
 	return result
+
+
+## rebuild() for q16 tapes, decoding each transform where it is used rather
+## than through an intermediate float tape; bones without vertices are skipped.
+static func rebuild_q16(skin: Dictionary, bytes: PackedByteArray, pose_count: int,
+		bounds_out: Array[AABB] = []) -> PackedFloat32Array:
+	var bone_count: int = skin.bone_count
+	var stride := bone_count * Q16_CHANNELS
+	if pose_count <= 0 or bytes.size() != pose_count * stride * 2:
+		return PackedFloat32Array()
+	var scale := 1.0 / float(skin.translation_scale)
+	var bone_vertices: Array[PackedVector3Array] = skin.bone_vertices
+	var bone_indices: Array[PackedInt32Array] = skin.bone_indices
+	var bone_bounds: Array[AABB] = skin.bone_bounds
+	var unskinned_bounds := _unskinned_bounds(skin)
+	var frame := _first_frame(skin)
+	var result := PackedFloat32Array()
+	for pose in pose_count:
+		var pose_box := unskinned_bounds
+		var pose_offset := pose * stride * 2
+		for bone in bone_count:
+			var indices := bone_indices[bone]
+			if indices.is_empty():
+				continue
+			var read := pose_offset + bone * Q16_CHANNELS * 2
+			var rotation := Quaternion(bytes.decode_s16(read), bytes.decode_s16(read + 2),
+				bytes.decode_s16(read + 4), bytes.decode_s16(read + 6)).normalized()
+			var origin := Vector3(bytes.decode_s16(read + 8), bytes.decode_s16(read + 10),
+				bytes.decode_s16(read + 12)) * scale
+			var transform := Transform3D(Basis(rotation), origin)
+			pose_box = _merge(pose_box, transform * bone_bounds[bone])
+			var moved: PackedVector3Array = transform * bone_vertices[bone]
+			for index in indices.size():
+				frame[indices[index]] = moved[index]
+		bounds_out.append(pose_box)
+		result.append_array(_frame_floats(frame))
+	return result
+
+
+## Unskinned vertices never move; an empty AABB() when there are none.
+static func _unskinned_bounds(skin: Dictionary) -> AABB:
+	var points: PackedVector3Array = skin.bone_vertices[int(skin.bone_count)]
+	return skin.bone_bounds[int(skin.bone_count)] if not points.is_empty() else AABB(Vector3.INF, Vector3.ZERO)
+
+
+## Merge that treats AABB(Vector3.INF, ...) as "nothing yet".
+static func _merge(box: AABB, other: AABB) -> AABB:
+	return other if box.position == Vector3.INF else box.merge(other)
+
+
+static func _first_frame(skin: Dictionary) -> PackedVector3Array:
+	var bone_count: int = skin.bone_count
+	var frame := PackedVector3Array()
+	frame.resize(skin.vertex_count)
+	var unskinned: PackedInt32Array = skin.bone_indices[bone_count]
+	for index in unskinned.size():
+		frame[unskinned[index]] = skin.bone_vertices[bone_count][index]
+	return frame
 
 
 static func _frame_floats(frame: PackedVector3Array) -> PackedFloat32Array:

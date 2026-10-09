@@ -1,6 +1,7 @@
 class_name MdlViewModel
 extends Node3D
 
+const LoadingBudget := preload("res://scripts/loading_budget.gd")
 const CharacterModelScript := preload("res://scripts/mdl_character_model.gd")
 const MAX_VISUAL_FPS := 60.0
 # GoldSrc v_ models are authored in view space with the camera at the origin:
@@ -314,9 +315,9 @@ func prepare_weapon_assets(weapons: Array) -> bool:
 			var surfaces := _source_frame_surfaces(source, animation.positions, 0)
 			_shade_surfaces(surfaces, weapon not in UNMIRRORED_WEAPONS)
 			initial_frames[animation_name] = {"surfaces": surfaces}
-			await get_tree().process_frame
+			await LoadingBudget.pace(get_tree())
 		_prepared_weapon_assets[weapon] = initial_frames
-		await get_tree().process_frame
+		await LoadingBudget.pace(get_tree())
 	return true
 
 

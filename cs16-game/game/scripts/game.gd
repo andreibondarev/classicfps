@@ -11,6 +11,8 @@ const RoundStateScript = preload("res://scripts/cs16_round_state.gd")
 const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
 const AdminLogScript := preload("res://scripts/admin_log.gd")
 const ModerationScript := preload("res://scripts/moderation.gd")
+const LoadingBudget := preload("res://scripts/loading_budget.gd")
+const NetworkSessionScript := preload("res://scripts/network_session.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const C4WorldScript = preload("res://scripts/cs16_c4_world.gd")
 const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
@@ -821,18 +823,34 @@ func _reset_empty_dedicated_server() -> void:
 func _prepare_gameplay_presentation() -> void:
 	# start_match already waits for the effects-ready signal. Do all finite
 	# cold weapon I/O/conversion before that signal can permit deployment.
+	var started := Time.get_ticks_msec()
 	if DisplayServer.get_name() != "headless":
 		if not await player.viewmodel.prepare_weapon_assets(player.WEAPONS.keys()):
 			return
+		_log_loading_phase("weapons", started)
 		if not await _prepare_bot_presentation_assets():
 			return
+		_log_loading_phase("bot models", started)
 		if using_imported_map:
 			for bot: TargetActor in _all_bots():
 				if not bot.combat_controller._ensure_objective_graph():
 					push_error("Cannot prepare bot navigation before deployment")
 					return
-				await get_tree().process_frame
+				await LoadingBudget.pace(get_tree())
+		_log_loading_phase("bot navigation", started)
+	if not combat_effects.presentation_ready.is_connected(_on_presentation_ready_logged):
+		combat_effects.presentation_ready.connect(_on_presentation_ready_logged.bind(started), CONNECT_ONE_SHOT)
 	combat_effects.warm_up_presentation(player.camera)
+
+
+func _on_presentation_ready_logged(started: int) -> void:
+	_log_loading_phase("effects warm-up (deploy allowed)", started)
+
+
+## Browser ?perf: loading milestones, in ms since preparation began.
+func _log_loading_phase(phase_name: String, started: int) -> void:
+	if OS.has_feature("web") and NetworkSessionScript.web_page_query("perf") != null:
+		print("PROTOCOL47_LOAD %s at %d ms" % [phase_name, Time.get_ticks_msec() - started])
 
 
 func _bot_presentation_requests() -> Array[Dictionary]:
@@ -867,7 +885,7 @@ func _prepare_bot_presentation_assets() -> bool:
 			push_error("Cannot prepare bot presentation: %s/%s" % [request.skin, request.weapon])
 			return false
 		loading_slices += 1
-		await get_tree().process_frame
+		await LoadingBudget.pace(get_tree())
 	bot_asset_preparation = {"requests": requests.size(), "loading_slices": loading_slices,
 		"new_templates": MdlCharacterModel._template_cache.size() - templates_before,
 		"elapsed_ms": float(Time.get_ticks_usec() - started) / 1000.0,
