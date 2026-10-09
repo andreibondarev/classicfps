@@ -1,15 +1,20 @@
 """HTML pages for the Classic FPS admin dashboard (no external assets).
 
-Tabs: Overview (status, live match, key charts, latest sessions), Players,
-Sessions, Health (uptime, crashes, charts, events, errors), plus a player
-detail page. Every link is relative, because Caddy serves this under /admin/.
+Tabs: Overview (status, live match with kick/mute/ban, key charts, latest
+sessions), Players, Sessions, Chat, Moderation (active bans and mutes, manual
+bans, action log), Health (uptime, crashes, charts, events, errors), plus a
+player detail page. Every link is relative, because Caddy serves this under
+/admin/. Forms post to "moderate" with a CSRF token.
 """
 import html
 import time
 
+from protocol47_moderation import DURATIONS
+
 LOCAL_ADDRESSES = ("127.0.0.1", "::1", "")
 TABS = [("overview", "Overview", "./"), ("players", "Players", "players"),
-        ("sessions", "Sessions", "sessions"), ("health", "Health", "health")]
+        ("sessions", "Sessions", "sessions"), ("chat", "Chat", "chat"), ("moderation", "Moderation", "moderation"),
+        ("health", "Health", "health")]
 
 STYLE = """
 :root { --bg: #0f1114; --panel: #171a1f; --panel-2: #1d2128; --line: #262b33; --text: #e7e3da;
@@ -62,6 +67,28 @@ code { color: var(--link); font-size: 12px; }
 input.search { width: 100%; max-width: 360px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font: inherit; }
 details summary { cursor: pointer; } pre { white-space: pre-wrap; font-size: 12px; color: #c8c2b6; margin: 8px 0 0; }
+form.inline { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+.actions { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; }
+.actions details { position: relative; }
+.actions details > summary { list-style: none; }
+.actions details > summary::-webkit-details-marker { display: none; }
+.actions details[open] > .popover { position: absolute; right: 0; z-index: 3; }
+/* An open popover must not be clipped by the table's horizontal scroller. */
+.table:has(details[open]) { overflow: visible; }
+.popover { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; width: 280px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45); display: grid; gap: 10px; }
+.popover form { display: grid; gap: 6px; margin: 0; }
+.popover h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+input.field, select.field { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 6px 9px; font: inherit; font-size: 13px; }
+label.check { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+button.btn, summary.btn { cursor: pointer; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap; }
+button.btn:hover, summary.btn:hover { border-color: var(--accent); }
+button.danger { color: var(--bad); border-color: rgba(255,107,94,.4); }
+.form-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); align-items: end; }
+.chat-text { white-space: normal; min-width: 220px; }
+.blocked { text-decoration: line-through; color: var(--muted); }
 footer { max-width: 1240px; margin: 0 auto; padding: 0 20px 30px; color: var(--muted); font-size: 12px; }
 @media (max-width: 700px) {
   .scoreboard { grid-template-columns: 1fr; } .status { margin-left: 0; flex-wrap: wrap; }
@@ -151,6 +178,65 @@ def ping(player):
     return f'<span class="{"bad" if rtt > 150 else ("ok" if rtt < 80 else "")}">{rtt:.0f} ms</span>'
 
 
+# -- moderation forms -------------------------------------------------------
+def hidden(**fields):
+    return "".join(f'<input type="hidden" name="{name}" value="{esc(value)}">' for name, value in fields.items())
+
+
+def duration_select(default=3600):
+    options = "".join(f'<option value="{seconds}"{" selected" if seconds == default else ""}>{label}</option>'
+                      for seconds, label in DURATIONS)
+    return f'<select class="field" name="duration">{options}</select>'
+
+
+def reason_field(placeholder="Reason (shown to the player)"):
+    return f'<input class="field" name="reason" maxlength="80" placeholder="{placeholder}">'
+
+
+def player_actions(store, player, back, kick=True):
+    """Kick (connected players only) and a Mute / Ban popover for one player."""
+    tag, name = player.get("tag") or "", player.get("name") or ""
+    address = player.get("address") or player.get("last_address") or ""
+    has_address = address and address not in LOCAL_ADDRESSES
+    token = store.moderation.csrf
+    common = hidden(csrf=token, back=back, name=name)
+    parts = []
+    if kick and player.get("peer"):
+        parts.append(f'<form class="inline" method="post" action="moderate">{common}'
+                     f'{hidden(action="kick", peer=player.get("peer"), tag=tag)}'
+                     f'<button class="btn" title="Disconnect now; they can rejoin">Kick</button></form>')
+    if tag or has_address:
+        mute = (f'<form method="post" action="moderate"><h3>Mute chat and voice</h3>{common}'
+                f'{hidden(action="mute", tag=tag)}{duration_select(3600)}{reason_field("Reason (for the log)")}'
+                f'<button class="btn">Mute</button></form>' if tag else "")
+        ban = (f'<form method="post" action="moderate"><h3>Ban</h3>{common}{hidden(action="ban", peer=player.get("peer") or "")}'
+               f'{duration_select(86400)}{reason_field()}'
+               + (f'<label class="check"><input type="checkbox" name="tag" value="{esc(tag)}" checked> '
+                  f'Player ID <code>{esc(tag[:8])}</code></label>' if tag else "")
+               + (f'<label class="check"><input type="checkbox" name="address" value="{esc(address)}"> '
+                  f'IP {esc(address)}</label>' if has_address else "")
+               + '<button class="btn danger">Ban</button></form>')
+        parts.append(f'<details><summary class="btn">Mute / Ban ▾</summary><div class="popover">{mute}{ban}</div></details>')
+    return f'<div class="actions">{"".join(parts)}</div>' if parts else ""
+
+
+def lift_button(store, sanction, back):
+    return (f'<form class="inline" method="post" action="moderate">'
+            f'{hidden(csrf=store.moderation.csrf, back=back, action="lift", id=sanction["id"])}'
+            f'<button class="btn">Lift</button></form>')
+
+
+def until_text(sanction):
+    return "permanent" if not sanction["until"] else f'until {when(sanction["until"])}'
+
+
+def sanction_badges(store, tag, address=""):
+    with store.lock:
+        active = store.moderation.status_for(tag, address)
+    return "".join(f' <span class="pill bad" title="{esc(s["reason"])}">{"banned" if s["kind"] == "ban" else "muted"}</span>'
+                   for s in active)
+
+
 # -- charts --------------------------------------------------------------
 def sparkline(values, color, label, unit="", digits=0, floor=None, span_label="24 h ago"):
     """Area chart; one value per bucket (None = gap). Width scales to the card."""
@@ -201,14 +287,18 @@ def page(active, title, body, store, refresh=False):
               + (f'<span class="pill bad">{health["crashes_24h"]} crash{"es" if health["crashes_24h"] != 1 else ""} in 24 h</span>'
                  if health["crashes_24h"] else ""))
     tabs = "".join(f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>' for key, label, href in TABS)
-    meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
+    meta = ""
+    # Reload every 15 s, but never while a moderation form is open or in use.
+    refresher = ("<script>setInterval(() => { const busy = document.querySelector('details[open]') || "
+                 "(document.activeElement && document.activeElement.matches('input, select, textarea, button')); "
+                 "if (!busy) location.reload(); }, 15000);</script>") if refresh else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{esc(title)} · Classic FPS admin</title>'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">{meta}<style>{STYLE}</style></head><body>'
             f'<header><div class="bar"><div class="brand">Classic FPS <span>admin</span></div>'
             f'<div class="status">{status}</div></div><nav>{tabs}</nav></header>'
             f'<main>{body}</main><footer>Updated {when(time.time())}{" · refreshes every 15 s" if refresh else ""} · '
             f'IP geolocation by <a href="https://db-ip.com">DB-IP</a> (CC BY 4.0), approximate.</footer>'
-            f'{SEARCH_SCRIPT}</body></html>')
+            f'{SEARCH_SCRIPT}{refresher}</body></html>')
 
 
 def tile(label, value, hint="", css=""):
@@ -228,17 +318,22 @@ def live_section(store):
 
     def roster(side):
         rows = "".join(
-            f'<tr><td>{esc(p.get("name"))}{"" if p.get("alive") else " <span class=muted>(dead)</span>"}</td>'
+            f'<tr><td>{esc(p.get("name"))}{"" if p.get("alive") else " <span class=muted>(dead)</span>"}'
+            f'{sanction_badges(store, p.get("tag", ""))}</td>'
             f'<td>{kd(p.get("kills"), p.get("deaths"))}</td><td>{ping(p)}</td>'
-            f'<td>{esc(p.get("transport"))}</td><td>{address(p)}</td><td>{short_tag(p.get("tag", ""))}</td></tr>'
+            f'<td>{esc(p.get("transport"))}</td><td>{address(p)}</td><td>{short_tag(p.get("tag", ""))}</td>'
+            f'<td>{player_actions(store, p, "./")}</td></tr>'
             for p in sides[side])
-        return (f'<div class="table"><table><tr><th>Player</th><th>K / D</th><th>Ping</th><th>Via</th><th>Address</th><th>ID</th></tr>'
-                f'{rows or "<tr><td colspan=6 class=muted>No humans</td></tr>"}</table></div>')
+        return (f'<div class="table"><table><tr><th>Player</th><th>K / D</th><th>Ping</th><th>Via</th><th>Address</th><th>ID</th>'
+                f'<th></th></tr>{rows or "<tr><td colspan=7 class=muted>No humans</td></tr>"}</table></div>')
 
     unassigned = ""
     if sides["other"]:
-        names = ", ".join(esc(p.get("name")) for p in sides["other"])
-        unassigned = f'<p class="muted">Choosing a team: {names}</p>'
+        rows = "".join(f'<tr><td>{esc(p.get("name"))}{sanction_badges(store, p.get("tag", ""))}</td>'
+                       f'<td>{esc(p.get("transport"))}</td><td>{address(p)}</td><td>{short_tag(p.get("tag", ""))}</td>'
+                       f'<td>{player_actions(store, p, "./")}</td></tr>' for p in sides["other"])
+        unassigned = (f'<h2 style="margin-top:14px">Choosing a team</h2><div class="table"><table>'
+                      f'<tr><th>Player</th><th>Via</th><th>Address</th><th>ID</th><th></th></tr>{rows}</table></div>')
     return (f'<div class="card"><h2>Live match <span class="sub">{esc(live.get("map"))} · round {esc(live.get("round"))} · '
             f'{esc(live.get("phase"))} · {esc(live.get("bots"))} bots</span></h2>'
             f'<div class="scoreboard"><div><div class="score T">T {esc(live.get("t_score"))}</div>{roster("T")}</div>'
@@ -380,10 +475,84 @@ def render_player(store, tag):
              + tile("K / D", f"{kills} / {deaths}", f"{kills / deaths:.2f} ratio" if deaths else "")
              + tile("First seen", ago(min((s["connected"] for s in sessions), default=0)) or "&mdash;")
              + "</div>")
+    last_address = next((s["address"] for s in sessions
+                         if s["address"] and s["address"] not in LOCAL_ADDRESSES), "")
+    back = f"player?tag={tag}"
+    with store.lock:
+        active = store.moderation.status_for(tag, last_address)
+        chat = store.moderation.chat(200, tag=tag)
+    live = next((p for p in store.live().get("players", []) if p.get("tag") == tag), None)
+    sanctions = "".join(
+        f'<tr><td><span class="pill bad">{esc(s["kind"])}</span></td>'
+        f'<td>{"ID" if s["tag"] == tag else "IP " + esc(s["address"])}</td><td>{until_text(s)}</td>'
+        f'<td class="wrap">{esc(s["reason"]) or "<span class=muted>no reason</span>"}</td>'
+        f'<td>{lift_button(store, s, back)}</td></tr>' for s in active)
+    actions = player_actions(store, {**(live or {}), "tag": tag, "name": (live or {}).get("name") or (names[-1] if names else ""),
+                                     "address": (live or {}).get("address") or last_address}, back, kick=live is not None)
+    moderation_card = (f'<div class="card"><h2>Moderation <span class="sub">'
+                       f'{"online now" if live else "offline"}</span></h2>{actions}'
+                       + (f'<div class="table" style="margin-top:12px"><table><tr><th>Active</th><th>Applies to</th><th>Ends</th>'
+                          f'<th>Reason</th><th></th></tr>{sanctions}</table></div>' if active else
+                          '<p class="muted">No active bans or mutes.</p>') + '</div>')
     body = (f'<p><a href="players">← Players</a></p><div class="card"><h2>Player <code>{esc(tag)}</code></h2>'
             f'<p>Names used: {esc(", ".join(names)) or "<span class=muted>none</span>"}</p></div>'
-            f'{tiles}<div class="card"><h2>Sessions</h2>{sessions_table(sessions)}</div>')
+            f'{tiles}{moderation_card}<div class="card"><h2>Chat</h2>{chat_table(chat, store, back, show_actions=False)}</div>'
+            f'<div class="card"><h2>Sessions</h2>{sessions_table(sessions)}</div>')
     return page("players", "Player", body, store)
+
+
+def chat_table(rows, store, back, show_actions=True):
+    # Message second, so it stays on screen on a phone.
+    body = "".join(
+        f'<tr class="chat-row"><td>{team(c["team"])} {esc(c["name"])}'
+        f'{" <span class=muted>(team)</span>" if c["team_only"] else ""}</td>'
+        f'<td class="chat-text"><span class="{"blocked" if c["blocked"] else ""}">{esc(c["text"])}</span>'
+        f'{" <span class=muted>(muted, not delivered)</span>" if c["blocked"] else ""}</td>'
+        f'<td>{when(c["ts"])}<span class="place">{ago(c["ts"])}</span></td>'
+        f'<td>{short_tag(c["tag"] or "")}</td></tr>' for c in rows)
+    search = '<input class="search" placeholder="Filter by name or text…" data-rows=".chat-row">' if show_actions else ""
+    return (f'{search}<div class="table"><table><tr><th>Player</th><th>Message</th><th>When</th><th>ID</th></tr>'
+            f'{body or "<tr><td colspan=4 class=muted>No chat yet</td></tr>"}</table></div>')
+
+
+def render_chat(store):
+    with store.lock:
+        rows = store.moderation.chat(400)
+    return page("chat", "Chat", f'<div class="card"><h2>Chat <span class="sub">most recent 400, all and team · '
+                f'open a player to mute or ban</span></h2>{chat_table(rows, store, "chat")}</div>', store)
+
+
+def render_moderation(store):
+    with store.lock:
+        active = store.moderation.active()
+        audit = store.moderation.audit_log(100)
+    def rows(kind):
+        return "".join(
+            f'<tr><td>{esc(s["name"]) or "<span class=muted>&mdash;</span>"}</td>'
+            f'<td>{short_tag(s["tag"]) if s["tag"] else ""}{" " if s["tag"] and s["address"] else ""}{esc(s["address"])}</td>'
+            f'<td>{when(s["created"])}<span class="place">{ago(s["created"])}</span></td><td>{until_text(s)}</td>'
+            f'<td class="wrap">{esc(s["reason"]) or "<span class=muted>no reason</span>"}</td>'
+            f'<td>{lift_button(store, s, "moderation")}</td></tr>' for s in active if s["kind"] == kind)
+    header = '<tr><th>Name</th><th>Player ID / IP</th><th>Since</th><th>Ends</th><th>Reason</th><th></th></tr>'
+    manual = (f'<div class="card"><h2>Ban by ID or IP <span class="sub">for players who are not online</span></h2>'
+              f'<form method="post" action="moderate" class="form-grid">'
+              f'{hidden(csrf=store.moderation.csrf, back="moderation", action="ban", name="")}'
+              f'<input class="field" name="tag" placeholder="Player ID (32 hex)" pattern="[0-9a-fA-F]{{32}}">'
+              f'<input class="field" name="address" placeholder="IP address">'
+              f'{duration_select(86400)}{reason_field()}<button class="btn danger">Ban</button></form>'
+              f'<p class="muted">An ID ban follows one browser install (it survives IP changes; clearing site data '
+              f'escapes it). An IP ban covers everyone on that address, so use it sparingly.</p></div>')
+    log = "".join(
+        f'<tr><td>{when(a["ts"])}<span class="place">{ago(a["ts"])}</span></td><td>{esc(a["action"])}</td>'
+        f'<td>{esc(a["target"])}</td><td class="wrap muted">{esc(a["detail"])}</td></tr>' for a in audit)
+    body = (f'<div class="card"><h2>Active bans</h2><div class="table"><table>{header}'
+            f'{rows("ban") or "<tr><td colspan=6 class=muted>None</td></tr>"}</table></div></div>'
+            f'<div class="card"><h2>Active mutes <span class="sub">chat and voice</span></h2><div class="table"><table>{header}'
+            f'{rows("mute") or "<tr><td colspan=6 class=muted>None</td></tr>"}</table></div></div>'
+            f'{manual}<div class="card"><h2>Action log</h2><div class="table"><table>'
+            f'<tr><th>When</th><th>Action</th><th>Player</th><th>Detail</th></tr>'
+            f'{log or "<tr><td colspan=4 class=muted>Nothing yet</td></tr>"}</table></div></div>')
+    return page("moderation", "Moderation", body, store)
 
 
 render_dashboard = render_overview

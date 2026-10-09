@@ -67,17 +67,18 @@ locally and `?server=wss://...` joins a different server.
 ## Admin dashboard
 
 `https://<domain>/admin/` (user `admin`, password-protected by Caddy) shows who
-is online, recent sessions (name, team, length, K/D, transport, IP, browser)
-and per-player totals. It is read-only.
+is online, recent sessions (name, team, length, K/D, transport, IP, browser),
+per-player totals, the chat log and moderation.
 
 - The game server writes `/var/lib/protocol47/events.jsonl` and `status.json`
   when started with `--admin-log=` (see `protocol47.service`).
 - `deploy/admin/protocol47_admin.py` (Python standard library) runs as the
   `p47admin` user (`protocol47-admin.service`), stores data in
   `/var/lib/protocol47-admin/admin.db` and listens on 127.0.0.1:8090.
-- Browser players reach the game through Caddy, so the game only sees
-  127.0.0.1; the service recovers their IP from Caddy's JSON access log (in the
-  journal) once a session ends. IPs and user agents are erased after 30 days.
+- Browser players reach the game through Caddy. Caddy passes the browser's
+  address to the game as `/ws?client_ip=` (the game trusts it only on its
+  loopback listener); the service also reads Caddy's JSON access log for user
+  agents. IPs and user agents are erased after 30 days (active bans keep theirs).
 - Players are grouped by a random per-install tag the client sends; it is not
   an account and resets if the player clears site data.
 
@@ -101,4 +102,34 @@ network, and 24-hour charts (samples every 5 s, kept 7 days). The live table
 adds each player's ping (application-level, every 2 s), packet loss (desktop
 UDP only), bandwidth and reconnects in the last hour. JSON: `/admin/api/health`.
 
-Tests: `cd deploy/admin && python3 -m unittest test_protocol47_admin test_protocol47_health`.
+### Moderation
+
+Live players have **Kick** and **Mute / Ban** buttons (Overview and player
+pages); the **Chat** tab logs every message, including ones a mute blocked; the
+**Moderation** tab lists active bans and mutes (with Lift), bans players who are
+offline by ID or IP, and keeps an action log.
+
+- Kick disconnects with the admin's reason; the player can rejoin.
+- Ban (1 hour to permanent) matches the player's per-install ID and/or IP. A
+  banned player is dropped at once and refused on every rejoin with the
+  reason. ID bans survive IP changes but not clearing site data; IP bans hit
+  everyone behind that address. Loopback can't be banned.
+- Mute silences chat and voice for that ID.
+- The admin service writes `/var/lib/protocol47/moderation/moderation.json`;
+  the game (`--moderation=`, `game/scripts/moderation.gd`) reloads it every
+  second and reports what it enforced back through the admin log. Forms carry
+  a CSRF token and must come from the same origin (Basic auth alone would let
+  another site post to them).
+
+Setup on the droplet (as root), once:
+
+```bash
+install -d -o protocol47 -g protocol47 -m 2770 /var/lib/protocol47/moderation
+install -m 644 deploy/admin/protocol47_moderation.py /opt/protocol47-admin/
+install -m 644 deploy/protocol47.service deploy/protocol47-admin.service /etc/systemd/system/
+cp deploy/Caddyfile /etc/caddy/Caddyfile
+systemctl daemon-reload && systemctl restart protocol47 protocol47-admin && systemctl reload caddy
+```
+
+Tests: `cd deploy/admin && python3 -m unittest` and `node scripts/test-moderation.mjs`
+(part of `npm run game:test:dedicated`).

@@ -196,6 +196,18 @@ static func _kbps(byte_delta: int, seconds: float) -> float:
 	return snappedf(maxf(0.0, float(byte_delta)) * 8.0 / 1000.0 / seconds, 0.1) if seconds > 0.0 else 0.0
 
 
+## Every chat line a player sends, including ones a mute blocked, for the
+## admin's chat log.
+func log_chat(peer_id: int, sender_name: String, team: String, team_only: bool, text: String, blocked: bool) -> void:
+	_append({"type": "chat", "peer": peer_id, "tag": str(network.client_tag(peer_id)), "name": sender_name,
+		"team": team, "team_only": team_only, "text": text, "blocked": blocked})
+
+
+## Moderation outcomes (kicks and ban refusals) reported by moderation.gd.
+func record(event: Dictionary) -> void:
+	_append(event.duplicate())
+
+
 func _append(event: Dictionary) -> void:
 	event["ts"] = Time.get_unix_time_from_system()
 	var file := FileAccess.open(_events_path, FileAccess.READ_WRITE if FileAccess.file_exists(_events_path) else FileAccess.WRITE)

@@ -28,8 +28,12 @@
 		reverse_proxy 127.0.0.1:8090
 	}
 
-	# The game joins wss://<this host>/ws by default.
+	# The game joins wss://<this host>/ws by default. The game only sees this
+	# proxy's address, so the browser's address replaces whatever query it
+	# sent; the game trusts client_ip only from its loopback listener (for
+	# moderation and the admin's live view).
 	handle /ws {
+		rewrite * /ws?client_ip={remote_host}
 		reverse_proxy 127.0.0.1:27448
 	}
 

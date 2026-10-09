@@ -3,8 +3,9 @@
 
 Ingests the dedicated server's admin log (events.jsonl + status.json, written
 by game/scripts/admin_log.gd) and Caddy's JSON access log into SQLite, and
-serves a small read-only dashboard on 127.0.0.1. Caddy exposes it at /admin
-behind basic auth. Standard library only.
+serves a small dashboard on 127.0.0.1. Caddy exposes it at /admin behind
+basic auth. Moderation (kick, ban, mute; protocol47_moderation.py) writes a
+file the game watches. Standard library only.
 
 Browser players reach the game through Caddy, so the game only sees
 127.0.0.1 for them. Caddy logs each /ws connection when it closes (end time +
@@ -13,6 +14,8 @@ entry with the same end time and length. IP addresses and user agents are
 kept for --retention-days (30) and then erased; play statistics are kept.
 """
 import argparse
+import re
+import hmac
 import html
 import ipaddress
 import json
@@ -28,6 +31,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import protocol47_health as health
+from protocol47_moderation import Moderation
 
 SCHEMA = """
 create table if not exists meta(key text primary key, value text);
@@ -208,7 +212,7 @@ def geo_label(record):
 
 
 class Store:
-    def __init__(self, path: str, events: Path, retention_days: int, geoip: str = ""):
+    def __init__(self, path: str, events: Path, retention_days: int, geoip: str = "", moderation: str = ""):
         self.geo = GeoDatabase(geoip)
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -222,6 +226,7 @@ class Store:
         self.read_game_journal = health.read_game_journal
         self.read_service_state = health.service_state
         self.service = {}
+        self.moderation = Moderation(self, moderation)
 
     # -- meta ------------------------------------------------------------
     def _meta(self, key, default=""):
@@ -304,6 +309,8 @@ class Store:
         elif kind == "match_end":
             self.db.execute("insert into matches(ts, t_score, ct_score) values(?, ?, ?)",
                             (ts, event.get("t_score", 0), event.get("ct_score", 0)))
+        else:
+            self.moderation.apply_event(event)
 
     # -- Caddy access log -------------------------------------------------
     def ingest_access_lines(self, lines):
@@ -314,7 +321,7 @@ class Store:
             except (json.JSONDecodeError, TypeError):
                 continue
             request = entry.get("request") or {}
-            if request.get("uri") != "/ws" or "ts" not in entry:
+            if str(request.get("uri", "")).split("?", 1)[0] != "/ws" or "ts" not in entry:
                 continue
             agent = (request.get("headers") or {}).get("User-Agent") or [""]
             ip = request.get("client_ip") or request.get("remote_ip") or ""
@@ -358,6 +365,7 @@ class Store:
         self.db.execute("update sessions set address=null, user_agent=null where connected < ?", (cutoff,))
         self.db.execute("delete from ws_connections where ended < ?", (cutoff,))
         self.db.execute("delete from geo where looked_up < ?", (cutoff,))
+        self.moderation.apply_retention(cutoff)
         self.db.commit()
 
     def location(self, ip):
@@ -470,6 +478,31 @@ class Store:
             self.apply_retention()
             self.ingest_game_journal()
             self.sample_health()
+            # Drops expired bans, mutes and old kicks from the game's file.
+            self.moderation.write_file()
+
+    def moderate(self, form):
+        """Applies one admin form submission; raises ValueError when invalid."""
+        action = form.get("action", "")
+        with self.lock:
+            if action == "kick":
+                peer = form.get("peer", "0")
+                self.moderation.kick(int(peer) if peer.isdigit() else 0, form.get("tag", ""), form.get("name", ""),
+                                     form.get("reason", ""))
+            elif action in ("ban", "mute"):
+                seconds = form.get("duration", "")
+                if not seconds.isdigit():
+                    raise ValueError("pick a duration")
+                # Unchecked "ID" / "IP" boxes are simply not sent.
+                self.moderation.sanction(action, form.get("tag", "").strip(), form.get("address", "").strip(),
+                                         form.get("name", ""), form.get("reason", ""), int(seconds))
+            elif action == "lift":
+                identifier = form.get("id", "")
+                if not identifier.isdigit():
+                    raise ValueError("missing id")
+                self.moderation.lift(int(identifier))
+            else:
+                raise ValueError("unknown action")
 
     # -- queries ---------------------------------------------------------
     def live(self):
@@ -528,8 +561,12 @@ class Store:
 
 # -- HTML lives in protocol47_pages.py ------------------------------------
 from protocol47_pages import (  # noqa: E402
-    render_dashboard, render_health, render_overview, render_player, render_players, render_sessions, sparkline,
+    render_chat, render_dashboard, render_health, render_moderation, render_overview, render_player, render_players,
+    render_sessions, sparkline,
 )
+
+# Where a form may send the admin back to (relative to /admin/).
+RETURN_PAGE = re.compile(r"^(\./|players|sessions|health|chat|moderation|player\?tag=[0-9a-f]{32})$")
 
 
 def make_handler(store):
@@ -549,7 +586,7 @@ def make_handler(store):
             query = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
             pages = {"/": render_overview, "/players": render_players, "/sessions": render_sessions,
-                     "/health": render_health}
+                     "/health": render_health, "/chat": render_chat, "/moderation": render_moderation}
             if path in pages:
                 self._send(200, pages[path](store), "text/html; charset=utf-8")
             elif path == "/player":
@@ -562,8 +599,35 @@ def make_handler(store):
                 self._send(200, json.dumps(store.health()), "application/json")
             elif path == "/api/players":
                 self._send(200, json.dumps(store.players()), "application/json")
+            elif path == "/api/chat":
+                with store.lock:
+                    self._send(200, json.dumps(store.moderation.chat(500)), "application/json")
             else:
                 self._send(404, "not found", "text/plain")
+
+        def do_POST(self):
+            # Basic auth is sent automatically by the browser, so forms carry a
+            # token and must come from this site (cross-site request forgery).
+            if urlparse(self.path).path.rstrip("/") != "/moderate":
+                return self._send(404, "not found", "text/plain")
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 8192:
+                return self._send(400, "bad request", "text/plain")
+            form = {key: values[0] for key, values in parse_qs(self.rfile.read(length).decode("utf-8", "replace")).items()}
+            origin = self.headers.get("Origin") or ""
+            if origin and urlparse(origin).netloc != (self.headers.get("Host") or ""):
+                return self._send(403, "cross-site form refused", "text/plain")
+            if not hmac.compare_digest(form.get("csrf", ""), store.moderation.csrf):
+                return self._send(403, "stale form: reload the page and try again", "text/plain")
+            try:
+                store.moderate(form)
+            except ValueError as error:
+                return self._send(400, f"Not done: {error}. Go back and try again.", "text/plain; charset=utf-8")
+            back = form.get("back", "./")
+            self.send_response(303)
+            self.send_header("Location", back if RETURN_PAGE.match(back) else "./")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def log_message(self, format, *args):  # noqa: A002 (base signature)
             pass
@@ -580,9 +644,11 @@ def main():
     parser.add_argument("--retention-days", type=int, default=30)
     parser.add_argument("--geoip", default="/var/lib/protocol47-admin/dbip-city-lite.mmdb",
                         help="DB-IP City Lite (MaxMind DB format); optional")
+    parser.add_argument("--moderation", default="",
+                        help="moderation file the game watches (its --moderation=); empty disables enforcement")
     parser.add_argument("--once", action="store_true", help="ingest once and exit (for testing)")
     args = parser.parse_args()
-    store = Store(args.db, Path(args.events), args.retention_days, args.geoip)
+    store = Store(args.db, Path(args.events), args.retention_days, args.geoip, args.moderation)
     store.refresh()
     if args.once:
         return

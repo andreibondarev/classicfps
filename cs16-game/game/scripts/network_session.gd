@@ -9,6 +9,8 @@ signal action_result_received(result: Dictionary)
 signal world_snapshot_received(snapshot: Dictionary)
 signal combat_event_received(event: Dictionary)
 signal chat_received(message: Dictionary)
+## Host: a peer sent its persistent client tag (moderation checks bans on it).
+signal peer_identified(peer_id: int, tag: String)
 ## A relayed voice frame (one encoded Opus packet) from another player.
 signal voice_received(sender_id: String, sequence: int, frame: PackedByteArray)
 
@@ -35,6 +37,9 @@ var _game_voice_handler := Callable()
 var _voice_sequence := 0
 ## Host: each peer's self-reported install tag (settings.client_tag).
 var _client_tags: Dictionary = {}
+## Client: why the host is about to drop this connection (kick or ban); shown
+## in place of SERVER DISCONNECTED.
+var _disconnect_reason := ""
 ## Host: application-level round trip per peer (works for every transport).
 const PING_INTERVAL_MS := 2000
 var _peer_rtt: Dictionary = {}
@@ -142,8 +147,9 @@ func _ready() -> void:
 		_set_status("CONNECTION FAILED")
 	)
 	multiplayer.server_disconnected.connect(func() -> void:
+		var reason := _disconnect_reason
 		disconnect_session()
-		_set_status("SERVER DISCONNECTED")
+		_set_status(reason if not reason.is_empty() else "SERVER DISCONNECTED")
 	)
 	_start_from_command_line()
 
@@ -344,6 +350,7 @@ func disconnect_session() -> void:
 	_voice_peers.clear()
 	_voice_sequence = 0
 	_client_tags.clear()
+	_disconnect_reason = ""
 	_peer_rtt.clear()
 	_ping_sent.clear()
 	_next_ping_ms = 0
@@ -386,6 +393,29 @@ func _submit_client_tag(tag: Variant) -> void:
 	if is_host and multiplayer.is_server() and has_input_peer(peer_id) \
 			and not _client_tags.has(peer_id) and SettingsScript.is_valid_client_tag(tag):
 		_client_tags[peer_id] = str(tag)
+		peer_identified.emit(peer_id, str(tag))
+
+
+const MAX_NOTICE_LENGTH := 120
+
+## Host: tell a peer why it is being dropped, then disconnect it once the
+## reliable notice has had time to leave.
+func kick_peer(peer_id: int, notice: String) -> bool:
+	if not is_host or peer_id <= 1 or not multiplayer.get_peers().has(peer_id):
+		return false
+	_moderation_notice.rpc_id(peer_id, notice.left(MAX_NOTICE_LENGTH))
+	get_tree().create_timer(0.3, true, false, true).timeout.connect(func() -> void:
+		if is_host and multiplayer.get_peers().has(peer_id):
+			multiplayer.multiplayer_peer.disconnect_peer(peer_id)
+	)
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 2)
+func _moderation_notice(notice: Variant) -> void:
+	if is_host or typeof(notice) != TYPE_STRING:
+		return
+	_disconnect_reason = sanitize_chat_text(notice).left(MAX_NOTICE_LENGTH).to_upper()
 
 
 func _send_pings(now_ms: int) -> void:
@@ -443,8 +473,22 @@ func client_tag(peer_id: int) -> String:
 	return str(_client_tags.get(peer_id, ""))
 
 
+## The reverse proxy (deploy/Caddyfile) replaces the browser's query with
+## ?client_ip=<address>. Only trusted when the WebSocket listener is bound to
+## loopback and the connection came from it, so nobody can claim an address.
+func forwarded_client_address(proxy_address: String, requested_url: String) -> String:
+	if web_socket_bind_address not in ["127.0.0.1", "::1"] or proxy_address not in ["127.0.0.1", "::1"]:
+		return ""
+	var query := requested_url.get_slice("?", 1) if requested_url.contains("?") else ""
+	for pair in query.split("&"):
+		if pair.begins_with("client_ip="):
+			var value := pair.trim_prefix("client_ip=").uri_decode()
+			return value if value.is_valid_ip_address() else ""
+	return ""
+
+
 ## Host: how a peer is connected. Browser peers arrive through the reverse
-## proxy, so their address is the proxy's (127.0.0.1).
+## proxy; their own address comes from forwarded_client_address.
 func peer_endpoint(peer_id: int) -> Dictionary:
 	var transport: MultiplayerPeer = multiplayer.multiplayer_peer
 	if transport is MultiTransportPeer:
@@ -454,8 +498,11 @@ func peer_endpoint(peer_id: int) -> Dictionary:
 		if packet_peer != null:
 			return {"transport": "udp", "address": packet_peer.get_remote_address(), "port": packet_peer.get_remote_port()}
 	elif transport is WebSocketMultiplayerPeer:
-		return {"transport": "ws", "address": (transport as WebSocketMultiplayerPeer).get_peer_address(peer_id),
-			"port": (transport as WebSocketMultiplayerPeer).get_peer_port(peer_id)}
+		var web_socket := transport as WebSocketMultiplayerPeer
+		var address := web_socket.get_peer_address(peer_id)
+		var forwarded := forwarded_client_address(address, web_socket.get_peer(peer_id).get_requested_url())
+		return {"transport": "ws", "address": forwarded if not forwarded.is_empty() else address,
+			"port": web_socket.get_peer_port(peer_id)}
 	return {"transport": "", "address": "", "port": 0}
 
 

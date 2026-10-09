@@ -10,6 +10,7 @@ const AudioPlaybackScript = preload("res://scripts/cs16_audio_playback_adapter.g
 const RoundStateScript = preload("res://scripts/cs16_round_state.gd")
 const KeyBindings := preload("res://scripts/cs16_key_bindings.gd")
 const AdminLogScript := preload("res://scripts/admin_log.gd")
+const ModerationScript := preload("res://scripts/moderation.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const C4WorldScript = preload("res://scripts/cs16_c4_world.gd")
 const CombatEffectsScript = preload("res://scripts/cs16_combat_effects.gd")
@@ -175,6 +176,8 @@ var imported_map_path := "res://generated/%s/map.json" % DEFAULT_MAP_NAME
 var scenario := ScenarioRulesScript.SCENARIO_BOMB
 var scenario_info := {}
 var entity_world: CS16EntityWorld
+## Dedicated server only (--moderation=): kicks, bans and mutes from the admin service.
+var moderation: Node
 var brush_runtime: CS16BrushRuntime
 var breakable_runtime: CS16BreakableRuntime
 var breakable_debris: CS16BreakableDebrisPresenter
@@ -337,6 +340,14 @@ func _build_network_roster() -> void:
 		admin_log.name = "AdminLog"
 		add_child(admin_log)
 		admin_log.start(self, network, AdminLogScript.requested_path())
+	if _dedicated_server_mode and not ModerationScript.requested_path().is_empty():
+		moderation = ModerationScript.new()
+		moderation.name = "Moderation"
+		add_child(moderation)
+		moderation.start(network, ModerationScript.requested_path())
+		var admin_log := get_node_or_null("AdminLog")
+		if admin_log != null:
+			moderation.enforced.connect(admin_log.record)
 
 
 func _on_network_role_changed(_status: String) -> void:
@@ -399,6 +410,8 @@ func _chat_recipient_peers(sender_peer_id: int, sender_team: String, team_only: 
 ## Voice routing, as CS 1.6 without alltalk (ReGameDLL CanPlayerHearPlayer):
 ## only the speaker's team hears them, and living players do not hear the dead.
 func _handle_network_voice(peer_id: int) -> Dictionary:
+	if is_instance_valid(moderation) and moderation.is_muted(peer_id):
+		return {}
 	var sender := _remote_join_actor(peer_id)
 	if not is_instance_valid(sender) or sender.team not in [Combatant.TEAM_TERRORIST, Combatant.TEAM_COUNTER_TERRORIST]:
 		return {}
@@ -417,6 +430,12 @@ func _handle_network_voice(peer_id: int) -> Dictionary:
 func _handle_network_chat(peer_id: int, team_only: bool, text: String) -> bool:
 	var sender := _chat_actor_for_peer(peer_id)
 	if not is_instance_valid(sender):
+		return false
+	var muted: bool = is_instance_valid(moderation) and moderation.is_muted(peer_id)
+	var admin_log := get_node_or_null("AdminLog")
+	if admin_log != null:
+		admin_log.log_chat(peer_id, sender.display_name, sender.team, team_only, text, muted)
+	if muted:
 		return false
 	var recipients := _chat_recipient_peers(peer_id, sender.team, team_only)
 	return get_node("/root/NetworkSession").publish_chat(
