@@ -3,6 +3,14 @@ extends SceneTree
 var failures: Array[String] = []
 
 
+class ErrorCatcher extends Logger:
+	var messages: Array[String] = []
+
+	func _log_error(_function: String, _file: String, _line: int, code: String, rationale: String,
+			_editor_notify: bool, _error_type: int, _script_backtraces: Array[ScriptBacktrace]) -> void:
+		messages.append(code + " " + rationale)
+
+
 func _initialize() -> void:
 	_run.call_deferred()
 
@@ -51,6 +59,21 @@ func _run() -> void:
 			"team_only": index % 2 == 0, "text": "Message %d" % index})
 	_check(hud.chat_feed_box.get_child_count() == hud.CHAT_MAX_ROWS,
 		"chat feed remains bounded")
+	# A dedicated server rebuilds its HUD when the last player leaves, freeing
+	# rows whose expiry is still pending; that must stay silent (no freed
+	# lambda capture errors in the log) while live rows still expire.
+	var catcher := ErrorCatcher.new()
+	OS.add_logger(catcher)
+	var rebuilt := GameHUD.new()
+	root.add_child(rebuilt)
+	await process_frame
+	rebuilt.add_chat_message({"sender_name": "Player", "team": "T", "team_only": false, "text": "bye"})
+	rebuilt.free()
+	await create_timer(hud.CHAT_ROW_SECONDS + 0.3).timeout
+	OS.remove_logger(catcher)
+	_check(catcher.messages.filter(func(m: String) -> bool: return m.contains("freed")).is_empty(),
+		"a freed HUD's pending chat expiry logs no errors: %s" % [catcher.messages])
+	_check(hud.chat_feed_box.get_child_count() == 0, "chat rows expire after CHAT_ROW_SECONDS")
 	hud.queue_free()
 	await process_frame
 	for failure in failures:

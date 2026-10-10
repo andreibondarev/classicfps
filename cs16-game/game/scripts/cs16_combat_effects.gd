@@ -464,7 +464,7 @@ func spawn_blood_impact(
 	shot_sequence: int,
 ) -> void:
 	var backwards := -direction.normalized()
-	network_impact.emit("blood", {"position": position, "normal": direction, "sequence": shot_sequence, "surface": ""})
+	network_impact.emit("blood", {"position": position, "normal": -backwards, "sequence": shot_sequence, "surface": ""})
 	# TE_BLOODSPRITE sprites are brief flat splashes, not large glossy volumes.
 	_spawn_sprite(
 		"bloodspray",

@@ -9,6 +9,7 @@ const MAX_BYTES := 4096
 const MAX_PENDING := 128
 const MAX_AGE_TICKS := 100
 const KILL_NOTICE_AGE_TICKS := 500
+const MAX_SHOT_DIRECTION := 2.0
 const FIELDS := ["version", "epoch", "sequence", "tick", "actor", "life", "kind", "data"]
 
 
@@ -31,9 +32,14 @@ static func validate(packet: Variant) -> Dictionary:
 				return {}
 			if not _weapon(d.weapon) or not World.integer(d.sequence, 0, 255) or not World.vector(d.origin, 10000.0):
 				return {}
-			for key in ["direction", "right", "up"]:
+			for key in ["right", "up"]:
 				if not World.vector(d[key], 1.01) or absf(d[key].length() - 1.0) > 0.02:
 					return {}
+			# FireBullets3 adds the spread offset without normalizing, so an
+			# inaccurate shot (airborne AWP: spread 0.85) is up to ~1.6 long.
+			if not World.vector(d.direction, MAX_SHOT_DIRECTION) \
+					or d.direction.length() < 0.98 or d.direction.length() > MAX_SHOT_DIRECTION:
+				return {}
 			if typeof(d.punch) != TYPE_VECTOR2 or not d.punch.is_finite() or d.punch.length() > 100.0:
 				return {}
 		"reload":

@@ -926,10 +926,11 @@ func _push_chat_row(row: RichTextLabel) -> void:
 		var oldest := chat_feed_box.get_child(0)
 		chat_feed_box.remove_child(oldest)
 		oldest.queue_free()
-	get_tree().create_timer(CHAT_ROW_SECONDS).timeout.connect(func() -> void:
-		if is_instance_valid(row):
-			row.queue_free()
-	)
+	# The expiry tween belongs to the row, so it dies with the row when the HUD
+	# is rebuilt instead of firing later into a freed lambda capture.
+	var expiry := row.create_tween()
+	expiry.tween_interval(CHAT_ROW_SECONDS)
+	expiry.tween_callback(row.queue_free)
 
 
 func _build_crosshair(root: Control) -> void:

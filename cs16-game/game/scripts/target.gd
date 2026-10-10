@@ -650,6 +650,8 @@ func _try_fire(
 			_pistol_accuracy, float(fire_tick - _last_fire_tick) / 100.0)
 	_last_fire_tick = fire_tick
 	var forward := origin.direction_to(aim_target)
+	if forward.is_zero_approx():
+		forward = -global_basis.z
 	var right := forward.cross(Vector3.UP).normalized()
 	if right.is_zero_approx():
 		right = Vector3.RIGHT

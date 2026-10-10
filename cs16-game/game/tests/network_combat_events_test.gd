@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Events = preload("res://scripts/network_combat_events.gd")
+const Ballistics = preload("res://scripts/cs16_ballistics.gd")
 class SpyView extends "res://scripts/network_client_view.gd":
 	var observed: Array[Dictionary] = []
 	func _present_combat(event: Dictionary, _row: Dictionary) -> void:
@@ -61,6 +62,19 @@ func _run() -> void:
 		var bad := shot.duplicate(true)
 		bad.data[pair[0]] = pair[1]
 		_check(Events.validate(bad).is_empty(), "invalid shot rejected: " + str(pair[0]))
+	# FireBullets3 directions are not normalized: every spread sample of the
+	# widest spread in the game (airborne AWP) must still reach other players.
+	var widest := 0.0
+	for seed in 256:
+		var wide := shot.duplicate(true)
+		wide.data.direction = Ballistics.spread_direction(Vector3.FORWARD, Vector3.RIGHT, Vector3.UP, seed, 0.85)
+		widest = maxf(widest, wide.data.direction.length())
+		_check(Events.validate(wide) == wide, "inaccurate shot direction accepted, seed %d" % seed)
+	_check(widest > 1.1, "spread fixture produces long, unnormalized directions")
+	for direction in [Vector3.ZERO, Vector3(0, 0, -2.5), Vector3(0, 0, -0.5)]:
+		var bad := shot.duplicate(true)
+		bad.data.direction = direction
+		_check(Events.validate(bad).is_empty(), "implausible shot direction rejected: %s" % direction)
 	for pair in [["sample", "../../secret.wav"], ["sample", "weapons/glock18-1.wav"],
 		["name", "weapon.mode_switch"], ["pitch", 0], ["volume", 2.0], ["attenuation", INF], ["channel", 7]]:
 		var bad := audio.duplicate(true)
