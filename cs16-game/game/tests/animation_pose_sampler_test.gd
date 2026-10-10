@@ -41,6 +41,7 @@ func _run() -> void:
 
 func _profile_bounds() -> void:
 	var template := Model._load_template("res://generated/players/terror/model.json")
+	Model._bake_template(template)
 	var animation: Dictionary = template.animations.shoot
 	var vertices := Sampler.sample(animation.positions, 0, int(template.vertex_float_count) / 3,
 		0, 0, int(template.vertex_float_count), int(template.vertex_float_count), 0.37, 0.0)
@@ -64,6 +65,7 @@ func _profile_bounds() -> void:
 
 func _check_template(path: String) -> void:
 	var template := Model._load_template(path)
+	Model._bake_template(template)
 	_check(not template.is_empty(), "source template loads: " + path)
 	if template.is_empty():
 		return
@@ -156,6 +158,7 @@ static func _two_pass_sample(p: PackedFloat32Array, start: int, count: int, a: i
 
 func _profile_composition() -> void:
 	var template := Model._load_template("res://generated/players/terror/model.json")
+	Model._bake_template(template)
 	var animation: Dictionary = template.animations.shoot
 	var gait: Dictionary = template.animations.run
 	var overlay := {"mask": template.lower_mask, "positions": gait.positions,
@@ -228,6 +231,7 @@ func _check_rendered_reference() -> void:
 	]
 	for entry: Array in cases:
 		var template := Model._load_template(entry[0])
+		Model._bake_template(template)
 		var animation: Dictionary = template.animations[entry[1]]
 		var a := Model._pose_float_offset(template, animation, 1, 0)
 		var b := Model._pose_float_offset(template, animation, 1, int(animation.blends) - 1)

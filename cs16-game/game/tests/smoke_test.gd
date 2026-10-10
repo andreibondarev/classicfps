@@ -31,8 +31,13 @@ func _has_body_and_weapon(target: TargetActor) -> bool:
 
 
 func _model_feet_height(model: MdlCharacterModel) -> float:
-	var bounds := model.body_instance.mesh.get_aabb()
-	return model.position.y + bounds.position.y * model.scale.y
+	var lowest := model.body_instance.mesh.get_aabb().position.y
+	if model.body_instance.has_meta("skin_pose"):
+		# GPU-skinned meshes carry a fixed culling box; measure the posed vertices.
+		lowest = INF
+		for vertex in MdlCharacterModel.skinned_vertices(model.body_instance):
+			lowest = minf(lowest, vertex.y)
+	return model.position.y + lowest * model.scale.y
 
 
 func _uses_goldsrc_hull(target: TargetActor) -> bool:

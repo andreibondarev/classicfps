@@ -196,6 +196,8 @@ func load_weapon(weapon: String) -> bool:
 			return true
 	var path := "res://generated/weapons/%s/model.json" % weapon
 	var source_template: Dictionary = CharacterModelScript._load_template(path)
+	# First-person models keep CPU vertex frames (their shading is per vertex).
+	CharacterModelScript._bake_template(source_template)
 	last_load_timings.source_ms = float(Time.get_ticks_usec() - phase_started) / 1000.0
 	if source_template.is_empty():
 		push_warning("Converted animated viewmodel is unavailable: %s" % path)
@@ -301,7 +303,10 @@ func prepare_weapon_assets(weapons: Array) -> bool:
 			and CharacterModelScript._template_cache.has(attached_path)):
 			continue
 		var source := CharacterModelScript._load_template(source_path)
+		CharacterModelScript._bake_template(source)
 		var attached := CharacterModelScript._load_template(attached_path)
+		if not CharacterModelScript.gpu_skinning:
+			CharacterModelScript._bake_template(attached)
 		if source.is_empty() or attached.is_empty():
 			push_error("Cannot prepare required weapon assets: " + weapon)
 			return false

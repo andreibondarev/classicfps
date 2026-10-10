@@ -45,6 +45,9 @@ func _check(condition: bool, message: String) -> void:
 
 
 func _run() -> void:
+	# Pins the CPU skinning fallback vertex by vertex; gpu_skinning_parity_test
+	# holds the GPU path to these same poses.
+	CharacterModelScript.gpu_skinning = false
 	var stage := Node3D.new()
 	root.add_child(stage)
 	for skin: String in SKINS:

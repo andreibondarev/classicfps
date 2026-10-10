@@ -576,7 +576,8 @@ func publish_notice(kind: String, player_name: String) -> bool:
 	if validate_notice(packet).is_empty():
 		return false
 	notice_received.emit(packet.duplicate())
-	if is_online():
+	# Unit tests drive a session that is not in the tree (no multiplayer API).
+	if is_inside_tree() and is_online():
 		for peer_id: int in multiplayer.get_peers():
 			if has_input_peer(peer_id):
 				_receive_notice.rpc_id(peer_id, packet)

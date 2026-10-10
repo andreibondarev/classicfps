@@ -26,8 +26,8 @@ func _process(delta: float) -> void:
 	var template_ms := CharacterModelScript.template_build_usec / 1000.0
 	CharacterModelScript.template_build_count = 0
 	CharacterModelScript.template_build_usec = 0
-	print("PROTOCOL47_PERF fps=%d frame_ms=%.1f draw_calls=%d templates=%d template_ms=%.0f" % [
+	print("PROTOCOL47_PERF fps=%d frame_ms=%.1f draw_calls=%d templates=%d template_ms=%.0f skinning=%s" % [
 		Engine.get_frames_per_second(), 1000.0 / maxf(1.0, Engine.get_frames_per_second()),
 		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
-		templates, template_ms,
+		templates, template_ms, "gpu" if CharacterModelScript.gpu_skinning else "cpu",
 	])

@@ -113,12 +113,35 @@ const DROP_LAUNCH_UP := 0.10
 const DROP_RESTITUTION := 0.30
 const DROP_MIN_BOUNCE := 0.60
 
+# GPU skinning culls against one fixed box per actor (model space, before the
+# root's presentation scale): every stock pose, attached gun and death sprawl
+# fits, like the two-metre sphere in _pose_may_be_visible.
+const SKINNED_CULL_BOX := AABB(Vector3(-2.0, -1.6, -2.0), Vector3(4.0, 4.0, 4.0))
+
+## GPU skinning: each actor's body and attached weapon share one static mesh
+## per model whose vertices are bone-local; per frame only the blended bone
+## transforms (at most 55) go to the renderer's skeleton. The CPU fallback
+## bakes every pose into vertex frames at load time and re-uploads vertices
+## per frame. Both paths blend identically (rigid vertices, linear in the
+## bone matrices). Fallback: --cpu-skinning, PROTOCOL47_CPU_SKINNING=1, or
+## ?cpuskin in the browser.
+static var gpu_skinning := _gpu_skinning_requested()
 static var _template_cache: Dictionary = {}
 ## Microseconds spent building templates, and how many were built (for ?perf).
 static var template_build_usec := 0
 static var template_build_count := 0
 static var _shadow_light_tree_id := 0
 static var _shadow_lights: Dictionary = {}
+
+
+static func _gpu_skinning_requested() -> bool:
+	if "--cpu-skinning" in OS.get_cmdline_user_args() or OS.get_environment("PROTOCOL47_CPU_SKINNING") == "1":
+		return false
+	# The browser hands JavaScript booleans back as 0/1.
+	if OS.has_feature("web") and int(JavaScriptBridge.eval(
+			"(new URLSearchParams(window.location.search)).has('cpuskin') ? 1 : 0", true)) == 1:
+		return false
+	return true
 
 
 static func release_cached_resources() -> void:
@@ -173,6 +196,7 @@ var weapon_instance: MeshInstance3D
 var dropped_weapon_instance: MeshInstance3D
 var _body_template: Dictionary = {}
 var _weapon_template: Dictionary = {}
+var _use_gpu := false
 var _animation_time := 0.0
 var _action_state := ""
 var _action_time := 0.0
@@ -218,6 +242,9 @@ static func prepare_character_assets(requested_skin: String, requested_weapon: S
 	# material is created or changed. load_character consumes these same entries.
 	var body := _load_template(body_asset_path(requested_skin, requested_weapon))
 	var weapon := _load_template("res://generated/player_weapons/%s/model.json" % requested_weapon)
+	if not gpu_skinning:
+		_bake_template(body)
+		_bake_template(weapon)
 	return not body.is_empty() and not weapon.is_empty()
 
 
@@ -240,16 +267,21 @@ func load_character(requested_skin: String, requested_weapon := "ak47") -> bool:
 	dropped_weapon_instance = null
 	skin_name = requested_skin
 	weapon_name = requested_weapon
+	_use_gpu = gpu_skinning
+	if not _use_gpu:
+		_bake_template(body_template)
+		_bake_template(weapon_template)
 	_body_template = body_template
 	_weapon_template = weapon_template
 	_environment_tint = Color.WHITE
 	_tint_timer = INF
 	_tint_refresh_position = Vector3.INF
-	body_instance = _create_instance("Authentic_%s" % skin_name, _body_template)
+	body_instance = _create_instance("Authentic_%s" % skin_name, _body_template, _gpu_template(_body_template))
 	add_child(body_instance)
 
 	if not _weapon_template.is_empty():
-		weapon_instance = _create_instance("Attached_%s" % weapon_name, _weapon_template)
+		weapon_instance = _create_instance("Attached_%s" % weapon_name, _weapon_template,
+			_gpu_template(_weapon_template))
 		add_child(weapon_instance)
 
 	available_animations.assign(_body_template.animations.keys())
@@ -1033,7 +1065,7 @@ func _set_frame(
 			# replaces everything above the pelvis.
 			lower_overlay = {
 				"animation": animation,
-				"positions": animation.positions,
+				"positions": animation.get("positions", PackedFloat32Array()),
 				"frame_index": frame_index,
 				"next_frame_index": next_frame_index,
 				"current_offset": _pose_float_offset(template, animation, frame_index, 0),
@@ -1069,6 +1101,10 @@ func _set_frame(
 		base_frame = 0
 		base_next = 0
 		base_alpha = 0.0
+	if _gpu_template(template):
+		_pose_skinned(instance, template, base_animation, base_frame, base_next, base_alpha,
+			blend_low, blend_high, blend_alpha, lower_overlay)
+		return frame_key
 	_render_interpolated_frame(
 		instance,
 		template,
@@ -1162,7 +1198,7 @@ func _gait_overlay(
 	var next_frame_index := (frame_index + 1) % frame_count
 	return {
 		"animation": animation,
-		"positions": animation.positions,
+		"positions": animation.get("positions", PackedFloat32Array()),
 		"frame_index": frame_index,
 		"next_frame_index": next_frame_index,
 		"current_offset": _pose_float_offset(template, animation, frame_index, 0),
@@ -1232,7 +1268,7 @@ func _align_body_feet(
 ) -> void:
 	if not _grounded and not _dead:
 		return
-	var minimum_y := _blended_minimum_y(
+	_apply_ground_offset(_blended_minimum_y(
 		_body_template,
 		animation,
 		frame_index,
@@ -1241,7 +1277,10 @@ func _align_body_feet(
 		blend_low,
 		blend_high,
 		blend_alpha,
-	)
+	))
+
+
+func _apply_ground_offset(minimum_y: float) -> void:
 	var offset := -minimum_y * MODEL_SCALE
 	if _dead:
 		if is_nan(_death_ground_offset):
@@ -1319,7 +1358,213 @@ static func _blended_minimum_y(
 	return minimum_y
 
 
-static func _create_instance(instance_name: String, template: Dictionary) -> MeshInstance3D:
+func _gpu_template(template: Dictionary) -> bool:
+	return _use_gpu and template.has("skin")
+
+
+func _pose_skinned(instance: MeshInstance3D, template: Dictionary, animation: Dictionary,
+		frame: int, next_frame: int, alpha: float, low: int, high: int, pitch: float,
+		overlay: Dictionary) -> void:
+	## GPU counterpart of _render_interpolated_frame + _align_body_feet: the same
+	## frame/pitch blend and lower-body overlay, applied to bones.
+	var bones := _blend_bones(template, animation, frame, next_frame, alpha, low, high, pitch)
+	var ground := bones
+	if not overlay.is_empty():
+		ground = _blend_bones(template, overlay.animation, int(overlay.frame_index),
+			int(overlay.next_frame_index), float(overlay.frame_alpha), 0, 0, 0.0)
+		var lower: PackedByteArray = template.lower_bones
+		for bone in lower.size():
+			if lower[bone] != 0:
+				bones[bone] = ground[bone]
+	var skin: Dictionary = template.skin
+	(instance.get_meta("skin_pose") as SkinnedPose).apply(bones, skin.skinned_bones)
+	if instance == body_instance and (_grounded or _dead):
+		_apply_ground_offset(_skinned_minimum_y(skin, ground))
+
+
+static func _decoded_pose(template: Dictionary, animation: Dictionary, pose: int) -> Array[Transform3D]:
+	var poses: Array = animation.poses
+	if poses[pose] == null:
+		poses[pose] = RigidSkin.decode_pose(template.skin, animation.tape, pose)
+	return poses[pose]
+
+
+static func _blend_bones(template: Dictionary, animation: Dictionary, frame: int, next_frame: int,
+		alpha: float, low: int, high: int, pitch: float) -> Array[Transform3D]:
+	## Bone transforms for PoseSampler.sample's blend: lerp(lerp(a, b, pitch),
+	## lerp(c, d, pitch), alpha). Rigid vertices are linear in their bone's
+	## matrix, so lerping matrices reproduces the vertex lerp exactly.
+	var frames := int(animation.frames)
+	var single_pitch := pitch == 0.0 or low == high
+	var single_frame := alpha == 0.0 or frame == next_frame
+	var a := _decoded_pose(template, animation, low * frames + frame)
+	var result := a.duplicate()
+	if single_pitch and single_frame:
+		return result
+	var b: Array[Transform3D] = a
+	var c: Array[Transform3D] = a
+	var d: Array[Transform3D] = a
+	if not single_pitch:
+		b = _decoded_pose(template, animation, high * frames + frame)
+	if not single_frame:
+		c = _decoded_pose(template, animation, low * frames + next_frame)
+		if not single_pitch:
+			d = _decoded_pose(template, animation, high * frames + next_frame)
+	for bone in template.skin.skinned_bones:
+		var blended := a[bone]
+		if not single_pitch:
+			blended = _lerp_transform(blended, b[bone], pitch)
+		if not single_frame:
+			var next := c[bone]
+			if not single_pitch:
+				next = _lerp_transform(next, d[bone], pitch)
+			blended = _lerp_transform(blended, next, alpha)
+		result[bone] = blended
+	return result
+
+
+static func _lerp_transform(from: Transform3D, to: Transform3D, weight: float) -> Transform3D:
+	return Transform3D(
+		Basis(from.basis.x.lerp(to.basis.x, weight), from.basis.y.lerp(to.basis.y, weight),
+			from.basis.z.lerp(to.basis.z, weight)),
+		from.origin.lerp(to.origin, weight),
+	)
+
+
+static func _skinned_minimum_y(skin: Dictionary, bones: Array[Transform3D]) -> float:
+	## Exact lowest vertex of a skinned pose. Each bone's posed box bounds its
+	## vertices from below, so bones are visited lowest box first and the scan
+	## stops once no remaining box can go lower (usually after the feet).
+	var bone_count: int = skin.bone_count
+	var bounds: Array[AABB] = skin.bone_bounds
+	var vertices: Array[PackedVector3Array] = skin.bone_vertices
+	var candidates: Array[Vector2] = []
+	for bone in skin.skinned_bones:
+		candidates.append(Vector2((bones[bone] * bounds[bone]).position.y, bone))
+	if not vertices[bone_count].is_empty():
+		candidates.append(Vector2(bounds[bone_count].position.y, bone_count))
+	candidates.sort()
+	var minimum := INF
+	for candidate in candidates:
+		if candidate.x >= minimum:
+			break
+		var bone := int(candidate.y)
+		var moved: PackedVector3Array = bones[bone] * vertices[bone]
+		for point in moved:
+			minimum = minf(minimum, point.y)
+	return minimum
+
+
+## World-space vertices of a GPU-skinned instance as the renderer poses them,
+## surface by surface (tests compare them with the CPU path's mesh).
+static func skinned_vertices(instance: MeshInstance3D) -> PackedVector3Array:
+	var result := PackedVector3Array()
+	var pose := instance.get_meta("skin_pose") as SkinnedPose
+	var mesh := instance.mesh as ArrayMesh
+	for surface in mesh.get_surface_count():
+		var arrays := mesh.surface_get_arrays(surface)
+		var local: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var owners: PackedInt32Array = arrays[Mesh.ARRAY_BONES]
+		for index in local.size():
+			result.append(pose.bones[owners[index * 4]] * local[index])
+	return result
+
+
+## The renderer-side skeleton of one skinned instance. Raw RenderingServer
+## bones take any 3x4 matrix (Skeleton3D would decompose the blended matrices
+## into position/rotation/scale and change them).
+class SkinnedPose extends RefCounted:
+	var skeleton := RenderingServer.skeleton_create()
+	var bones: Array[Transform3D] = []
+
+	func _init(bone_count: int) -> void:
+		RenderingServer.skeleton_allocate_data(skeleton, bone_count)
+		bones.resize(bone_count)
+		for bone in bone_count:
+			RenderingServer.skeleton_bone_set_transform(skeleton, bone, Transform3D.IDENTITY)
+
+	func attach(instance: MeshInstance3D) -> void:
+		# MeshInstance3D re-resolves (and clears) its skeleton on entering the
+		# tree; tree_entered fires after that, so attach there every time.
+		RenderingServer.instance_attach_skeleton(instance.get_instance(), skeleton)
+
+	func apply(transforms: Array[Transform3D], skinned: PackedInt32Array) -> void:
+		for bone in skinned:
+			RenderingServer.skeleton_bone_set_transform(skeleton, bone, transforms[bone])
+		bones = transforms
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_PREDELETE:
+			RenderingServer.free_rid(skeleton)
+
+
+static func _create_skinned_instance(instance_name: String, template: Dictionary) -> MeshInstance3D:
+	var instance := MeshInstance3D.new()
+	instance.name = instance_name
+	instance.mesh = _skinned_mesh(template)
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	var materials: Array[StandardMaterial3D] = []
+	for group: Dictionary in template.groups:
+		materials.append((group.material as StandardMaterial3D).duplicate())
+	instance.set_meta("group_materials", materials)
+	var surface_groups: PackedInt32Array = template.skinned_surface_groups
+	for surface in surface_groups.size():
+		instance.set_surface_override_material(surface, materials[surface_groups[surface]])
+	var pose := SkinnedPose.new(int(template.skin.bone_count) + 1)
+	instance.set_meta("skin_pose", pose)
+	instance.tree_entered.connect(pose.attach.bind(instance))
+	return instance
+
+
+static func _skinned_mesh(template: Dictionary) -> ArrayMesh:
+	## One static mesh per model, shared by every actor: bone-local vertices,
+	## each bound to its single owning bone at full weight.
+	if template.has("skinned_mesh"):
+		return template.skinned_mesh
+	var skin: Dictionary = template.skin
+	var local: PackedFloat32Array = skin.local
+	var owners: PackedInt32Array = skin.vertex_owner
+	var uvs: PackedFloat32Array = template.uvs
+	var mesh := ArrayMesh.new()
+	var surface_groups := PackedInt32Array()
+	for group_index in template.groups.size():
+		var group: Dictionary = template.groups[group_index]
+		var start := int(group.start)
+		var count := int(group.count)
+		if count <= 0:
+			continue
+		var vertices := PackedVector3Array()
+		var texture_uvs := PackedVector2Array()
+		var bones := PackedInt32Array()
+		var weights := PackedFloat32Array()
+		vertices.resize(count)
+		texture_uvs.resize(count)
+		bones.resize(count * 4)
+		weights.resize(count * 4)
+		for index in count:
+			var vertex := start + index
+			vertices[index] = Vector3(local[vertex * 3], local[vertex * 3 + 1], local[vertex * 3 + 2])
+			texture_uvs[index] = Vector2(uvs[vertex * 2], uvs[vertex * 2 + 1])
+			bones[index * 4] = owners[vertex]
+			weights[index * 4] = 1.0
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		arrays[Mesh.ARRAY_TEX_UV] = texture_uvs
+		arrays[Mesh.ARRAY_BONES] = bones
+		arrays[Mesh.ARRAY_WEIGHTS] = weights
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1, group.material)
+		surface_groups.append(group_index)
+	mesh.custom_aabb = SKINNED_CULL_BOX
+	template.skinned_mesh = mesh
+	template.skinned_surface_groups = surface_groups
+	return mesh
+
+
+static func _create_instance(instance_name: String, template: Dictionary, skinned := false) -> MeshInstance3D:
+	if skinned:
+		return _create_skinned_instance(instance_name, template)
 	var instance := MeshInstance3D.new()
 	instance.name = instance_name
 	instance.mesh = ArrayMesh.new()
@@ -1385,26 +1630,7 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		var animation_bytes := source.get_buffer(source.get_length())
 		var frame_count := int(animation_data.get("frames", 0))
 		var blend_count := maxi(1, int(animation_data.get("blends", 1)))
-		var animation_positions := PackedFloat32Array()
-		var pose_bounds: Array[AABB] = []
-		if not rigid_skin.is_empty() and bool(rigid_skin.quantized):
-			animation_positions = RigidSkin.rebuild_q16(rigid_skin, animation_bytes, frame_count * blend_count, pose_bounds)
-		elif not rigid_skin.is_empty():
-			animation_positions = RigidSkin.rebuild(rigid_skin, animation_bytes.to_float32_array(),
-				frame_count * blend_count, pose_bounds)
-		else:
-			animation_positions = animation_bytes.to_float32_array()
-			pose_bounds = PoseSampler.source_bounds(animation_positions, positions.size() / 3)
-		# Rigid poses get bone-box culling bounds, which may exceed the vertices;
-		# grounding needs each pose's exact lowest point, computed when first
-		# asked for (null until then).
-		var pose_min_y: Array = []
-		if not rigid_skin.is_empty():
-			pose_min_y.resize(pose_bounds.size())
-		if animation_positions.size() != frame_count * blend_count * positions.size():
-			push_error("Invalid character animation frame data: %s" % animation_file)
-			return {}
-		animation_map[str(animation_data.get("name", ""))] = {
+		var animation := {
 			"source_label": str(
 				animation_data.get("source_label", animation_data.get("name", ""))
 			),
@@ -1416,10 +1642,27 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 			"blend_type": animation_data.get("blend_type", [0, 0]),
 			"blend_start": animation_data.get("blend_start", [0.0, 0.0]),
 			"blend_end": animation_data.get("blend_end", [1.0, 0.0]),
-			"positions": animation_positions,
-			"pose_bounds": pose_bounds,
-			"pose_min_y": pose_min_y,
 		}
+		if rigid_skin.is_empty():
+			var baked_positions := animation_bytes.to_float32_array()
+			if baked_positions.size() != frame_count * blend_count * positions.size():
+				push_error("Invalid character animation frame data: %s" % animation_file)
+				return {}
+			animation.positions = baked_positions
+			animation.pose_bounds = PoseSampler.source_bounds(baked_positions, positions.size() / 3)
+			animation.pose_min_y = []
+		else:
+			# Bone tapes stay as downloaded. GPU skinning decodes the poses it
+			# draws (into "poses", null until first use); the CPU fallback
+			# expands them into vertex frames in _bake_template.
+			if not RigidSkin.tape_matches(rigid_skin, animation_bytes, frame_count * blend_count):
+				push_error("Invalid character animation frame data: %s" % animation_file)
+				return {}
+			var poses: Array = []
+			poses.resize(frame_count * blend_count)
+			animation.tape = animation_bytes
+			animation.poses = poses
+		animation_map[str(animation_data.get("name", ""))] = animation
 
 	var groups: Array[Dictionary] = []
 	for group_data in parsed.get("groups", []):
@@ -1464,7 +1707,7 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		for vertex in range(lower_mask.size()):
 			lower_mask[vertex] = int(positions[vertex * 3 + 1] < reference_minimum_y + LOWER_BODY_SPLIT)
 
-	return {
+	var template := {
 		"positions": positions,
 		"uvs": uvs,
 		"vertex_float_count": positions.size(),
@@ -1472,6 +1715,46 @@ static func _build_template(path: String, parsed: Dictionary) -> Dictionary:
 		"animations": animation_map,
 		"lower_mask": lower_mask,
 	}
+	if not rigid_skin.is_empty():
+		template.skin = rigid_skin
+		# Bones whose vertices are all lower body: the gait tape drives them
+		# while an upper-body layer plays (the exporter's mask follows bone
+		# ownership, so no bone is split).
+		var lower_bones := PackedByteArray()
+		lower_bones.resize(int(rigid_skin.bone_count) + 1)
+		var owners: PackedInt32Array = rigid_skin.vertex_owner
+		for vertex in owners.size():
+			if lower_mask[vertex] != 0:
+				lower_bones[owners[vertex]] = 1
+		template.lower_bones = lower_bones
+	return template
+
+
+## Expands a rigid template's bone tapes into baked vertex frames
+## ("positions", "pose_bounds", "pose_min_y" per animation) for the CPU
+## skinning path and for callers that read vertices directly. Idempotent.
+static func _bake_template(template: Dictionary) -> void:
+	if template.is_empty() or not template.has("skin") or template.get("baked", false):
+		return
+	var started := Time.get_ticks_usec()
+	var skin: Dictionary = template.skin
+	for animation: Dictionary in template.animations.values():
+		var pose_count := int(animation.frames) * int(animation.blends)
+		var pose_bounds: Array[AABB] = []
+		var tape: PackedByteArray = animation.tape
+		if bool(skin.quantized):
+			animation.positions = RigidSkin.rebuild_q16(skin, tape, pose_count, pose_bounds)
+		else:
+			animation.positions = RigidSkin.rebuild(skin, tape.to_float32_array(), pose_count, pose_bounds)
+		# Rigid poses get bone-box culling bounds, which may exceed the vertices;
+		# grounding needs each pose's exact lowest point, computed when first
+		# asked for (null until then).
+		var pose_min_y: Array = []
+		pose_min_y.resize(pose_bounds.size())
+		animation.pose_bounds = pose_bounds
+		animation.pose_min_y = pose_min_y
+	template.baked = true
+	template_build_usec += Time.get_ticks_usec() - started
 
 
 static var _chrome_texture_cache: Dictionary = {}

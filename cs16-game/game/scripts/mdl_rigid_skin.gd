@@ -38,6 +38,8 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 	# their local position, matching the exporter.
 	var bone_vertices: Array[PackedVector3Array] = []
 	var bone_indices: Array[PackedInt32Array] = []
+	var owners := PackedInt32Array()
+	owners.resize(vertex_count)
 	bone_vertices.resize(bone_count + 1)
 	bone_indices.resize(bone_count + 1)
 	for bone in bone_count + 1:
@@ -47,6 +49,7 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 		var bone := int(vertex_bones[vertex])
 		if bone < 0 or bone >= bone_count:
 			bone = bone_count
+		owners[vertex] = bone
 		bone_vertices[bone].append(Vector3(local[vertex * 3], local[vertex * 3 + 1], local[vertex * 3 + 2]))
 		bone_indices[bone].append(vertex)
 	# Each bone's local box: transformed with the bone, it encloses the bone's
@@ -58,6 +61,10 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 		for point in points:
 			box = box.expand(point)
 		bone_bounds.append(box)
+	var skinned_bones := PackedInt32Array()
+	for bone in bone_count:
+		if not bone_indices[bone].is_empty():
+			skinned_bones.append(bone)
 	return {
 		"bone_bounds": bone_bounds,
 		"quantized": str(parsed.frame_format) == FRAME_FORMAT_Q16,
@@ -66,7 +73,47 @@ static func load_skin(model_path: String, parsed: Dictionary, vertex_count: int)
 		"vertex_count": vertex_count,
 		"bone_vertices": bone_vertices,
 		"bone_indices": bone_indices,
+		# GPU skinning: bone-local positions, owning bone per vertex (bone_count
+		# for unskinned vertices, which keep an identity transform) and the
+		# bones that move any vertex.
+		"local": local,
+		"vertex_owner": owners,
+		"skinned_bones": skinned_bones,
 	}
+
+
+## Tape size check for one animation of `pose_count` poses.
+static func tape_matches(skin: Dictionary, tape: PackedByteArray, pose_count: int) -> bool:
+	var per_pose := int(skin.bone_count) * (Q16_CHANNELS * 2 if bool(skin.quantized) else 48)
+	return pose_count > 0 and tape.size() == pose_count * per_pose
+
+
+## One pose's bone transforms (identity for bones without vertices), decoded
+## exactly as rebuild()/rebuild_q16() decode them.
+static func decode_pose(skin: Dictionary, tape: PackedByteArray, pose: int) -> Array[Transform3D]:
+	var bone_count: int = skin.bone_count
+	var transforms: Array[Transform3D] = []
+	transforms.resize(bone_count + 1)
+	var skinned: PackedInt32Array = skin.skinned_bones
+	if bool(skin.quantized):
+		var scale := 1.0 / float(skin.translation_scale)
+		var pose_offset := pose * bone_count * Q16_CHANNELS * 2
+		for bone in skinned:
+			var read := pose_offset + bone * Q16_CHANNELS * 2
+			var rotation := Quaternion(tape.decode_s16(read), tape.decode_s16(read + 2),
+				tape.decode_s16(read + 4), tape.decode_s16(read + 6)).normalized()
+			var origin := Vector3(tape.decode_s16(read + 8), tape.decode_s16(read + 10),
+				tape.decode_s16(read + 12)) * scale
+			transforms[bone] = Transform3D(Basis(rotation), origin)
+		return transforms
+	for bone in skinned:
+		var o := (pose * bone_count + bone) * 48
+		var m := tape.slice(o, o + 48).to_float32_array()
+		transforms[bone] = Transform3D(
+			Basis(Vector3(m[0], m[4], m[8]), Vector3(m[1], m[5], m[9]), Vector3(m[2], m[6], m[10])),
+			Vector3(m[3], m[7], m[11]),
+		)
+	return transforms
 
 
 ## Expands `pose_count` poses of bone transforms into the baked frame layout:

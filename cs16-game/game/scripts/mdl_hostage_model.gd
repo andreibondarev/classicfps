@@ -81,6 +81,7 @@ func load_hostage(requested_skin := 0) -> bool:
 	var base_template := CharacterModelScript._load_template(MODEL_PATH)
 	if base_template.is_empty():
 		return false
+	CharacterModelScript._bake_template(base_template)
 	_source_groups = parsed.get("groups", [])
 	_grounded_bounds = _source_grounded_bounds(base_template)
 	_template = _instance_template(base_template)

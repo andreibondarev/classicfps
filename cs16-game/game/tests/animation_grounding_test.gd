@@ -23,6 +23,7 @@ func _run() -> void:
 		"interpolated minimum must follow the actual vertices, not endpoint minima")
 	_compare(synthetic, animation, 0, 1, 0.5, 0, 0, 0.0, "crossing minimum")
 	var template := Model._load_template("res://generated/players/terror/model.json")
+	Model._bake_template(template)
 	var gait: Dictionary = template.animations.run
 	var started := Time.get_ticks_usec()
 	var actual_sum := 0.0
@@ -47,6 +48,7 @@ func _run() -> void:
 
 func _check_template(path: String) -> void:
 	var template := Model._load_template(path)
+	Model._bake_template(template)
 	_check(not template.is_empty(), "source template loads: " + path)
 	if template.is_empty():
 		return
