@@ -309,6 +309,9 @@ func load_map(map_path: String) -> bool:
 			var texture_name := str(group.get("name", ""))
 			for ignored_face in range(int(count / 3)):
 				(_model_collision_face_textures[model_index] as Array).append(texture_name)
+		if _brush_model_is_invisible(model_index):
+			# Still solid (collision above), but GoldSrc draws nothing.
+			continue
 
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -424,11 +427,7 @@ func _material_for_group(group: Dictionary, map_root: String, has_uv2: bool = fa
 	var model_index := int(group.get("model_index", 0))
 	var properties: Dictionary = _model_properties.get(model_index, {})
 	var render_mode := int(properties.get("rendermode", 0))
-	var render_amount := clampf(
-		float(properties.get("renderamt", 255.0)) / 255.0,
-		0.0,
-		1.0,
-	)
+	var render_amount := _render_amount(properties)
 	material.vertex_color_use_as_albedo = true
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# GoldSrc BSP lighting is already baked into the exported vertex colors.
@@ -512,6 +511,22 @@ func _material_for_group(group: Dictionary, map_root: String, has_uv2: bool = fa
 		material.albedo_color.a = 0.76
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	return material
+
+
+func _render_amount(properties: Dictionary) -> float:
+	# entvars_t is zero-initialised, so an entity that sets a render mode but
+	# omits renderamt blends at 0 (de_inferno's lamp-post clip walls). Only
+	# kRenderNormal ignores the amount, so it keeps the opaque default.
+	var fallback := 255.0 if int(properties.get("rendermode", 0)) == 0 else 0.0
+	return clampf(float(properties.get("renderamt", fallback)) / 255.0, 0.0, 1.0)
+
+
+func _brush_model_is_invisible(model_index: int) -> bool:
+	# Blended modes at renderamt 0 draw nothing. kRenderTransAlpha stays an
+	# alpha-tested cutout here (every stock use authors renderamt 255).
+	var properties: Dictionary = _model_properties.get(model_index, {})
+	var render_mode := int(properties.get("rendermode", 0))
+	return render_mode in [1, 2, 3, 5] and is_zero_approx(_render_amount(properties))
 
 
 func _render_color(properties: Dictionary, alpha: float) -> Color:

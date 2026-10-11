@@ -2,6 +2,7 @@ extends SceneTree
 
 const BspMapScript := preload("res://scripts/bsp_map.gd")
 const ASSAULT_MAP := "res://generated/cs_assault/map.json"
+const INFERNO_MAP := "res://generated/de_inferno/map.json"
 
 var failures: Array[String] = []
 
@@ -63,13 +64,31 @@ func _run() -> void:
 		is_instance_valid(ordinary) and _is_opaque(ordinary),
 		"ordinary rotating entrance remains opaque",
 	)
+	assault.queue_free()
+	await process_frame
+	if FileAccess.file_exists(INFERNO_MAP):
+		var inferno := BspMapScript.new()
+		root.add_child(inferno)
+		_check(inferno.load_map(INFERNO_MAP), "stock Inferno loads")
+		# *148 is a lamp-post clip func_wall: rendermode 2 with no renderamt.
+		_check(
+			_first_material(inferno, 148) == null,
+			"render mode 2 without renderamt draws nothing (GoldSrc zero default)",
+		)
+		_check(
+			inferno._model_collision_faces.has(148),
+			"invisible render-mode func_wall keeps its collision",
+		)
+		_check(
+			_first_material(inferno, 120) != null,
+			"lamp-post lantern inside the clip wall still renders",
+		)
+		inferno.queue_free()
+		await process_frame
 	if failures.is_empty():
 		print("BSP_RENDER_MODES_TEST_PASS")
-		assault.queue_free()
 		await process_frame
 		quit(0)
 	else:
 		print("BSP_RENDER_MODES_TEST_FAIL (%d)" % failures.size())
-		assault.queue_free()
-		await process_frame
 		quit(1)
