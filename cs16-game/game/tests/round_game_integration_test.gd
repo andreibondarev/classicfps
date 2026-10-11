@@ -339,6 +339,32 @@ func _assert_trigger_geometry(game: Node) -> void:
 		),
 		"buy trigger distinguishes standing and ducking hull contact",
 	)
+	game.buy_regions.clear()
+	var original_t_spawns: Array[Vector3] = game.terrorist_team_spawns.duplicate()
+	var original_ct_spawns: Array[Vector3] = game.counter_terrorist_team_spawns.duplicate()
+	var original_player_spawn: Vector3 = game.player_spawn
+	var original_allied: Array[Vector3] = game.allied_spawns.duplicate()
+	var original_targets: Array[Vector3] = game.target_spawns.duplicate()
+	game.terrorist_team_spawns.assign([Vector3(0.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0)])
+	game.counter_terrorist_team_spawns.assign([Vector3(40.0, 0.0, 0.0), Vector3(41.0, 0.0, 0.0)])
+	for local_team: String in ["T", "CT"]:
+		game._apply_spawn_side(local_team)
+		_check(
+			game._is_in_team_buy_zone(Vector3(41.0, 0.0, 1.5), "CT", stand_hull)
+			and game._is_in_team_buy_zone(Vector3(1.0, 0.0, 1.5), "T", stand_hull),
+			"legacy buy zone covers each team's own spawns (local player %s)" % local_team,
+		)
+		_check(
+			not game._is_in_team_buy_zone(Vector3(1.0, 0.0, 0.0), "CT", stand_hull)
+			and not game._is_in_team_buy_zone(Vector3(41.0, 0.0, 0.0), "T", stand_hull)
+			and not game._is_in_team_buy_zone(Vector3(41.0, 0.0, 2.5), "CT", stand_hull),
+			"legacy buy zone rejects enemy spawns and points past 200 units (local player %s)" % local_team,
+		)
+	game.terrorist_team_spawns.assign(original_t_spawns)
+	game.counter_terrorist_team_spawns.assign(original_ct_spawns)
+	game.player_spawn = original_player_spawn
+	game.allied_spawns.assign(original_allied)
+	game.target_spawns.assign(original_targets)
 	game.buy_regions.assign(original_buy)
 
 	var original_bomb: Array[Dictionary] = game.bomb_regions.duplicate(true)

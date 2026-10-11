@@ -3319,11 +3319,12 @@ func _is_in_team_buy_zone(
 ) -> bool:
 	if buy_regions.is_empty():
 		# Maps without func_buyzone use OLD_CheckBuyZone: within 200 HU of a
-		# matching team spawn. This is not a map-wide buy-anywhere fallback.
+		# matching team spawn (every map spawn of that team, whichever side the
+		# local player is on). This is not a map-wide buy-anywhere fallback.
 		var spawns: Array = (
-			target_spawns
+			counter_terrorist_team_spawns
 			if team == Combatant.TEAM_COUNTER_TERRORIST
-			else ([player_spawn] + allied_spawns)
+			else terrorist_team_spawns
 		)
 		for spawn: Vector3 in spawns:
 			if position.distance_to(spawn) < LEGACY_BUY_RADIUS:
