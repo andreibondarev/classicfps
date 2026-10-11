@@ -682,7 +682,7 @@ func _brush_model_is_solid(model_index: int) -> bool:
 			return (spawnflags & 64) == 0
 		"func_wall_toggle":
 			return (spawnflags & 1) == 0
-		"func_breakable", "func_button", "func_conveyor", "func_ladder", \
+		"func_breakable", "func_button", "func_conveyor", \
 		"func_pendulum", "func_plat", "func_platrot", "func_pushable", \
 		"func_vehicle", "func_wall", "momentary_door", "momentary_rot_button":
 			return true

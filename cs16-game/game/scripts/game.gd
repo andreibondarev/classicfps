@@ -3753,9 +3753,12 @@ func _build_bomb_sites() -> void:
 	bomb_sites.clear()
 	bomb_regions.clear()
 	buy_regions.clear()
+	PlayerController.ladder_volumes.clear()
 	if using_imported_map:
 		bomb_regions = imported_map.brush_entity_regions("func_bomb_target")
 		buy_regions = imported_map.brush_entity_regions("func_buyzone")
+		for region: Dictionary in imported_map.brush_entity_regions("func_ladder"):
+			PlayerController.ladder_volumes.append(region.bounds)
 		for region: Dictionary in bomb_regions:
 			var bounds: AABB = region.bounds
 			bomb_sites.append(bounds.get_center())

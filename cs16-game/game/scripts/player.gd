@@ -11,6 +11,9 @@ signal weapon_drop_requested(weapon_name: String, dropped_clip: int, dropped_res
 signal c4_drop_requested
 signal died
 var spawn_serial := 0
+## World-space func_ladder volumes of the loaded map, set by the game. Static so
+## the local player, remote humans and prediction replays all climb the same map.
+static var ladder_volumes: Array[AABB] = []
 
 # GoldSrc BSP coordinates are imported at one Godot unit per 100 GoldSrc units.
 # Keep the original values visible here so movement can be audited against
@@ -55,6 +58,9 @@ const STEP_HEIGHT := 18.0 * WORLD_SCALE
 # collision hull still climbs immediately; this is presentation-only.
 const STAIR_VIEW_SPEED := 150.0 * WORLD_SCALE
 const STAIR_VIEW_MAX_OFFSET := 18.0 * WORLD_SCALE
+# pm_shared PM_LadderMove: MAX_CLIMB_SPEED, and the push-off speed when jumping.
+const MAX_CLIMB_SPEED := 200.0 * WORLD_SCALE
+const LADDER_JUMP_SPEED := 270.0 * WORLD_SCALE
 const MovementKernelScript = preload("res://scripts/goldsrc_movement.gd")
 const WeaponClockScript = preload("res://scripts/cs16_weapon_clock.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
@@ -553,6 +559,18 @@ func simulate_movement(command: Dictionary, delta: float) -> float:
 	_update_crouch(delta, wants_crouch)
 	_walking = bool(command.get("walk", false))
 	var input: Vector2 = command.get("movement", Vector2.ZERO)
+	var ladder := _touching_ladder()
+	if ladder.has_volume():
+		# PM_TraceModel forces usehull 2 (the point hull): a point trace from
+		# the hull centre to the ladder centre against the ladder brush itself.
+		var ladder_normal := ladder_face_normal(ladder, collider.global_position)
+		if bool(command.get("jump", false)):
+			# PM_LadderMove jump: leave the ladder along its face normal and
+			# finish this tick as ordinary walk/air movement.
+			velocity = ladder_normal * LADDER_JUMP_SPEED
+		else:
+			_consume_jump_press(false)
+			return _ladder_move(ladder_normal, input, delta, view_origin_y)
 	var wish_direction: Vector3 = Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, _yaw)
 	if wish_direction.length_squared() > 1.0:
 		wish_direction = wish_direction.normalized()
@@ -629,6 +647,90 @@ func _consume_weapon_clock_events(events: Array[String]) -> void:
 			WeaponClockScript.EVENT_GRENADE_RETIRE:
 				if active_weapon in ["hegrenade", "flashbang", "smokegrenade"] and clip <= 0:
 					switch_weapon(_best_owned_weapon())
+
+
+func _touching_ladder() -> AABB:
+	# PM_Ladder: the player hull overlaps a CONTENTS_LADDER brush model.
+	if ladder_volumes.is_empty() or not is_instance_valid(collider):
+		return AABB()
+	var size := (collider.shape as BoxShape3D).size
+	var hull := AABB(collider.global_position - size * 0.5, size)
+	for volume: AABB in ladder_volumes:
+		if volume.intersects(hull):
+			return volume
+	return AABB()
+
+
+## The face normal a trace from `from` toward the volume's centre enters
+## through (slab test). Zero when `from` is already inside, as GoldSrc's
+## start-solid trace reports no plane.
+static func ladder_face_normal(volume: AABB, from: Vector3) -> Vector3:
+	var offset := volume.get_center() - from
+	var half := volume.size * 0.5
+	var best := -INF
+	var normal := Vector3.ZERO
+	for axis in 3:
+		var distance := absf(offset[axis])
+		if distance <= half[axis]:
+			continue
+		var entry := (distance - half[axis]) / distance
+		if entry > best:
+			best = entry
+			normal = Vector3.ZERO
+			normal[axis] = -signf(offset[axis])
+	return normal
+
+
+## pm_shared PM_LadderMove: forward/back follow the view (pitch included),
+## pressing into the ladder climbs, gravity and friction are off.
+static func ladder_velocity(
+	normal: Vector3,
+	view_forward: Vector3,
+	view_right: Vector3,
+	forward_speed: float,
+	right_speed: float,
+	on_floor: bool,
+) -> Vector3:
+	if is_zero_approx(forward_speed) and is_zero_approx(right_speed):
+		return Vector3.ZERO
+	var wish := view_forward * forward_speed + view_right * right_speed
+	var perp := Vector3.UP.cross(normal).normalized()
+	var into := wish.dot(normal)
+	var lateral := wish - normal * into
+	# normal x (up x normal) is straight up for a wall-like ladder face, so
+	# the component pushed into the ladder becomes climb speed.
+	var result := lateral - normal.cross(perp) * into
+	if on_floor and into > 0.0:
+		# Let a player standing at the bottom walk away from the ladder.
+		result += normal * MAX_CLIMB_SPEED
+	return result
+
+
+func _ladder_move(normal: Vector3, input: Vector2, delta: float, view_origin_y: float) -> float:
+	var speed := minf(MAX_CLIMB_SPEED, _maximum_speed(false))
+	if is_crouching():
+		speed *= DUCK_SPEED_MULTIPLIER
+	var forward_speed := 0.0
+	var right_speed := 0.0
+	# Ladder input is digital (IN_FORWARD/IN_BACK/IN_MOVELEFT/IN_MOVERIGHT).
+	if input.y < 0.0:
+		forward_speed += speed
+	elif input.y > 0.0:
+		forward_speed -= speed
+	if input.x > 0.0:
+		right_speed += speed
+	elif input.x < 0.0:
+		right_speed -= speed
+	var view_forward := Vector3(0.0, 0.0, -1.0).rotated(Vector3.RIGHT, _pitch).rotated(Vector3.UP, _yaw)
+	var view_right := Vector3.RIGHT.rotated(Vector3.UP, _yaw)
+	velocity = ladder_velocity(normal, view_forward, view_right, forward_speed, right_speed, _movement_grounded)
+	_fall_velocity_ups = 0.0
+	var previous := global_position
+	var result: Dictionary = movement_kernel.move(velocity, delta, false)
+	velocity = result.velocity
+	_movement_grounded = result.grounded
+	_update_stair_view_smoothing(delta, global_position.y - view_origin_y, _movement_grounded)
+	return Vector2(global_position.x - previous.x, global_position.z - previous.z).length()
 
 
 func _consume_jump_press(jump_down: bool) -> bool:
