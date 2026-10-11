@@ -1,6 +1,6 @@
 extends SceneTree
 
-## Records promo footage: a Dust2 bot match where the human player is played by
+## Records promo footage: a bot match (Dust2 unless --map=) where the human player is played by
 ## the live match driver, so the camera is a real first-person view with HUD.
 ## Run under Movie Maker, e.g.
 ##   godot --path game --write-movie /tmp/promo.avi --fixed-fps 60 \
@@ -10,11 +10,14 @@ extends SceneTree
 var _frame := 0
 var _seconds := 180.0
 var _game: Node
+var _map := "de_dust2"
 
 
 func _initialize() -> void:
 	for argument in OS.get_cmdline_user_args():
-		if argument.begins_with("--seconds="):
+		if argument.begins_with("--map="):
+			_map = argument.get_slice("=", 1)
+		elif argument.begins_with("--seconds="):
 			_seconds = float(argument.get_slice("=", 1))
 	_run.call_deferred()
 
@@ -25,7 +28,7 @@ func _event(kind: String, detail: String) -> void:
 
 func _run() -> void:
 	_game = preload("res://scripts/game.gd").new()
-	_game.map_name = "de_dust2"
+	_game.map_name = _map
 	root.add_child(_game)
 	current_scene = _game
 	await process_frame

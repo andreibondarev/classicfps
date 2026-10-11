@@ -130,6 +130,9 @@ var _connection_deadline_ms := 0
 var _resolver_id := IP.RESOLVER_INVALID_ID
 var _resolver_port := 0
 var dedicated_server := false
+## The map the shared world runs. Lives on this autoload so it survives the
+## game scene reloads that change maps (server rotation, clients following).
+var active_map := ""
 var listen_port := DEFAULT_PORT
 ## WebSocket listener for browser clients; 0 disables it. The dedicated server
 ## defaults to the UDP port + 1.
@@ -212,7 +215,7 @@ func _start_from_command_line() -> void:
 		if dedicated_server:
 			if result == OK:
 				var web_socket := (", WebSocket %d" % listen_web_socket_port) if listen_web_socket_port > 0 else ""
-				print("Classic FPS dedicated server listening on UDP %d%s (de_dust2, 10 slots)" % [listen_port, web_socket])
+				print("Classic FPS dedicated server listening on UDP %d%s (10 slots)" % [listen_port, web_socket])
 			else:
 				push_error("Dedicated server could not bind UDP %d / WebSocket %d: %s" % [listen_port, listen_web_socket_port, error_string(result)])
 				get_tree().quit(1)

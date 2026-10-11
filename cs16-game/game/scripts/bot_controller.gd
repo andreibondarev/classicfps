@@ -6,6 +6,10 @@ const BotPerceptionScript = preload("res://scripts/cs16_bot_perception.gd")
 const WeaponRegistryScript = preload("res://scripts/cs16_weapon_registry.gd")
 const AK47_RANGE_METERS := 81.92
 const BODY_PROBE_SIDE_HU := 12.0
+## Below a waypoint by more than a step (18 HU) plus margin = on a lower level.
+const WAYPOINT_BELOW_LEDGE := 0.25
+## Traversal endpoint hull probes clear ramps of up to ~8 HU rise per half hull.
+const TRAVERSAL_ENDPOINT_LIFT := 0.08
 const BODY_PROBE_CHEST_HU := 40.0
 const BODY_PROBE_FEET_HU := 2.0
 const DEFAULT_COMBAT_SKILL := 0.58
@@ -757,6 +761,15 @@ func _objective_navigation_velocity_to(
 			polygon_route,
 		)
 		_objective_route_index = mini(1, _objective_route.size() - 1)
+		# The route begins at the nearest point of the main navigation component.
+		# When that lies on a ledge above the bot (it fell into a pocket off the
+		# mesh), head for it first so the bot jumps back up instead of steering
+		# at the next waypoint through whatever wall bounds the pocket.
+		if (
+			_objective_route.size() > 1
+			and _objective_route[0].y - actor.global_position.y > WAYPOINT_BELOW_LEDGE
+		):
+			_objective_route_index = 0
 	if _objective_route.is_empty():
 		return Vector3.ZERO
 	_objective_route_index = mini(
@@ -848,6 +861,7 @@ func _ensure_objective_graph() -> bool:
 	if not _connect_objective_traversals(imported_map.navigation_links):
 		return false
 	_build_objective_components()
+	_prefer_spawn_component(scene)
 	_build_objective_spatial_index()
 	_objective_graph_ready = true
 	return true
@@ -868,8 +882,8 @@ func _connect_objective_traversals(links: Array[NavigationLink3D]) -> bool:
 		finish = _closest_point_on_objective_polygon(finish, second)
 		if (start.distance_to(link.get_global_start_position()) > 0.08
 			or finish.distance_to(link.get_global_end_position()) > 0.08
-			or not _objective_segment_is_bsp_clear(start, start)
-			or not _objective_segment_is_bsp_clear(finish, finish)):
+			or not _objective_traversal_endpoint_clear(start)
+			or not _objective_traversal_endpoint_clear(finish)):
 			push_error("Traversal endpoints no longer match clear grounded navigation: " + str(link.name))
 			return false
 		if first == second:
@@ -879,6 +893,12 @@ func _connect_objective_traversals(links: Array[NavigationLink3D]) -> bool:
 		if link.bidirectional:
 			_objective_traversals[Vector2i(second, first)] = {"start": finish, "end": start}
 	return true
+
+
+func _objective_traversal_endpoint_clear(point: Vector3) -> bool:
+	# A flat hull box sitting on a ramp clips the rising floor ahead of it; lift
+	# the probe a few units so sloped (but genuinely standable) endpoints pass.
+	return _objective_segment_is_bsp_clear(point + Vector3.UP * TRAVERSAL_ENDPOINT_LIFT, point + Vector3.UP * TRAVERSAL_ENDPOINT_LIFT)
 
 
 func _nearest_unfiltered_objective_polygon(point: Vector3) -> int:
@@ -988,6 +1008,30 @@ static func _objective_bounds_distance_squared(point: Vector3, bounds: AABB) -> 
 	return point.distance_squared_to(point.clamp(bounds.position, bounds.end))
 
 
+func _prefer_spawn_component(scene: Node) -> void:
+	# The largest connected piece is usually the street network, but maps with
+	# big walkable roofs or out-of-bounds tops (de_inferno) have a larger
+	# unreachable piece. Bots play where the teams spawn: pick the component
+	# holding the most spawn points, keeping the largest on a tie.
+	var votes := {}
+	for key in ["terrorist_team_spawns", "counter_terrorist_team_spawns"]:
+		var spawns: Variant = scene.get(key)
+		if not spawns is Array:
+			continue
+		for spawn: Variant in spawns:
+			if not spawn is Vector3:
+				continue
+			var polygon := _nearest_unfiltered_objective_polygon(spawn)
+			if polygon >= 0:
+				var component := _objective_polygon_components[polygon]
+				votes[component] = int(votes.get(component, 0)) + 1
+	var best := _objective_main_component
+	for component: int in votes:
+		if int(votes[component]) > int(votes.get(best, 0)):
+			best = component
+	_objective_main_component = best
+
+
 func _build_objective_components() -> void:
 	var polygon_count := _objective_polygon_centers.size()
 	_objective_polygon_components.resize(polygon_count)
@@ -995,6 +1039,14 @@ func _build_objective_components() -> void:
 	_objective_main_component = -1
 	var largest_size := 0
 	var component := 0
+	# One-way traversals (a jump out of a pocket) still join the pocket to the
+	# network it exits into, so label components over both directions.
+	var reverse_traversals := {}
+	for key: Vector2i in _objective_traversals:
+		if not _objective_traversals.has(Vector2i(key.y, key.x)):
+			var sources: Array = reverse_traversals.get(key.y, [])
+			sources.append(key.x)
+			reverse_traversals[key.y] = sources
 	for polygon_index in polygon_count:
 		if _objective_polygon_components[polygon_index] >= 0:
 			continue
@@ -1004,7 +1056,7 @@ func _build_objective_components() -> void:
 		while not stack.is_empty():
 			var current: int = stack.pop_back()
 			component_size += 1
-			for neighbor_id: int in _objective_graph.get_point_connections(current):
+			for neighbor_id: int in Array(_objective_graph.get_point_connections(current)) + reverse_traversals.get(current, []):
 				if _objective_polygon_components[neighbor_id] >= 0:
 					continue
 				_objective_polygon_components[neighbor_id] = component
@@ -1254,7 +1306,8 @@ func _objective_segment_is_bsp_clear(start: Vector3, finish: Vector3) -> bool:
 		hull.size = Vector3(32.0, 72.0, 32.0) * Combatant.GOLDSRC_UNIT
 		_objective_hull_query = PhysicsShapeQueryParameters3D.new()
 		_objective_hull_query.shape = hull
-		_objective_hull_query.collision_mask = 1
+		# Authored bot-clip walls mark drops a straight shortcut must not cross.
+		_objective_hull_query.collision_mask = 1 | TargetActor.BOT_CLIP_LAYER
 		_objective_hull_query.collide_with_areas = false
 	var query := _objective_hull_query
 	query.transform = Transform3D(
@@ -1294,6 +1347,12 @@ func _objective_waypoint_reached(index: int) -> bool:
 	var distance_squared := offset.length_squared()
 	if Vector2(offset.x, offset.z).length_squared() <= 0.0025 and absf(offset.y) < 0.2:
 		return true
+	# A bot that slipped off a ledge is below the waypoint it was walking along;
+	# passing it in plan view must not hand it the next waypoint (de_inferno's
+	# walkway gully: the next one lay through a wall). Keep steering at the ledge
+	# so the obstruction clock can jump back up.
+	if offset.y < -WAYPOINT_BELOW_LEDGE:
+		return false
 	if distance_squared >= 0.16 and not _passed_objective_waypoint(index):
 		return false
 	# Reaching a corner's generous steering radius does not make the outgoing

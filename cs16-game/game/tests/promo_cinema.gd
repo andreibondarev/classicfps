@@ -1,6 +1,6 @@
 extends SceneTree
 
-## Records HUD-free promo footage on Dust2 under Movie Maker: a slow orbit over
+## Records HUD-free promo footage (Dust2 unless --map=) under Movie Maker: a slow orbit over
 ## the map during the buy phase, then the spectator chase camera following the
 ## Terrorist bots once the human player is removed from the round.
 ##   godot --path game --write-movie /tmp/cinema.avi --fixed-fps 60 \
@@ -11,11 +11,14 @@ var _frame := 0
 var _seconds := 240.0
 var _orbit_seconds := 9.0
 var _game: Node
+var _map := "de_dust2"
 
 
 func _initialize() -> void:
 	for argument in OS.get_cmdline_user_args():
-		if argument.begins_with("--seconds="):
+		if argument.begins_with("--map="):
+			_map = argument.get_slice("=", 1)
+		elif argument.begins_with("--seconds="):
 			_seconds = float(argument.get_slice("=", 1))
 		elif argument.begins_with("--orbit="):
 			_orbit_seconds = float(argument.get_slice("=", 1))
@@ -35,7 +38,7 @@ func _centroid(points: Array) -> Vector3:
 
 func _run() -> void:
 	_game = preload("res://scripts/game.gd").new()
-	_game.map_name = "de_dust2"
+	_game.map_name = _map
 	root.add_child(_game)
 	current_scene = _game
 	await process_frame

@@ -30,7 +30,7 @@ export function auditGameSmoothness(report) {
   require(report.diagnostic_render_exclusions === "", "Rendered content must not be excluded");
   require(report.viewport === "(1280, 720)", "This timing target requires a 1280x720 viewport");
   require(["gl_compatibility", "mobile", "forward_plus"].includes(report.renderer), "Missing or unknown renderer");
-  require(["de_dust2", "cs_assault"].includes(report.map), "Missing or unknown map");
+  require(["de_dust2", "cs_assault", "de_inferno"].includes(report.map), "Missing or unknown map");
   require(["T", "CT"].includes(report.local_team_start), "Missing or unknown starting team");
   require(report.initial_freeze_skipped === false && report.initial_phase === "freeze"
     && report.starting_equipment === "normal_team_pistol", "Full matches must use normal starting rules/equipment");

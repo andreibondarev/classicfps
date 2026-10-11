@@ -51,7 +51,12 @@ const LEGACY_BUY_RADIUS := 200.0 * GOLDSRC_UNIT
 const WEAPON_PICKUP_RADIUS := 1.0
 const WEAPON_DROP_TOSS_DISTANCE := 0.5
 const DEFAULT_MAP_NAME := "de_dust2"
-const SUPPORTED_MAP_NAMES := ["de_dust2", "cs_assault"]
+const SUPPORTED_MAP_NAMES := ["de_dust2", "cs_assault", "de_inferno"]
+## Dedicated servers move to the next map once a match ends. cs_assault is
+## left out: the browser build does not ship its assets.
+const MAP_ROTATION := ["de_dust2", "de_inferno"]
+const MAP_CHANGE_DELAY_SECONDS := 10.0
+const BOMB_SEARCH_REACHED_RADIUS := 0.8
 const FALLBACK_PLAYER_SPAWN := Vector3(0, 0.08, 12)
 const FALLBACK_ALLIED_SPAWNS := [
 	Vector3(-4, 0.08, 12),
@@ -174,6 +179,8 @@ var bomb_knowledge: CS16BombKnowledge
 var selected_class_id := 1
 var selected_player_skin := "terror"
 var map_name := DEFAULT_MAP_NAME
+var _following_host_map := false
+var _bomb_search_progress := {}
 var imported_map_path := "res://generated/%s/map.json" % DEFAULT_MAP_NAME
 var scenario := ScenarioRulesScript.SCENARIO_BOMB
 var scenario_info := {}
@@ -232,12 +239,12 @@ func _ready() -> void:
 	_dedicated_server_mode = bool(network.dedicated_server)
 	_network_client_mode = (network.is_online() or network.is_connecting()) and not network.is_host
 	_select_map_from_command_line()
+	# A rotation (server) or a client following its host reloads this scene;
+	# the session autoload remembers which map the shared world now runs.
+	if (_dedicated_server_mode or _network_client_mode) and network.active_map in SUPPORTED_MAP_NAMES:
+		_use_map(network.active_map)
 	if _dedicated_server_mode:
-		# The first production server intentionally supports one map. Keeping this
-		# override here prevents an accidental command-line map from creating a
-		# server clients cannot faithfully join.
-		map_name = DEFAULT_MAP_NAME
-		imported_map_path = "res://generated/%s/map.json" % DEFAULT_MAP_NAME
+		network.active_map = map_name
 	_build_audio_runtime()
 	if "--verify-packaged-audio" in OS.get_cmdline_user_args():
 		# This path runs from the exported PCK. It guards against checking source
@@ -902,9 +909,37 @@ func _build_deploy_camera() -> void:
 	deploy_camera = Camera3D.new()
 	deploy_camera.name = "DeployCamera"
 	add_child(deploy_camera)
-	deploy_camera.position = Vector3(-7.8, 2.7, 8.0)
-	deploy_camera.look_at(deploy_camera.position + Vector3(10.0, 0.4, 0.0), Vector3.UP)
+	if map_name == "de_dust2" or terrorist_team_spawns.is_empty() or counter_terrorist_team_spawns.is_empty():
+		deploy_camera.position = Vector3(-7.8, 2.7, 8.0)
+		deploy_camera.look_at(deploy_camera.position + Vector3(10.0, 0.4, 0.0), Vector3.UP)
+	else:
+		# Other maps: stand above the T spawn and look down its longest clear
+		# sightline (a spawn courtyard otherwise often frames a bare wall).
+		deploy_camera.position = _spawn_centroid(terrorist_team_spawns) + Vector3(0.0, 1.1, 0.0)
+		deploy_camera.look_at(deploy_camera.position + _longest_sightline(deploy_camera.position), Vector3.UP)
 	deploy_camera.make_current()
+
+
+func _longest_sightline(from: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	var best := Vector3.RIGHT
+	var best_distance := -1.0
+	for step in 16:
+		var direction := Vector3.RIGHT.rotated(Vector3.UP, TAU * step / 16.0)
+		var query := PhysicsRayQueryParameters3D.create(from, from + direction * 60.0, 1)
+		var hit := space.intersect_ray(query)
+		var distance := from.distance_to(hit.position) if not hit.is_empty() else 60.0
+		if distance > best_distance:
+			best_distance = distance
+			best = direction
+	return best + Vector3(0.0, -0.08, 0.0)
+
+
+static func _spawn_centroid(spawns: Array[Vector3]) -> Vector3:
+	var sum := Vector3.ZERO
+	for spawn: Vector3 in spawns:
+		sum += spawn
+	return sum / float(spawns.size())
 
 
 func _build_imported_map() -> bool:
@@ -941,19 +976,57 @@ func _build_imported_map() -> bool:
 
 
 func _select_map_from_command_line() -> void:
+	var requested := ""
 	for argument: String in OS.get_cmdline_user_args():
-		if not argument.begins_with("--map="):
-			continue
-		var requested := argument.trim_prefix("--map=").to_lower()
-		if requested in SUPPORTED_MAP_NAMES:
-			map_name = requested
-		else:
-			push_warning(
-				"Unsupported map '%s'; using %s. Supported maps: %s"
-				% [requested, DEFAULT_MAP_NAME, ", ".join(SUPPORTED_MAP_NAMES)]
-			)
-		break
+		if argument.begins_with("--map="):
+			requested = argument.trim_prefix("--map=").to_lower()
+			break
+	# Browser offline play: classicfps.app/?offline&map=de_inferno
+	var web_map: Variant = NetworkSessionScript.web_page_query("map")
+	if requested.is_empty() and web_map != null:
+		requested = str(web_map).to_lower()
+	if not requested.is_empty() and not _map_available(requested):
+		push_warning(
+			"Unsupported map '%s'; using %s. Supported maps: %s"
+			% [requested, DEFAULT_MAP_NAME, ", ".join(SUPPORTED_MAP_NAMES)]
+		)
+		requested = ""
+	_use_map(requested if not requested.is_empty() else map_name)
+
+
+func _use_map(name: String) -> void:
+	map_name = name
 	imported_map_path = "res://generated/%s/map.json" % map_name
+
+
+func _map_available(name: String) -> bool:
+	return name in SUPPORTED_MAP_NAMES and ResourceLoader.exists("res://generated/%s/map.json" % name)
+
+
+func _next_rotation_map() -> String:
+	var index := MAP_ROTATION.find(map_name)
+	return MAP_ROTATION[(index + 1) % MAP_ROTATION.size()]
+
+
+func _change_to_next_map() -> void:
+	# Bound method, not a lambda: a scene rebuilt meanwhile simply drops it.
+	if not _dedicated_server_mode or not _match_concluded:
+		return
+	get_node("/root/NetworkSession").active_map = _next_rotation_map()
+	get_tree().reload_current_scene()
+
+
+## Online clients load whatever map their host runs. The session survives the
+## scene reload, so the client stays connected and rejoins on the new map.
+func follow_host_map(host_map: String) -> bool:
+	if not _network_client_mode or host_map == map_name or not _map_available(host_map):
+		return false
+	if _following_host_map:
+		return true
+	_following_host_map = true
+	get_node("/root/NetworkSession").active_map = host_map
+	get_tree().reload_current_scene.call_deferred()
+	return true
 
 
 func _build_entity_world() -> void:
@@ -3368,18 +3441,30 @@ func _sky_face_texture(sky_root: String, face: String) -> Texture2D:
 	return null
 
 
+func _worldspawn_skyname() -> String:
+	if is_instance_valid(imported_map):
+		for raw_entity: Variant in imported_map.entities:
+			if raw_entity is Dictionary and str(raw_entity.get("classname", "")) == "worldspawn":
+				var skyname := str(_ordered_entity_properties(raw_entity).get("skyname", ""))
+				if skyname.is_valid_filename() and not skyname.is_empty():
+					return skyname
+	return "des"
+
+
 func _build_goldsrc_sky() -> Sky:
-	## Real CS 1.6 "des" skybox faces (cstrike/gfx/env). Falls back to the
-	## dust2 set for maps whose sky faces are not converted yet.
-	var sky_roots := [
-		"res://generated/%s/sky" % map_name,
-		"res://generated/de_dust2/sky",
+	## Real CS 1.6 skybox faces (cstrike/gfx/env) named by the map's worldspawn
+	## "skyname". Falls back to the dust2 "des" set for maps whose sky faces are
+	## not converted yet.
+	var sky_sources := [
+		["res://generated/%s/sky" % map_name, _worldspawn_skyname()],
+		["res://generated/de_dust2/sky", "des"],
 	]
-	for sky_root in sky_roots:
+	for source: Array in sky_sources:
+		var sky_root: String = source[0]
 		var faces := {}
 		var complete := true
 		for face in ["rt", "lf", "bk", "ft", "up", "dn"]:
-			var texture := _sky_face_texture(str(sky_root), "des%s" % face)
+			var texture := _sky_face_texture(sky_root, "%s%s" % [source[1], face])
 			if texture == null:
 				complete = false
 				break
@@ -3705,6 +3790,7 @@ func _build_hud() -> void:
 	hud = HUDScript.new()
 	hud.name = "HUD"
 	add_child(hud)
+	hud.update_deploy_briefing(map_name)
 	hud.deploy_requested.connect(_on_deploy_requested)
 	hud.paused_input_received.connect(_unhandled_input)
 	hud.deploy_cancel_requested.connect(_on_deploy_cancel_requested)
@@ -4050,9 +4136,7 @@ func _on_network_connection_requested(action: String, address: String, port_text
 	if _returning_offline or action not in ["host", "join"]:
 		return
 	var reason := ""
-	if map_name != "de_dust2":
-		reason = "Multiplayer currently supports Dust2 only."
-	elif network.is_online() or network.is_connecting():
+	if network.is_online() or network.is_connecting():
 		reason = "Already online. Return Offline before changing sessions."
 	elif action == "host" and _network_client_mode:
 		reason = "Return Offline before hosting."
@@ -4078,9 +4162,11 @@ func _on_client_world_ready(map: String) -> void:
 		return
 	_network_menu_join_pending = false
 	if map != map_name:
+		if follow_host_map(map):
+			return
 		var network := get_node("/root/NetworkSession")
 		network.disconnect_session()
-		network._set_status("HOST MAP DOES NOT MATCH DUST2")
+		network._set_status("HOST MAP %s IS NOT AVAILABLE" % map.to_upper())
 		return
 	if hud.network_menu.is_visible_in_tree():
 		_set_paused(false)
@@ -4844,7 +4930,7 @@ func bot_objective_context(bot: TargetActor) -> Dictionary:
 				if not known_site.is_empty():
 					search_site = _bomb_site_position_by_id(known_site)
 				else:
-					search_site = bomb_sites[bot.index % bomb_sites.size()]
+					search_site = bomb_sites[_bomb_search_site_index(bot)]
 				return {
 					"state": "search_planted_site",
 					"action": "search_site",
@@ -5214,7 +5300,32 @@ func _consume_round_events(events: Array[Dictionary]) -> void:
 					Color("#ffca66"),
 					4.0,
 				)
-				hud.update_objective("PRESS ENTER FOR A NEW MATCH")
+				if _dedicated_server_mode:
+					hud.update_objective("NEXT MAP: %s" % _next_rotation_map().to_upper())
+					get_tree().create_timer(MAP_CHANGE_DELAY_SECONDS).timeout.connect(_change_to_next_map)
+				else:
+					hud.update_objective("PRESS ENTER FOR A NEW MATCH")
+
+
+func _bomb_search_site_index(bot: TargetActor) -> int:
+	## A CT bot that reaches its search site without finding the bomb moves on
+	## to the next site, like CS bots, instead of standing on an empty site.
+	var progress: Dictionary = _bomb_search_progress.get(bot.name, {})
+	if int(progress.get("round", -1)) != round_state.round_number:
+		progress = {"round": round_state.round_number, "searched": []}
+		_bomb_search_progress[bot.name] = progress
+	var searched: Array = progress.searched
+	var count := bomb_sites.size()
+	for step in count:
+		var candidate := (bot.index + step) % count
+		if searched.has(candidate):
+			continue
+		if bot.global_position.distance_to(bomb_sites[candidate]) > BOMB_SEARCH_REACHED_RADIUS:
+			return candidate
+		searched.append(candidate)
+	# Every site checked: start over from the first.
+	searched.clear()
+	return bot.index % count
 
 
 func _round_actor_positions() -> Dictionary:

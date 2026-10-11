@@ -179,6 +179,8 @@ func apply_snapshot(state: Dictionary) -> void:
 	if not session.is_online():
 		return
 	if state.map != game.map_name:
+		# The host changed maps (rotation): reload onto it, staying connected.
+		game.follow_host_map(str(state.map))
 		# Keep the current map inert; never simulate/collide against a wrong map.
 		snapshot.clear()
 		_clear_actors()

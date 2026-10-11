@@ -56,6 +56,10 @@ var grenade_trace: Array[Dictionary] = []
 var owns_c4 := false
 var c4_equipped := false
 var c4_deploy_ready_tick := -1
+## Layer of authored bot-clip walls (assets/navigation/<map>.tscn): invisible
+## barriers only bots collide with, like GoldSrc's CLIP brushes for bots, e.g.
+## keeping them out of pockets they cannot climb back out of.
+const BOT_CLIP_LAYER := 8
 var objective_movement_locked := false
 var objective_crouch := false
 var objective_look_target := Vector3.INF
@@ -101,7 +105,7 @@ func _ready() -> void:
 	# GoldSrc player hulls are solid to the BSP and to every live player.
 	# CharacterBody collision is authoritative; asynchronous RVO is deliberately
 	# disabled because identical 100 Hz replays must produce identical travel.
-	collision_mask = 1 | 2 | 4
+	collision_mask = 1 | 2 | 4 | BOT_CLIP_LAYER
 	# Keep the swept 32 HU hull a half-unit off BSP planes. This matches the
 	# separation epsilon GoldSrc's PMove retains after clipping and prevents a
 	# solved wall contact from being reported as a one-frame penetration.

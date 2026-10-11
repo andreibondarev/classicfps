@@ -62,7 +62,7 @@ export function performanceArgs(options, projectRoot = root) {
   const renderer = choice("renderer", ["gl_compatibility", "mobile", "forward_plus"]);
   const driver = choice("driver", ["metal", "vulkan", "opengl3", "opengl3_angle"]);
   if (options.includes("--map") || options.includes("--team")) throw new Error("Use --map=value and --team=value");
-  choice("map", ["de_dust2", "cs_assault"]);
+  choice("map", ["de_dust2", "cs_assault", "de_inferno"]);
   const team = choice("team", ["T", "CT"]);
   if (team && !liveMatch) throw new Error("--team requires --live-match");
   if (options.includes("--diagnostic-hide")) throw new Error("Use --diagnostic-hide=value");

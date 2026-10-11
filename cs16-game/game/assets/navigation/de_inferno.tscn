@@ -1,0 +1,25 @@
+[gd_scene format=3]
+
+[sub_resource type="BoxShape3D" id="GullyNorthEdge"]
+size = Vector3(3.7, 1.1, 0.06)
+
+[sub_resource type="BoxShape3D" id="GullyWestEdge"]
+size = Vector3(0.06, 1.1, 2.95)
+
+[node name="InfernoTraversals" type="Node3D"]
+
+; Bot-clip walls (layer 8, bots only) along the drops into the walkway gully
+; between the plaza and the walkway: bots that stepped in could never climb
+; out, and shortcut sweeps treat these walls as solid.
+
+[node name="WalkwayGullyBotClip" type="StaticBody3D" parent="."]
+collision_layer = 8
+collision_mask = 0
+
+[node name="NorthEdge" type="CollisionShape3D" parent="WalkwayGullyBotClip"]
+position = Vector3(3.7, 1.45, -6.6)
+shape = SubResource("GullyNorthEdge")
+
+[node name="WestEdge" type="CollisionShape3D" parent="WalkwayGullyBotClip"]
+position = Vector3(1.93, 1.45, -7.875)
+shape = SubResource("GullyWestEdge")

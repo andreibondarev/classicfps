@@ -1742,7 +1742,7 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	column.name = "ScoreboardContent"
 	column.add_theme_constant_override("separation", 0)
 	panel.add_child(column)
-	var header := _scoreboard_row(["Counter-Strike 1.6  |  de_dust2", "", "HP", "Money", "Score", "Deaths", "Latency"], vgui_amber)
+	var header := _scoreboard_row(["Classic FPS  |  de_dust2", "", "HP", "Money", "Score", "Deaths", "Latency"], vgui_amber)
 	header.name = "ColumnHeader"
 	header.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	header.get_child(0).name = "ServerName"
@@ -1767,7 +1767,7 @@ func _build_scoreboard_overlay(root: Control) -> void:
 	# A full server adds a scrollbar; keep the heading over the same columns.
 	scoreboard_rows.resized.connect(func() -> void:
 		header.custom_minimum_size.x = scoreboard_rows.size.x)
-	update_scoreboard([], "Counter-Strike 1.6", "de_dust2", 0, 0)
+	update_scoreboard([], "Classic FPS", "de_dust2", 0, 0)
 
 
 func _scoreboard_divider(color: Color) -> ColorRect:
@@ -1950,7 +1950,7 @@ func update_scoreboard(
 
 func show_scoreboard(
 	players: Array,
-	server_name := "Counter-Strike 1.6",
+	server_name := "Classic FPS",
 	map_name := "de_dust2",
 	ct_score := 0,
 	terrorist_score := 0,

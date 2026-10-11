@@ -6,6 +6,8 @@ extends RefCounted
 const Weapons = preload("res://scripts/cs16_weapon_registry.gd")
 const Spray = preload("res://scripts/cs16_spray.gd")
 const VERSION := 8
+## Maps a host may announce; game.gd SUPPORTED_MAP_NAMES must match.
+const MAPS := ["de_dust2", "cs_assault", "de_inferno"]
 const MAX_ACTORS := 32
 const MAX_WORLD_ITEMS := 512
 const MAX_COUNTER := 0x7fffffff
@@ -217,7 +219,7 @@ static func validate(packet: Variant) -> Dictionary:
 		return {}
 	if not integer(packet.epoch, 1, MAX_COUNTER) or not integer(packet.tick, 0, MAX_COUNTER) or not integer(packet.input_ack, 0, MAX_COUNTER):
 		return {}
-	if typeof(packet.map) != TYPE_STRING or packet.map not in ["de_dust2", "cs_assault"] or not identifier(packet.owner_id):
+	if typeof(packet.map) != TYPE_STRING or packet.map not in MAPS or not identifier(packet.owner_id):
 		return {}
 	if typeof(packet.can_buy) != TYPE_BOOL or typeof(packet.started) != TYPE_BOOL or typeof(packet.concluded) != TYPE_BOOL or not keys_match(packet.round, ROUND_FIELDS):
 		return {}
