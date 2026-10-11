@@ -21,7 +21,14 @@ static var ladder_volumes: Array[AABB] = []
 const WORLD_SCALE := 0.01
 const CLASSIC_TICK_RATE := 100.0
 const STAND_HEIGHT := 72.0 * WORLD_SCALE
-const CROUCH_HEIGHT := 50.0 * WORLD_SCALE
+# Movement duck hull is the engine's -18..18 (hull 3, 36 HU). ReGameDLL's
+# VEC_DUCK_HULL_MAX z=32 is only the entity bbox: stock GetHullBounds assigns
+# its pointer parameters, so the engine never sees it (fixed only under
+# REGAMEDLL_FIXES). A 50 HU hull blocked Inferno's 49 HU underpass.
+const CROUCH_HEIGHT := 36.0 * WORLD_SCALE
+# The ducked entity bbox (-18..32) that bullet traces and other bodies see
+# between movement ticks; the crouched head hit zone sits inside its top.
+const CROUCH_HIT_HEIGHT := 50.0 * WORLD_SCALE
 # GoldSrc's air-duck raises the hull bottom by the duck-hull offset (18 HU).
 const AIR_DUCK_FOOT_LIFT := 18.0 * WORLD_SCALE
 const HULL_WIDTH := 32.0 * WORLD_SCALE
@@ -549,6 +556,17 @@ func _physics_process(delta: float) -> void:
 ## side effects. Client reconciliation may replay it without replaying combat.
 ## The caller supplies an already-applied view yaw and authoritative locks.
 func simulate_movement(command: Dictionary, delta: float) -> float:
+	# Move with the 36 HU duck hull, then restore the 50 HU ducked bbox for
+	# everything that is not player movement (shots, other actors).
+	if not _standing:
+		_apply_hull(CROUCH_HEIGHT)
+	var moved := _simulate_movement_step(command, delta)
+	if not _standing:
+		_apply_hull(CROUCH_HIT_HEIGHT)
+	return moved
+
+
+func _simulate_movement_step(command: Dictionary, delta: float) -> float:
 	# Categorizing ground may itself settle the hull onto a lower tread. Preserve
 	# the pre-categorization origin so downward stairs cancel upward-only view
 	# smoothing on the same tick instead of one frame late.

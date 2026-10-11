@@ -29,7 +29,7 @@ func _run() -> void:
 	# Imported BSP geometry uses 0.01 Godot units for one GoldSrc unit.
 	_near(PlayerController.WORLD_SCALE, 0.01, "GoldSrc world scale")
 	_near(PlayerController.STAND_HEIGHT, 0.72, "standing hull is 72 units high")
-	_near(PlayerController.CROUCH_HEIGHT, 0.50, "CS duck hull is 50 units high")
+	_near(PlayerController.CROUCH_HEIGHT, 0.36, "CS duck movement hull is 36 units high")
 	_near(PlayerController.HULL_WIDTH, 0.32, "player hull is 32 units wide")
 	_near(PlayerController.STAND_EYE, 0.53, "standing eye preserves the CS view offset")
 	_near(PlayerController.CROUCH_EYE, 0.30, "duck eye preserves the CS view offset")

@@ -2,7 +2,8 @@ extends SceneTree
 
 ## PM_LadderMove contract: func_ladder volumes are non-solid, and a player whose
 ## hull touches one climbs by facing it and pressing forward. Exercised on the
-## stock de_inferno ladder (its only func_ladder).
+## stock de_inferno ladder (its only func_ladder). Also checks the 36 HU duck
+## hull fits Inferno's 49 HU underpass beneath the walkway bridge.
 
 const GameScript := preload("res://scripts/game.gd")
 const TICK := 1.0 / PlayerController.CLASSIC_TICK_RATE
@@ -129,6 +130,31 @@ func _check_inferno_ladder() -> void:
 		fastest <= expected_peak_speed * 1.01 and fastest >= expected_peak_speed * 0.9,
 		"climb speed follows PM_LadderMove (%.2f, expected %.2f)" % [fastest, expected_peak_speed],
 	)
+
+	# Underpass below the walkway (x 2.0-2.8, z -6.5..-4.1): a 0.88 m ceiling
+	# over a floor dipping to 0.35 m, so 42-53 HU of headroom that only the
+	# 36 HU duck hull fits through. Crouch-walk along -z from the open trench.
+	player.global_position = Vector3(2.4, 0.6, -3.7)
+	player.velocity = Vector3.ZERO
+	player._yaw = 0.0
+	player._pitch = 0.0
+	player._sync_view_angles()
+	var crouch_walk := {"movement": Vector2(0.0, -1.0), "crouch": true}
+	for tick in 400:
+		player.simulate_movement(crouch_walk, TICK)
+	_check(
+		player.global_position.z < -6.8,
+		"a ducked player crawls under Inferno's walkway (reached z=%.2f)" % player.global_position.z,
+	)
+	_check(
+		is_equal_approx((player.collider.shape as BoxShape3D).size.y, PlayerController.CROUCH_HIT_HEIGHT),
+		"between movement ticks a ducked player keeps the 50 HU bbox that shots hit",
+	)
+	player.simulate_movement({"movement": Vector2.ZERO}, TICK)
+	player.global_position = Vector3(start.x, start.y, start.z)
+	player.velocity = Vector3.ZERO
+	for tick in 60:
+		player.simulate_movement({"movement": Vector2.ZERO}, TICK)
 
 	# Hold position halfway up, then jump off along the face normal.
 	# `start` leaves a 2 cm gap; step into contact with the ladder volume.

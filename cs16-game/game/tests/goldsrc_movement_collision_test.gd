@@ -205,7 +205,7 @@ func _run() -> void:
 		"standing hull is rejected below a low ceiling",
 	)
 	_check(
-		duck_kernel.can_fit_box(Vector3(0.32, 0.50, 0.32)),
+		duck_kernel.can_fit_box(Vector3(0.32, 0.36, 0.32)),
 		"duck hull remains valid below the same ceiling",
 	)
 

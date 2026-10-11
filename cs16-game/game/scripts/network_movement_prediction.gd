@@ -44,7 +44,7 @@ func reconcile(player: PlayerController, row: Dictionary, motion: Dictionary,
 	player.objective_movement_locked = motion.objective_locked
 	player.objective_crouch_locked = motion.objective_crouch
 	player._max_speed_override_ups = float(motion.max_speed)
-	player._apply_hull(player.STAND_HEIGHT if player._standing else player.CROUCH_HEIGHT)
+	player._apply_hull(player.STAND_HEIGHT if player._standing else player.CROUCH_HIT_HEIGHT)
 	# Stair smoothing is presentation state, not part of the authoritative wire
 	# snapshot. Rebuild it from the unacknowledged local movement replay.
 	player._stair_view_offset = 0.0
