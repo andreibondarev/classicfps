@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT.parent / "shared" / "goldsrc-assets"
+ASSETS = ROOT / "shared" / "goldsrc-assets"
 SOURCE_SOUNDS = ASSETS / "sounds"
 GAME_SOUNDS = ROOT / "game" / "assets" / "sounds" / "classic"
 EXPECTED_WAVS = 808

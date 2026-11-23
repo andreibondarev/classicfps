@@ -15,9 +15,9 @@ __pycache__/
 dist/
 artifacts/
 shared/goldsrc-crate/target/
-cs16-game/game/.godot/
-cs16-game/game/artifacts/
-cs16-game/game/builds/
+game/.godot/
+game/artifacts/
+game/builds/
 
 # The multi-gigabyte compatibility corpus stays local. Curated demos in the
 # shared/demos directory remain tracked for the parser regression tests.

@@ -1,6 +1,6 @@
 """Draws the Classic FPS loading-screen wordmark and the crosshair icon as SVG.
 
-Run from cs16-game: python3 deploy/branding/make_brand.py deploy/branding, then
+Run from the repository root: python3 deploy/branding/make_brand.py deploy/branding, then
 rsvg-convert deploy/branding/splash.svg -o game/assets/branding/splash.png and
 rsvg-convert -w 256 -h 256 deploy/branding/icon.svg -o game/assets/branding/icon.png.
 """

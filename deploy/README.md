@@ -8,7 +8,7 @@ to it. Desktop and browser players share the same match.
 An empty server waits for its first player, and restores its initial 5v5 bot
 roster after the final player disconnects.
 
-Build and validate locally (from `cs16-game/`):
+Build and validate locally (from the repository root):
 
 ```bash
 npm run game:test:dedicated
@@ -39,7 +39,7 @@ which redirect to it; all → 167.71.173.156); Caddy obtains the TLS
 certificate automatically. Start Caddy only after the domain resolves, so the
 certificate request does not burn Let's Encrypt's failed-validation limit.
 
-Build locally (from `cs16-game/`), which also writes `.br`/`.gz` copies of the
+Build locally (from the repository root), which also writes `.br`/`.gz` copies of the
 large files (the Brotli package is roughly 43 MB instead of 218 MB):
 
 ```bash

@@ -4,14 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-cargo build --quiet --release --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_mdl
-exporter="$repo_root/../shared/goldsrc-crate/target/release/godot_mdl"
+cargo build --quiet --release --manifest-path shared/goldsrc-crate/Cargo.toml --bin godot_mdl
+exporter="$repo_root/shared/goldsrc-crate/target/release/godot_mdl"
 
 skins=(terror leet arctic guerilla urban gsg9 sas gign)
 for skin in "${skins[@]}"; do
   "$exporter" \
     --animated \
-    "../shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
+    "shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
     "game/generated/players/$skin"
 done
 
@@ -28,7 +28,7 @@ for family in "${families[@]}"; do
     "$exporter" \
       --animated-family \
       "$family" \
-      "../shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
+      "shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
       "game/generated/player_action_families/$family/$skin"
   done
 done
@@ -40,12 +40,12 @@ for skin in "${terrorist_skins[@]}"; do
   "$exporter" \
     --animated-family \
     c4 \
-    "../shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
+    "shared/goldsrc-assets/models/player/$skin/$skin.mdl" \
     "game/generated/player_action_families/c4/$skin"
 done
 
 "$exporter" \
   --attached \
-  ../shared/goldsrc-assets/models/player/terror/terror.mdl \
-  ../shared/goldsrc-assets/models/weapons/p_ak47.mdl \
+  shared/goldsrc-assets/models/player/terror/terror.mdl \
+  shared/goldsrc-assets/models/weapons/p_ak47.mdl \
   game/generated/player_weapons/ak47
