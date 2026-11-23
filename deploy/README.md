@@ -33,10 +33,9 @@ the service only needs write access to `/var/lib/protocol47`.
 
 ## Browser play
 
-Requires a domain whose DNS A record points at the droplet (production:
-`classicfps.app`, plus `www.classicfps.app`, `cs16.site` and `www.cs16.site`,
-which redirect to it; all → 167.71.173.156); Caddy obtains the TLS
-certificate automatically. Start Caddy only after the domain resolves, so the
+Requires a domain whose DNS A record points at the droplet. Additional
+domains can redirect to it; each needs its own DNS record. Caddy obtains the
+TLS certificate automatically. Start Caddy only after the domain resolves, so the
 certificate request does not burn Let's Encrypt's failed-validation limit.
 
 Build locally (from the repository root), which also writes `.br`/`.gz` copies of the

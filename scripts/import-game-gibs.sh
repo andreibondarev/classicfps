@@ -27,6 +27,9 @@ for gib in "${gibs[@]}"; do
     printf 'Missing required stock gib model: %s\n' "$source_model" >&2
     exit 1
   fi
+  # The whole-model export (model.json + textures) and the per-body variants
+  # are both read at runtime.
+  "$exporter" "$source_model" "game/generated/gibs/$gib"
   "$exporter" \
     --body-variants \
     "$source_model" \

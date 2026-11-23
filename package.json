@@ -2,6 +2,7 @@
   "name": "classicfps",
   "version": "1.0.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "game:run": "godot --log-file /tmp/protocol47-game.log --path game",
@@ -62,7 +63,9 @@
     "game:import:hostages": "cargo run --release --quiet --manifest-path shared/goldsrc-crate/Cargo.toml --bin godot_mdl -- --animated shared/goldsrc-assets/models/classic/hostage.mdl game/generated/hostages/hostage",
     "game:import:sounds": "bash scripts/import-game-sounds.sh",
     "game:import:hud": "venv/bin/python scripts/extract-cs-hud-core.py shared/goldsrc-assets/sprites/classic game/assets/hud/classic",
+    "game:import:hud:ammo": "venv/bin/python scripts/extract-ammo-hud-icons.py shared/goldsrc-assets/sprites/classic game/assets/hud/classic",
     "game:import:hud:death": "venv/bin/python scripts/extract-cs-hud-core.py shared/goldsrc-assets/sprites/classic game/assets/hud/death --death-notices",
+    "game:import:vfx": "bash scripts/import-game-vfx.sh",
     "game:import:ui": "venv/bin/python scripts/import-game-ui.py /tmp/protocol47-app90 shared/goldsrc-assets/ui/classic game/assets/ui/classic"
   }
 }

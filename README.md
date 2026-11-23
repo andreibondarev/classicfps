@@ -5,7 +5,8 @@ dedicated server, and a browser build. The original GoldSrc maps, models and
 sounds are converted into Godot content by a Rust crate that lives in this
 repository.
 
-Production runs at `classicfps.app`; see [deploy/README.md](deploy/README.md).
+A hosted instance runs at [classicfps.app](https://classicfps.app). To host
+your own, see [deploy/README.md](deploy/README.md).
 
 ## Quick start
 
@@ -92,7 +93,8 @@ npm run game:import:weapons
 npm run game:import:hostages
 npm run game:import:gibs
 npm run game:import:sounds
-npm run game:import:hud         # also :hud:death
+npm run game:import:hud         # also :hud:ammo, :hud:death
+npm run game:import:vfx
 ```
 
 A clean import should leave `git status` empty. A diff means either the
@@ -123,10 +125,22 @@ own repository, `classicfps-demo-player`, in November 2026. It carries its own
 copy of the crate; the copy here is the one future replay work in the game
 builds on.
 
-## Licensing of bundled content
+## Licence
 
-There is no licence file yet. `shared/goldsrc-assets/`, `game/assets/` and
-`game/generated/` contain or are derived from Valve's Counter-Strike and
-Half-Life content, and `shared/demos/` holds third-party recordings. Keep the
-repository private while they are tracked. Details are in
-[shared/README.md](shared/README.md).
+Classic FPS is free software under the
+[GNU Affero General Public License v3.0](LICENSE). If you run a modified
+version for other people over a network, you must offer them the source of
+your version.
+
+The licence covers the code in this repository. It does not cover the
+Counter-Strike and Half-Life content under `shared/goldsrc-assets/`,
+`game/assets/` and `game/generated/`: those maps, models, sounds, sprites and
+interface files are Valve's (or converted from Valve's) and remain subject to
+Valve's terms. Provenance is recorded in the `ASSET-SOURCE.md` files and in
+[shared/README.md](shared/README.md). The demos in `shared/demos/` are
+third-party recordings. The bundled DejaVu fonts carry their own licence
+(`game/assets/fonts/DejaVu-LICENSE.txt`), and Godot is MIT-licensed
+(`deploy/web/licenses.txt`).
+
+This project is not affiliated with or endorsed by Valve. Counter-Strike and
+Half-Life are trademarks of Valve Corporation.

@@ -42,12 +42,9 @@ reformat those files.
 
 ### Licensing
 
-These are Valve's assets and remain Valve content. They are in the repository
-so the importers are reproducible, not because they can be redistributed.
-Before the repository is made public they need to come out of the tree and
-its history, replaced by a step that stages them from the user's own
-SteamCMD app 90 install. The same applies to the converted copies under
-`game/generated/` and `game/assets/`.
+These are Valve's assets and remain Valve content, as do the converted copies
+under `game/generated/` and `game/assets/`. The repository's AGPL licence
+applies to the code only.
 
 ## demos
 
@@ -58,5 +55,5 @@ position bounds. `demos/SOURCES.md` lists where they came from.
 `demos/corpus/` is a larger local-only set (over 1 GB) that the same test walks
 if it exists. It is ignored by git; the tests pass without it.
 
-The demos are third-party recordings containing real player handles, so they
-fall under the same keep-private rule as the assets.
+The demos are third-party recordings and are not covered by the repository's
+licence.

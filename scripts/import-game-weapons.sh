@@ -66,3 +66,14 @@ for weapon in "${weapons[@]}"; do
     printf 'No third-person model for %s; leaving it out of attached coverage\n' "$weapon"
   fi
 done
+
+# Dropped weapons and the bomb backpack lie in the world as static w_ models.
+world_models=("${weapons[@]}" backpack)
+for weapon in "${world_models[@]}"; do
+  world_model="shared/goldsrc-assets/models/weapons/w_${weapon}.mdl"
+  if [[ ! -f "$world_model" ]]; then
+    printf 'No world model for %s; leaving it out of dropped-weapon coverage\n' "$weapon"
+    continue
+  fi
+  "$exporter" "$world_model" "game/generated/world_weapons/$weapon"
+done
