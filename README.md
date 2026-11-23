@@ -1,13 +1,16 @@
-# CS 1.6 projects
+# Classic FPS
 
-Two projects that share one GoldSrc parsing crate:
+A playable Godot 4 CS 1.6 remake with a dedicated server, plus the GoldSrc
+tooling it is built on.
 
 | Folder | What it is | Start here |
 | --- | --- | --- |
-| [`cs16-demo-player/`](cs16-demo-player/DEVELOPMENT.md) | Browser replay viewer for CS 1.6 `.dem` recordings (Rust/WASM + Three.js) | `cd cs16-demo-player && npm install && npm run dev` |
-| [`cs16-game/`](cs16-game/game/README.md) | Classic FPS, a playable Godot 4 CS 1.6 remake with a dedicated server | `cd cs16-game && npm run game:run` |
-| [`shared/goldsrc-crate/`](shared/goldsrc-crate) | Rust crate: demo parser (built to WASM for the player) and BSP/WAD/MDL converters (used by the game's importers) | `cargo test --release` |
+| [`cs16-game/`](cs16-game/game/README.md) | The game: Godot 4 client and dedicated server | `cd cs16-game && npm run game:run` |
+| [`shared/goldsrc-crate/`](shared/goldsrc-crate) | Rust crate: demo parser and BSP/WAD/MDL converters (used by the game's importers) | `cargo test --release` |
+| `shared/goldsrc-assets/` | Original GoldSrc maps, models, sounds, sprites, UI files and WADs the importers read | |
+| `shared/demos/` | Demos the parser's regression tests replay (sources in `shared/demos/SOURCES.md`) | |
 
-The game's asset importers read the original GoldSrc files from
-`cs16-demo-player/public/`. Python tooling for both projects uses the
-repo-root `venv/`.
+Python tooling uses the repo-root `venv/`.
+
+The browser demo player that used to live here moved to its own repository,
+`classicfps-demo-player`, in November 2026, with its own copy of the crate.

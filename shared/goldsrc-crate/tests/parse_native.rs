@@ -16,7 +16,7 @@ fn collect_models(directory: &std::path::Path, models: &mut Vec<std::path::PathB
 
 #[test]
 fn complete_runtime_model_bundle_parses() {
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cs16-demo-player/public/models"));
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../shared/goldsrc-assets/models"));
     let mut models = Vec::new();
     collect_models(&root.join("player"), &mut models);
     collect_models(&root.join("weapons"), &mut models);
@@ -46,7 +46,7 @@ fn complete_runtime_model_bundle_parses() {
 fn parse_pov_demo() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/col-3d-inf-finals-ct.dem"
+        "/../../shared/demos/col-3d-inf-finals-ct.dem"
     );
     let data = std::fs::read(path).expect("demo file");
     debug_parse_demo(&data);
@@ -56,7 +56,7 @@ fn parse_pov_demo() {
 fn parse_hltv_demo() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem"
+        "/../../shared/demos/territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem"
     );
     let data = std::fs::read(path).expect("demo file");
     debug_parse_demo(&data);
@@ -66,7 +66,7 @@ fn parse_hltv_demo() {
 fn parse_wcg07_demo() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
+        "/../../shared/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
     );
     let data = std::fs::read(path).expect("demo file");
     cs16_demo_parser::debug_parse_demo(&data);
@@ -76,7 +76,7 @@ fn parse_wcg07_demo() {
 fn hltv_demo_entity_names() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem"
+        "/../../shared/demos/territory.ru--vs-Virtus.pro-hltv-0411281802-de_inferno.dem"
     );
     let data = std::fs::read(path).expect("demo file");
     let names = cs16_demo_parser::debug_distinct_entity_names(&data);
@@ -97,7 +97,7 @@ fn hltv_demo_entity_names() {
 fn corpus_invariants() {
     let mut dirs = vec![std::path::PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos"
+        "/../../shared/demos"
     ))];
     dirs.push(dirs[0].join("corpus"));
 
@@ -161,7 +161,7 @@ fn parse_env_demo() {
 fn protocol46_exevsisterhood_has_real_players_without_garbage_hud_events() {
     let data = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/Exevsisterhood.dem"
+        "/../../shared/demos/Exevsisterhood.dem"
     ))
     .expect("Exevsisterhood demo");
     let (duration, entries, names, max_abs, team_scores, round_times) =
@@ -195,13 +195,13 @@ fn protocol46_exevsisterhood_has_real_players_without_garbage_hud_events() {
 fn exe_hltv_reconstructed_camera_targets_stay_inside_stock_map_height() {
     let cases = [
         (
-            "/../../cs16-demo-player/demos/exe_vs_sisterhood-1.dem",
+            "/../../shared/demos/exe_vs_sisterhood-1.dem",
             332.93,
             "*sisterhood*<gandjubas>",
             -768.0..=128.0,
         ),
         (
-            "/../../cs16-demo-player/demos/fs_vs_exe-1.dem",
+            "/../../shared/demos/fs_vs_exe-1.dem",
             817.55,
             "exe^MaN@X` |~POSTNET",
             -1088.0..=128.0,
@@ -239,7 +239,7 @@ fn exe_hltv_reconstructed_camera_targets_stay_inside_stock_map_height() {
 fn object_track_present() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
+        "/../../shared/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
     );
     let data = std::fs::read(path).expect("demo file");
     let counts = cs16_demo_parser::debug_obj_track_counts(&data);
@@ -252,12 +252,12 @@ fn object_track_present() {
 fn weapon_bonemerge() {
     let player = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/public/models/player/sas/sas.mdl"
+        "/../../shared/goldsrc-assets/models/player/sas/sas.mdl"
     ))
     .unwrap();
     let weapon = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/public/models/weapons/p_m4a1.mdl"
+        "/../../shared/goldsrc-assets/models/weapons/p_m4a1.mdl"
     ))
     .unwrap();
     let (raw, merged, anim_center, n_anims) = cs16_demo_parser::debug_attach_bbox(&player, &weapon);
@@ -279,7 +279,7 @@ fn weapon_bonemerge() {
 fn first_person_weapon_sequences_stay_index_aligned() {
     let model = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/public/models/weapons/v_awp.mdl"
+        "/../../shared/goldsrc-assets/models/weapons/v_awp.mdl"
     ))
     .unwrap();
     let labels = cs16_demo_parser::debug_mdl_animation_labels(&model);
@@ -293,7 +293,7 @@ fn first_person_weapon_sequences_stay_index_aligned() {
 fn shot_track_present() {
     let data = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
+        "/../../shared/demos/R1_TNTvsEMV.NX-0709081213-de_dust2.dem"
     ))
     .unwrap();
     let n = cs16_demo_parser::debug_shot_count(&data);
@@ -305,7 +305,7 @@ fn shot_track_present() {
 fn pov_rounds_are_reconstructed_without_duplicate_winners() {
     let data = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../cs16-demo-player/demos/col-3d-inf-finals-ct.dem"
+        "/../../shared/demos/col-3d-inf-finals-ct.dem"
     ))
     .unwrap();
     let counts = cs16_demo_parser::debug_event_counts(&data);

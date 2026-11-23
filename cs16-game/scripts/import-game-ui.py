@@ -86,7 +86,7 @@ def main() -> int:
         "archive_destination",
         nargs="?",
         type=Path,
-        default=Path("../cs16-demo-player/public/ui/classic"),
+        default=Path("../shared/goldsrc-assets/ui/classic"),
     )
     parser.add_argument(
         "runtime_destination",

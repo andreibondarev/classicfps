@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-source_root="../cs16-demo-player/public/sounds"
+source_root="../shared/goldsrc-assets/sounds"
 destination_root="game/assets/sounds/classic"
 
 if [[ ! -d "$source_root" ]]; then

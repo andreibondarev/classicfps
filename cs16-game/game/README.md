@@ -4,7 +4,7 @@ Classic FPS is the playable native game built alongside the CS 1.6 replay
 viewer. Godot owns the client, classic 100 Hz simulation, UI, audio, and rendering. The
 shared Rust crate (`../shared/goldsrc-crate`) converts GoldSrc BSP, WAD and MDL
 data into portable game content, reading the source assets from
-`../cs16-demo-player/public`. Run the `npm run game:*` commands from the
+`../shared/goldsrc-assets`. Run the `npm run game:*` commands from the
 `cs16-game/` folder.
 
 ## Run

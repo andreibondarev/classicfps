@@ -22,7 +22,7 @@ gibs=(
 )
 
 for gib in "${gibs[@]}"; do
-  source_model="../cs16-demo-player/public/models/classic/${gib}.mdl"
+  source_model="../shared/goldsrc-assets/models/classic/${gib}.mdl"
   if [[ ! -f "$source_model" ]]; then
     printf 'Missing required stock gib model: %s\n' "$source_model" >&2
     exit 1

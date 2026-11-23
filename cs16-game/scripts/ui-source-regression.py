@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT.parent / "cs16-demo-player" / "public"
+ASSETS = ROOT.parent / "shared" / "goldsrc-assets"
 ARCHIVE = ASSETS / "ui/classic"
 RUNTIME = ROOT / "game/assets/ui/classic"
 EXPECTED = "1a36e031123dce268f5c3c04141be7c8dd519fae98309f6dcd844f6001c54374"

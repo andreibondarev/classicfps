@@ -1,8 +1,8 @@
 # These are byte-exact mirrors of the App 90 distribution. Preserve Valve's
 # original CRLF/trailing-space payloads; manifests test their source hashes.
-/public/ui/classic/** -text -diff
+/shared/goldsrc-assets/ui/classic/** -text -diff
 /game/assets/ui/classic/** -text -diff
-/public/sprites/classic/** -text -diff
+/shared/goldsrc-assets/sprites/classic/** -text -diff
 /game/assets/sounds/classic/materials.txt -text -diff
 /game/assets/sounds/classic/sentences.txt -text -diff
 

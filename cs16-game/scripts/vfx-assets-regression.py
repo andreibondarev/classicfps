@@ -21,8 +21,8 @@ def main() -> int:
         generated = Path(temporary)
         subprocess.run([
             sys.executable, str(root / "scripts/import-game-vfx.py"),
-            str(root.parent / "cs16-demo-player/public/sprites/classic"),
-            str(root.parent / "cs16-demo-player/public/wads/decals.wad"), str(generated),
+            str(root.parent / "shared/goldsrc-assets/sprites/classic"),
+            str(root.parent / "shared/goldsrc-assets/wads/decals.wad"), str(generated),
         ], check=True, capture_output=True, text=True)
         expected = json.loads((generated / "manifest.json").read_text())
         actual = json.loads((checked_in / "manifest.json").read_text())

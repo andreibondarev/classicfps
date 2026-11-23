@@ -20,5 +20,5 @@ cs16-game/game/artifacts/
 cs16-game/game/builds/
 
 # The multi-gigabyte compatibility corpus stays local. Curated demos in the
-# demo player's demos directory remain tracked and power the built-in library.
-cs16-demo-player/demos/corpus/
+# shared/demos directory remain tracked for the parser regression tests.
+shared/demos/corpus/

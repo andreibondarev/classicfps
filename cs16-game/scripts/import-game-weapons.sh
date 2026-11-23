@@ -43,8 +43,8 @@ weapons=(
 )
 
 for weapon in "${weapons[@]}"; do
-  view_model="../cs16-demo-player/public/models/weapons/v_${weapon}.mdl"
-  player_model="../cs16-demo-player/public/models/weapons/p_${weapon}.mdl"
+  view_model="../shared/goldsrc-assets/models/weapons/v_${weapon}.mdl"
+  player_model="../shared/goldsrc-assets/models/weapons/p_${weapon}.mdl"
 
   if [[ ! -f "$view_model" ]]; then
     printf 'Missing required first-person model: %s\n' "$view_model" >&2
@@ -59,7 +59,7 @@ for weapon in "${weapons[@]}"; do
   if [[ -f "$player_model" ]]; then
     "$exporter" \
       --attached \
-      ../cs16-demo-player/public/models/player/terror/terror.mdl \
+      ../shared/goldsrc-assets/models/player/terror/terror.mdl \
       "$player_model" \
       "game/generated/player_weapons/$weapon"
   else

@@ -53,16 +53,16 @@
     "game:build:server": "mkdir -p game/builds && godot --headless --audio-driver Dummy --log-file /tmp/protocol47-server-export.log --path game --export-release 'Linux Server' builds/protocol47-server.x86_64 && test -x game/builds/protocol47-server.x86_64",
     "game:build:web": "rm -rf game/builds/web && mkdir -p game/builds/web && godot --headless --audio-driver Dummy --log-file /tmp/protocol47-web-export.log --path game --export-release Web builds/web/index.html && test -s game/builds/web/index.pck && for f in game/builds/web/index.pck game/builds/web/index.wasm game/builds/web/index.js; do gzip -k -9 \"$f\" && brotli -k -q 9 \"$f\"; done && cp deploy/web/* game/builds/web/",
     "game:test:web-voice": "npm run game:build:web && ../venv/bin/python scripts/web-voice-regression.py",
-    "game:import:dust2": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../cs16-demo-player/public/maps/de_dust2.bsp game/generated/de_dust2 ../cs16-demo-player/public/wads/cstrike.wad ../cs16-demo-player/public/wads/cs_dust.wad ../cs16-demo-player/public/wads/decals.wad ../cs16-demo-player/public/wads/classic_maps.wad",
-    "game:import:inferno": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../cs16-demo-player/public/maps/de_inferno.bsp game/generated/de_inferno ../cs16-demo-player/public/wads/cstrike.wad ../cs16-demo-player/public/wads/decals.wad ../cs16-demo-player/public/wads/halflife.wad ../cs16-demo-player/public/wads/classic_maps.wad",
-    "game:import:assault": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../cs16-demo-player/public/maps/cs_assault.bsp game/generated/cs_assault ../cs16-demo-player/public/wads/cs_assault.wad ../cs16-demo-player/public/wads/halflife.wad ../cs16-demo-player/public/wads/decals.wad",
+    "game:import:dust2": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../shared/goldsrc-assets/maps/de_dust2.bsp game/generated/de_dust2 ../shared/goldsrc-assets/wads/cstrike.wad ../shared/goldsrc-assets/wads/cs_dust.wad ../shared/goldsrc-assets/wads/decals.wad ../shared/goldsrc-assets/wads/classic_maps.wad",
+    "game:import:inferno": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../shared/goldsrc-assets/maps/de_inferno.bsp game/generated/de_inferno ../shared/goldsrc-assets/wads/cstrike.wad ../shared/goldsrc-assets/wads/decals.wad ../shared/goldsrc-assets/wads/halflife.wad ../shared/goldsrc-assets/wads/classic_maps.wad",
+    "game:import:assault": "cargo run --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_bsp -- ../shared/goldsrc-assets/maps/cs_assault.bsp game/generated/cs_assault ../shared/goldsrc-assets/wads/cs_assault.wad ../shared/goldsrc-assets/wads/halflife.wad ../shared/goldsrc-assets/wads/decals.wad",
     "game:import:players": "bash scripts/import-game-players.sh",
     "game:import:gibs": "bash scripts/import-game-gibs.sh",
     "game:import:weapons": "bash scripts/import-game-weapons.sh",
-    "game:import:hostages": "cargo run --release --quiet --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_mdl -- --animated ../cs16-demo-player/public/models/classic/hostage.mdl game/generated/hostages/hostage",
+    "game:import:hostages": "cargo run --release --quiet --manifest-path ../shared/goldsrc-crate/Cargo.toml --bin godot_mdl -- --animated ../shared/goldsrc-assets/models/classic/hostage.mdl game/generated/hostages/hostage",
     "game:import:sounds": "bash scripts/import-game-sounds.sh",
-    "game:import:hud": "../venv/bin/python scripts/extract-cs-hud-core.py ../cs16-demo-player/public/sprites/classic game/assets/hud/classic",
-    "game:import:hud:death": "../venv/bin/python scripts/extract-cs-hud-core.py ../cs16-demo-player/public/sprites/classic game/assets/hud/death --death-notices",
-    "game:import:ui": "../venv/bin/python scripts/import-game-ui.py /tmp/protocol47-app90 ../cs16-demo-player/public/ui/classic game/assets/ui/classic"
+    "game:import:hud": "../venv/bin/python scripts/extract-cs-hud-core.py ../shared/goldsrc-assets/sprites/classic game/assets/hud/classic",
+    "game:import:hud:death": "../venv/bin/python scripts/extract-cs-hud-core.py ../shared/goldsrc-assets/sprites/classic game/assets/hud/death --death-notices",
+    "game:import:ui": "../venv/bin/python scripts/import-game-ui.py /tmp/protocol47-app90 ../shared/goldsrc-assets/ui/classic game/assets/ui/classic"
   }
 }
