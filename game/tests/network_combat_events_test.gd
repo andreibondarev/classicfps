@@ -138,6 +138,10 @@ func _run() -> void:
 	_check(network.accept_combat_event(shot), "disconnect resets receive counters")
 	network.combat_event_received.disconnect(view.queue_combat_event)
 	view.free()
+	# Loading the client view pulls in the shared model scripts; release their
+	# static caches so the process exits without leaked resources.
+	CS16CombatEffects.release_cached_resources()
+	MdlCharacterModel.release_cached_resources()
 	for failure in failures:
 		push_error(failure)
 	if failures.is_empty():

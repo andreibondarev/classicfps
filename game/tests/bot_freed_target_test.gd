@@ -50,6 +50,12 @@ func _run() -> void:
 	game.select_remote_join_class(777, 1)
 	var human: PlayerController = game._remote_join_actor(777)
 	_check(is_instance_valid(human), "remote player joined")
+	# A second player stays connected. A dedicated server rebuilds its scene
+	# when the last player leaves, which would detach the bots under test.
+	network._register_input_peer(778, Time.get_ticks_msec())
+	game.remote_roster._on_peer_joined(778)
+	game.select_remote_join_team(778, "T")
+	game.select_remote_join_class(778, 1)
 	var hunters: Array = []
 	for bot: TargetActor in game._all_bots():
 		if bot.team == "CT" and bot.combat_controller is BotCombatController:
@@ -65,14 +71,18 @@ func _run() -> void:
 		await physics_frame
 	_check(not is_instance_valid(human), "the disconnected player's actor was freed")
 	var cleared := true
+	var checked := 0
 	for bot: TargetActor in hunters:
-		if not is_instance_valid(bot):
+		if not is_instance_valid(bot) or not bot.is_inside_tree():
 			continue
+		checked += 1
 		var controller := bot.combat_controller as BotCombatController
 		var command: Dictionary = controller.gather_command(1.0 / 100.0)
 		cleared = cleared and controller.perception.current_target_id.is_empty() and command.has("weapon_clip")
 	_check(cleared, "bots dropped the stale target and still produce full commands")
+	_check(checked > 0, "the bots that tracked the player are still in the running scene")
 
+	network._remove_input_peer(778)
 	network.disconnect_session()
 	if is_instance_valid(current_scene):
 		current_scene.queue_free()

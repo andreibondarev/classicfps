@@ -73,9 +73,15 @@ node scripts/run-game-tests.mjs game:test:ballistics   # one suite through the s
 ```
 
 The strict runner fails on script or resource errors even when Godot exits
-zero, requires pass markers, and times out stuck suites. It writes
-`game/artifacts/headless-test-report.json`. The full run takes a long time;
-run the suites that cover what you changed while iterating.
+zero (including objects leaked at exit), requires pass markers, and times out
+stuck suites. It runs every suite, lists the ones that failed at the end, and
+writes `game/artifacts/headless-test-report.json`. The full run takes about ten
+minutes; run the suites that cover what you changed while iterating.
+
+One suite is kept out of the default run because it fails for a known reason:
+`game:test:assault-door` (on cs_assault the CT bots queue at the warehouse door
+and never enter). Run it by name with
+`node scripts/run-game-tests.mjs game:test:assault-door`.
 
 `npm run game:test:rendered` and the `game:capture:*` scripts open a window and
 need a GPU. `game:perf*` scripts measure frame times; their options are

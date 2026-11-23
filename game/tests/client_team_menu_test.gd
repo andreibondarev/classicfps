@@ -67,8 +67,15 @@ func _run() -> void:
 	view.handle_input(_key(KEY_M))
 	_check(hud.current_input_contract().state == "none", "M is inert before joining a team")
 
+	# Release pooled audio and the shared model caches so the process exits
+	# without leaked resources.
+	game.audio_router.stop_all("test_teardown")
+	game.audio_playback.clear_pool()
 	game.queue_free()
 	await process_frame
+	await process_frame
+	CS16CombatEffects.release_cached_resources()
+	MdlCharacterModel.release_cached_resources()
 	if failures.is_empty():
 		print("GAME_CLIENT_TEAM_MENU_PASS")
 	quit(0 if failures.is_empty() else 1)

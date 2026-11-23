@@ -119,8 +119,21 @@ func _test_authoritative_team_routing() -> void:
 	_check(is_instance_valid(game.hud._radio_line_label)
 		and game.hud._radio_line_label.text == "Teammate (RADIO): Cover me!",
 		"team radio uses authoritative sender identity and stock message text")
+	# The radio line above starts a pooled voice clip; stop it and release the
+	# shared model caches so the process exits without leaked resources.
+	if is_instance_valid(game._radio_voice):
+		game._radio_voice.stop()
+		game._radio_voice.stream = null
+	game.audio_router.stop_all("test_teardown")
+	game.audio_playback.clear_pool()
+	# The audio thread drops a stopped clip on its next mix, not immediately.
+	await create_timer(0.5).timeout
 	game.queue_free()
 	await process_frame
+	await process_frame
+	await create_timer(0.2).timeout
+	CS16CombatEffects.release_cached_resources()
+	MdlCharacterModel.release_cached_resources()
 	network.disconnect_session()
 
 
